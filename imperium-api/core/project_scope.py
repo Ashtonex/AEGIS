@@ -21,6 +21,7 @@ nothing else does.
 from __future__ import annotations
 
 from typing import Any, Optional
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import text
@@ -102,7 +103,26 @@ async def require_project_access(db: AsyncSession, user: dict, project_id: Any) 
     if project_id is None:
         return
     ids = await visible_project_ids(db, user)
-    if ids is not None and str(project_id) not in ids:
+    if ids is None or str(project_id) in ids:
+        return
+    try:
+        UUID(str(project_id))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
+    except ValueError:
+        pass
+    # Project routes also accept a project code (deep links such as
+    # /dashboard/projects/EHTRW); resolve it before deciding.
+    resolved = (
+        await db.execute(
+            text("""
+            SELECT CAST(id AS text) FROM projects.projects
+            WHERE organization_id = :org_id AND is_deleted = false AND project_code = :ref
+            LIMIT 1
+        """),
+            {"org_id": user.get("org_id"), "ref": str(project_id)},
+        )
+    ).scalar()
+    if resolved not in ids:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
 
 

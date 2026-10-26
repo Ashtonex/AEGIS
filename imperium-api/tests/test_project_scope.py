@@ -23,10 +23,20 @@ async def test_unassigned_project_is_not_found(monkeypatch):
     async def visible(db, user):
         return ["assigned-project"]
 
+    class NoSuchCodeDb:
+        async def execute(self, *_args, **_kwargs):
+            class Result:
+                def scalar(self):
+                    return None
+            return Result()
+
     monkeypatch.setattr(scope, "visible_project_ids", visible)
     await scope.require_project_access(None, {}, "assigned-project")
     with pytest.raises(HTTPException) as exc:
-        await scope.require_project_access(None, {}, "someone-elses-project")
+        await scope.require_project_access(NoSuchCodeDb(), {}, "someone-elses-project")
+    assert exc.value.status_code == 404
+    with pytest.raises(HTTPException) as exc:
+        await scope.require_project_access(None, {}, "0b7f6a1e-5a9e-4c4e-9a37-1d2a3b4c5d6e")
     assert exc.value.status_code == 404
 
 

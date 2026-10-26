@@ -417,6 +417,18 @@ def sum_buildup_by_type(item: Dict[str, Any], component_type: str) -> float:
     )
 
 
+def quotation_item_qty_rate(item: Dict[str, Any]) -> tuple[Any, Any, Any]:
+    """(qty, rate, unit) for a stored quotation item. Items saved by the BOQ
+    editor carry qty/rate; imported ones may use quantity; lump-sum lines
+    carry only an amount, which is one 'sum' at that amount."""
+    qty = item.get("qty") if item.get("qty") is not None else item.get("quantity")
+    rate = item.get("rate")
+    unit = item.get("unit")
+    if not qty and not rate and item.get("amount"):
+        return 1, item.get("amount"), unit or "sum"
+    return qty, rate, unit
+
+
 def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Maps a quotation's stored metadata blob into the shape
     QuotationCalculator.calculate() expects. Shared by every code path that
@@ -439,14 +451,16 @@ def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) 
                 "description": it.get("description"),
                 "section": it.get("section") or "Measured Works",
                 "item_no": it.get("item_no") or it.get("itemNo") or "",
-                "quantity": it.get("qty"),
-                "unit": it.get("unit"),
-                "rate": it.get("rate"),
+                "quantity": qty,
+                "unit": unit,
+                "rate": rate,
                 "material_rate": sum_buildup_by_type(it, "material"),
                 "labour_rate": sum_buildup_by_type(it, "labour"),
                 "equipment_rate": sum_buildup_by_type(it, "equipment"),
                 "subcontractor_rate": sum_buildup_by_type(it, "subcontractor"),
             }
             for it in (metadata.get("items") or [])
+            if isinstance(it, dict)
+            for qty, rate, unit in [quotation_item_qty_rate(it)]
         ],
     }

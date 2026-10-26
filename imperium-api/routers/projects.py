@@ -33,7 +33,15 @@ from app.shared.project_delete import (
 from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
 from app.services.finance.deposit_recognition import NoCashAccountError, recognise_deposit_as_claimed_revenue
-from app.services.finance.project_forecast import seed_boq_line_items_from_quotation
+from app.services.finance.project_forecast import (
+    execution_budget_total,
+    protected_budget_block_reason,
+    quotation_budget_block_reason,
+    quotation_budget_categories,
+    seed_boq_line_items_from_quotation,
+    seed_project_budget_from_quotation,
+)
+from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
 from app.services.project_cpm import CyclicDependencyError, calculate_cpm_schedule, recalculate_and_persist_project_cpm
 from app.services.project_plant import get_project_plant_analytics, record_project_plant_shift_log
 from app.services.project_delays_eot import (
@@ -2226,6 +2234,7 @@ async def set_project_budget(
     permission.
     """
     project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    project_id = str(project["id"])
     if payload.budget_stage == "master":
         existing_protected_baseline = (
             await db.execute(
@@ -3239,102 +3248,30 @@ class QuotationLinkPayload(BaseModel):
     quotation_id: UUID
 
 
+def _quotation_meta(raw: Any) -> dict:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def extract_quotation_cost_breakdown(
     quote_id: str,
     quote_meta: Any,
     quote_amount: float = 0.0,
 ) -> dict[str, float]:
-    """Reconstructs real execution cost categories (materials, labour, plant/equipment,
-    subcontract, overheads, contingency, other) from quotation metadata.
+    """Execution-budget categories this quotation would seed - computed by
+    the same QuotationCalculator path that importing and marking the
+    quotation won use, so a preview always matches what gets written.
 
-    First inspects stored `calculation.direct_costs_breakdown`. If missing or all-zero
-    (common when quotes are green-lit via BOQ approval without a full CCB re-evaluation),
-    it dynamically rolls up each approved BOQ item from `items` by buildup component or
-    BOQ section.
+    An unpriced quotation comes back as zeros: no split of the sell price
+    is invented (quote_amount is accepted for call compatibility only).
     """
-    meta = quote_meta if isinstance(quote_meta, dict) else {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
-
-    calc = meta.get("calculation") if isinstance(meta.get("calculation"), dict) else {}
-    breakdown = calc.get("direct_costs_breakdown") if isinstance(calc.get("direct_costs_breakdown"), dict) else {}
-
-    materials = float(breakdown.get("materials") or 0.0)
-    labour = float(breakdown.get("labour") or 0.0)
-    equipment = float(breakdown.get("equipment") or 0.0)
-    subcontract = float(breakdown.get("subcontractors") or 0.0)
-    other = float(breakdown.get("other") or 0.0)
-
-    # If breakdown was missing or all zero, reconstruct from items
-    if (materials + labour + equipment + subcontract + other) <= 0.0:
-        items = meta.get("items") or []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            qty = float(it.get("qty") or it.get("quantity") or 0.0)
-            rate = float(it.get("rate") or it.get("unit_rate") or 0.0)
-            line_tot = float(it.get("cost") or it.get("total_amount") or it.get("amount") or (qty * rate) or 0.0)
-            cat = str(it.get("category") or it.get("cost_category") or "").lower()
-            sec = str(it.get("section") or "").lower()
-            desc = str(it.get("description") or "").lower()
-
-            buildup = it.get("buildup") or []
-            if buildup and isinstance(buildup, list):
-                for b in buildup:
-                    if not isinstance(b, dict):
-                        continue
-                    b_type = str(b.get("type") or "").lower()
-                    b_rate = float(b.get("rate") or b.get("amount") or 0.0)
-                    b_tot = qty * b_rate
-                    if "mat" in b_type:
-                        materials += b_tot
-                    elif "lab" in b_type:
-                        labour += b_tot
-                    elif "equip" in b_type or "plant" in b_type:
-                        equipment += b_tot
-                    elif "sub" in b_type:
-                        subcontract += b_tot
-                    else:
-                        other += b_tot
-            else:
-                if "mat" in cat or "mat" in sec or "mat" in desc:
-                    materials += line_tot
-                elif "lab" in cat or "lab" in sec or "lab" in desc:
-                    labour += line_tot
-                elif "plant" in cat or "equip" in cat or "plant" in sec or "equip" in sec or "hire" in desc:
-                    equipment += line_tot
-                elif "sub" in cat or "sub" in sec or "specialist" in desc:
-                    subcontract += line_tot
-                else:
-                    other += line_tot
-
-    overhead = float(meta.get("overhead_amount") or calc.get("overhead_amount") or 0.0) + float(
-        meta.get("preliminaries") or calc.get("preliminaries") or 0.0
-    )
-    contingency = float(meta.get("contingency_amount") or calc.get("contingency_amount") or 0.0)
-
-    # Final fallback if quotation has no item breakdown at all
-    total_direct = materials + labour + equipment + subcontract + other
-    if total_direct <= 0.0 and quote_amount > 0.0:
-        materials = round(quote_amount * 0.45, 2)
-        labour = round(quote_amount * 0.25, 2)
-        equipment = round(quote_amount * 0.15, 2)
-        subcontract = round(quote_amount * 0.10, 2)
-        overhead = round(quote_amount * 0.05, 2)
-
-    return {
-        "materials": round(materials, 2),
-        "labour": round(labour, 2),
-        "equipment": round(equipment, 2),
-        "subcontract": round(subcontract, 2),
-        "overhead": round(overhead, 2),
-        "contingency": round(contingency, 2),
-        "other": round(other, 2),
-        "total": round(materials + labour + equipment + subcontract + overhead + contingency + other, 2),
-    }
+    meta = _quotation_meta(quote_meta)
+    calculation = QuotationCalculator.calculate(build_calc_input_from_metadata(quote_id, meta))
+    return quotation_budget_categories(calculation)
 
 
 @router.get("/{project_id}/budget/category-summary")
@@ -3342,6 +3279,7 @@ async def get_budget_category_summary(
     project_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
 ):
     """Returns real-time bulk BOQ cost-category totals with side-by-side approved budget,
     committed exposure, actual incurred execution costs, and remaining headroom."""
@@ -3389,34 +3327,20 @@ async def get_budget_category_summary(
     )
     actual_map = {row.category.lower(): float(row.actual_amount or 0) for row in actuals_res}
 
-    # 4. Check for linked quotation via explicit link, lineage, or client org
+    # 4. The project's linked quotation: the one it points at, else one
+    # pointing back at it. Client-name/account matches are only suggestions
+    # (see eligible-quotations) - "Sync from Quotation" must never import a
+    # different project's quotation for the same client.
     quote_res = await db.execute(
         text("""
             SELECT q.id, q.client_name, q.quote_amount, q.status, q.metadata, q.created_at
             FROM finance.quotations q
+            LEFT JOIN projects.projects p ON p.id = :project_id AND p.organization_id = :org_id
             WHERE q.organization_id = :org_id AND q.is_deleted = false
-              AND (
-                q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)
-                OR q.project_id = :project_id
-                OR (
-                  (SELECT opportunity_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
-                  AND q.opportunity_id = (SELECT opportunity_id FROM projects.projects WHERE id = :project_id)
-                )
-                OR (
-                  (SELECT client_org_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
-                  AND q.client_org_id = (SELECT client_org_id FROM projects.projects WHERE id = :project_id)
-                )
-                OR (
-                  (SELECT client_name FROM projects.projects WHERE id = :project_id) IS NOT NULL
-                  AND lower(trim(q.client_name)) = lower(trim((SELECT client_name FROM projects.projects WHERE id = :project_id)))
-                )
-              )
-            ORDER BY
-              (q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC NULLS LAST,
-              (q.project_id = :project_id) DESC NULLS LAST,
-              (q.status = 'won') DESC NULLS LAST,
-              (q.metadata->'boq_approval'->>'status' = 'approved') DESC NULLS LAST,
-              q.created_at DESC
+              AND (q.id = p.quotation_id OR q.project_id = :project_id)
+            ORDER BY (q.id = p.quotation_id) DESC NULLS LAST,
+                     (q.status = 'won') DESC NULLS LAST,
+                     q.created_at DESC
             LIMIT 1
         """),
         {"project_id": resolved_project_id, "org_id": user["org_id"]},
@@ -3626,213 +3550,154 @@ async def import_budget_from_quotation(
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Import and seed bulk category execution budget directly from Quotations & Estimations."""
+    """Sets the project's approved execution budget (and BOQ lines) from a
+    quotation, using the same calculation and seeding as marking the
+    quotation won. Without quotation_id, only the project's own linked
+    quotation is used. Repeating the request for an unchanged quotation
+    returns the current budget instead of stacking another version."""
     project = await _project_ref_or_404(db, project_id, user["org_id"])
-    resolved_project_id = project["id"]
+    resolved_project_id = str(project["id"])
+    org_id = user["org_id"]
 
-    # Locate target quotation
+    # Serialise imports per project (double clicks, two users at once).
+    await db.execute(
+        text("SELECT id FROM projects.projects WHERE id = CAST(:project_id AS uuid) FOR UPDATE"),
+        {"project_id": resolved_project_id},
+    )
+
     if payload.quotation_id:
         quote = (await db.execute(
             text("SELECT * FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
-            {"id": payload.quotation_id, "org_id": user["org_id"]},
+            {"id": payload.quotation_id, "org_id": org_id},
         )).first()
+        if not quote:
+            raise HTTPException(status_code=404, detail="Quotation not found in this organization.")
     else:
         quote = (await db.execute(
             text("""
-                SELECT * FROM finance.quotations
-                WHERE organization_id = :org_id AND is_deleted = false
-                  AND (
-                    id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)
-                    OR project_id = :project_id
-                    OR (
-                      (SELECT opportunity_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
-                      AND opportunity_id = (SELECT opportunity_id FROM projects.projects WHERE id = :project_id)
-                    )
-                    OR (
-                      (SELECT client_org_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
-                      AND client_org_id = (SELECT client_org_id FROM projects.projects WHERE id = :project_id)
-                    )
-                    OR (
-                      (SELECT client_name FROM projects.projects WHERE id = :project_id) IS NOT NULL
-                      AND lower(trim(client_name)) = lower(trim((SELECT client_name FROM projects.projects WHERE id = :project_id)))
-                    )
-                  )
-                ORDER BY
-                  (id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC NULLS LAST,
-                  (project_id = :project_id) DESC NULLS LAST,
-                  (status = 'won') DESC NULLS LAST,
-                  (metadata->'boq_approval'->>'status' = 'approved') DESC NULLS LAST,
-                  created_at DESC
+                SELECT q.* FROM finance.quotations q
+                LEFT JOIN projects.projects p ON p.id = CAST(:project_id AS uuid) AND p.organization_id = :org_id
+                WHERE q.organization_id = :org_id AND q.is_deleted = false
+                  AND (q.id = p.quotation_id OR q.project_id = CAST(:project_id AS uuid))
+                ORDER BY (q.id = p.quotation_id) DESC NULLS LAST,
+                         (q.status = 'won') DESC NULLS LAST,
+                         q.created_at DESC
                 LIMIT 1
             """),
-            {"project_id": resolved_project_id, "org_id": user["org_id"]},
+            {"project_id": resolved_project_id, "org_id": org_id},
         )).first()
-
-    if not quote:
-        raise HTTPException(
-            status_code=404,
-            detail="No matching quotation found for this project. Please select a quotation from the Quotation Selector.",
-        )
-
-    meta = quote.metadata if isinstance(quote.metadata, dict) else {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
-
-    breakdown = extract_quotation_cost_breakdown(
-        str(quote.id), meta, float(quote.quote_amount or 0.0)
-    )
-
-    materials = breakdown["materials"]
-    labour = breakdown["labour"]
-    equipment = breakdown["equipment"]
-    subcontract = breakdown["subcontract"]
-    overhead = breakdown["overhead"]
-    contingency = breakdown["contingency"]
-    other = breakdown["other"]
-    execution_total = breakdown["total"]
-
-    # Supersede existing budgets
-    await db.execute(
-        text("""
-            UPDATE finance.project_budgets
-            SET status = 'superseded', updated_at = NOW()
-            WHERE project_id = :project_id AND organization_id = :org_id
-              AND status = 'approved' AND is_deleted = false
-        """),
-        {"project_id": resolved_project_id, "org_id": user["org_id"]},
-    )
-
-    version_res = await db.execute(
-        text("SELECT COALESCE(MAX(budget_version), 0) + 1 FROM finance.project_budgets WHERE project_id = :project_id AND organization_id = :org_id"),
-        {"project_id": resolved_project_id, "org_id": user["org_id"]},
-    )
-    next_ver = version_res.scalar() or 1
-
-    # Insert new master budget
-    budget_id = (await db.execute(
-        text("""
-            INSERT INTO finance.project_budgets (
-                organization_id, project_id, budget_version, status, label,
-                effective_date, total_amount, notes, approved_by, approved_at, created_by
-            ) VALUES (
-                :org_id, :project_id, :version, 'approved', :label,
-                CURRENT_DATE, :total_amount, :notes, :user_id, NOW(), :user_id
-            ) RETURNING id
-        """),
-        {
-            "org_id": user["org_id"],
-            "project_id": resolved_project_id,
-            "version": next_ver,
-            "label": f"Imported from Quotation {quote.id}",
-            "total_amount": execution_total,
-            "notes": payload.notes or f"Imported execution budget from quotation {quote.id} (Client: {quote.client_name})",
-            "user_id": user["user_id"],
-        },
-    )).scalar()
-
-    # Insert bulk category lines
-    cat_amounts = [
-        ("materials", "200-MATERIALS", "Materials, Concrete & Aggregates Allowance", materials),
-        ("labour", "100-LABOUR", "Direct Site Labour & Supervision Allowance", labour),
-        ("equipment", "300-EQUIP", "Plant & Heavy Equipment Allowance", equipment),
-        ("subcontract", "400-SUBCONT", "Specialist Subcontractor Packages", subcontract),
-        ("overhead", "500-OVERHEAD", "Preliminaries & Site Facilities Allowance", overhead),
-        ("contingency", "600-CONTINGENCY", "Contingency & Unforeseen Reserve", contingency),
-        ("other", "700-OTHER", "Other Project Allowances", other),
-    ]
-
-    for cat_key, code, desc, amount in cat_amounts:
-        if amount > 0:
-            await db.execute(
-                text("""
-                    INSERT INTO finance.budget_lines (
-                        organization_id, budget_id, cost_category, description, amount, created_by
-                    ) VALUES (:org_id, :budget_id, :cat, :desc, :amount, :user_id)
-                """),
-                {
-                    "org_id": user["org_id"],
-                    "budget_id": budget_id,
-                    "cat": cat_key,
-                    "desc": desc,
-                    "amount": amount,
-                    "user_id": user["user_id"],
-                },
+        if not quote:
+            raise HTTPException(
+                status_code=404,
+                detail="This project has no linked quotation yet. Use 'Choose & Link Quotation' to pick one.",
             )
 
-    # Seed BOQ line items into finance.boq_line_items if quotation has items
-    try:
-        await seed_boq_line_items_from_quotation(
-            db, user["org_id"], str(project_id), str(quote.id), meta, created_by=user["sub"]
+    if quote.project_id and str(quote.project_id) != resolved_project_id:
+        raise HTTPException(
+            status_code=409,
+            detail="That quotation already belongs to another project. Link the correct quotation for this project.",
         )
-    except Exception as boq_err:
-        logger.warning(f"Could not seed BOQ lines during quotation import: {boq_err}")
 
-    # Explicitly stamp quotation_id on project and project_id on quotation
+    meta = _quotation_meta(quote.metadata)
+    calculation = QuotationCalculator.calculate(build_calc_input_from_metadata(str(quote.id), meta))
+    block_reason = quotation_budget_block_reason(meta, calculation)
+    if block_reason:
+        raise HTTPException(status_code=422, detail=block_reason)
+
+    execution_total = execution_budget_total(calculation)
+    categories = quotation_budget_categories(calculation)
+    categories.pop("total", None)
+
+    current = (await db.execute(
+        text("""
+            SELECT id, total_amount, label FROM finance.project_budgets
+            WHERE project_id = CAST(:project_id AS uuid) AND organization_id = :org_id
+              AND status = 'approved' AND is_deleted = false
+            LIMIT 1
+        """),
+        {"project_id": resolved_project_id, "org_id": org_id},
+    )).first()
+    if (
+        current
+        and str(quote.id) in (current.label or "")
+        and abs(float(current.total_amount or 0) - execution_total) < 0.005
+    ):
+        await db.rollback()
+        return _result({
+            "budget_id": str(current.id),
+            "quotation_id": str(quote.id),
+            "total_amount": execution_total,
+            "categories": categories,
+            "already_current": True,
+        }, "The approved budget already matches this quotation - nothing changed.")
+
+    protected_reason = await protected_budget_block_reason(db, user, resolved_project_id)
+    if protected_reason:
+        raise HTTPException(status_code=403, detail=protected_reason)
+
+    budget_id = await seed_project_budget_from_quotation(
+        db, org_id, resolved_project_id, str(quote.id), calculation,
+        created_by=user["user_id"],
+        notes=payload.notes or (
+            f"Imported from quotation {quote.id} (client: {quote.client_name}). "
+            f"Sell price ${float(calculation.grand_total):,.2f}; protected profit "
+            f"${float(calculation.profit_amount):,.2f} excluded."
+        ),
+    )
+    boq_lines = await seed_boq_line_items_from_quotation(
+        db, org_id, resolved_project_id, str(quote.id), meta, created_by=user["user_id"],
+    )
     await db.execute(
         text("""
             UPDATE projects.projects
             SET quotation_id = :quote_id,
-                contract_value = COALESCE(contract_value, :quote_amount),
+                contract_value = COALESCE(contract_value, CAST(:quote_amount AS numeric)),
                 updated_at = NOW()
-            WHERE id = :project_id AND organization_id = :org_id
+            WHERE id = CAST(:project_id AS uuid) AND organization_id = :org_id
         """),
         {
             "quote_id": quote.id,
-            "project_id": project_id,
-            "org_id": user["org_id"],
-            "quote_amount": float(quote.quote_amount or execution_total),
+            "project_id": resolved_project_id,
+            "org_id": org_id,
+            "quote_amount": float(quote.quote_amount) if quote.quote_amount is not None else None,
         },
     )
-
     await db.execute(
         text("""
             UPDATE finance.quotations
-            SET project_id = :project_id, updated_at = NOW()
-            WHERE id = :quote_id AND organization_id = :org_id
-              AND (project_id IS NULL OR project_id = :project_id)
+            SET project_id = CAST(:project_id AS uuid), updated_at = NOW()
+            WHERE id = :quote_id AND organization_id = :org_id AND project_id IS NULL
         """),
-        {
-            "project_id": project_id,
-            "quote_id": quote.id,
-            "org_id": user["org_id"],
-        },
+        {"project_id": resolved_project_id, "quote_id": quote.id, "org_id": org_id},
     )
-
     await emit_event(
         db,
         user=user,
         event_type="project.budget_imported_from_quotation.v1",
         aggregate_type="project_budget",
         aggregate_id=budget_id,
-        project_id=project_id,
+        project_id=resolved_project_id,
         event_data={
-            "project_id": str(project_id),
+            "project_id": resolved_project_id,
             "budget_id": str(budget_id),
             "quotation_id": str(quote.id),
             "total_amount": execution_total,
+            "boq_lines_seeded": boq_lines,
             "imported_by": str(user["user_id"]),
         },
     )
 
+    # Any failure above propagates and get_db closes the session without
+    # committing, so the old budget and BOQ lines stay in force.
     await db.commit()
 
     return _result({
         "budget_id": str(budget_id),
         "quotation_id": str(quote.id),
         "total_amount": execution_total,
-        "categories": {
-            "materials": materials,
-            "labour": labour,
-            "equipment": equipment,
-            "subcontract": subcontract,
-            "overhead": overhead,
-            "contingency": contingency,
-            "other": other,
-        },
-    }, f"Successfully imported execution budget of ${execution_total:,.2f} from Quotations & Estimations.")
+        "boq_lines_seeded": boq_lines,
+        "categories": categories,
+    }, f"Approved execution budget set to ${execution_total:,.2f} from the quotation.")
 
 
 @router.get("/{project_id}/supply-chain")

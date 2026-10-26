@@ -45,6 +45,8 @@ from app.shared.events import emit_event, emit_notification, emit_role_notificat
 from app.shared.project_setup import ensure_project_operational_setup
 from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
+    protected_budget_block_reason,
+    quotation_budget_block_reason,
     refresh_project_forecast,
     seed_boq_line_items_from_quotation,
     seed_project_budget_from_quotation,
@@ -2712,6 +2714,7 @@ async def decide_quotation(
             return cached
 
     budget_id = None
+    budget_pending_reason = None
     forecast_metrics = None
     alert_raised = False
 
@@ -2719,9 +2722,11 @@ async def decide_quotation(
         row = (
             await db.execute(
                 text("""
-                    SELECT id, project_id, metadata, client_name, created_by
+                    SELECT id, project_id, metadata, client_name, created_by,
+                           opportunity_id, tender_id, status
                     FROM finance.quotations
                     WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+                    FOR UPDATE
                 """),
                 {"item_id": item_id, "org_id": user["org_id"]},
             )
@@ -2730,6 +2735,30 @@ async def decide_quotation(
             raise HTTPException(status_code=404, detail="Quotation not found.")
 
         quotation = dict(row._mapping)
+
+        # A repeated decision (double click, retry after a timeout) must not
+        # re-run the win side effects - each run re-seeds the project budget.
+        if str(quotation.get("status") or "").lower() == decision:
+            await db.rollback()
+            already = {
+                "success": True,
+                "data": {
+                    "id": item_id,
+                    "status": decision,
+                    "project_id": str(quotation["project_id"]) if quotation.get("project_id") else None,
+                    "project_linked": bool(quotation.get("project_id")),
+                    "budget_id": None,
+                    "already_decided": True,
+                },
+                "message": f"Quotation was already marked as {decision} - nothing changed.",
+                "meta": {"user_id": user["user_id"]},
+            }
+            if idempotency_key:
+                await complete_idempotent_request(
+                    db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint,
+                    response_status=200, response_body=already,
+                )
+            return already
 
         if decision == "won" and user.get("role") != SUPERADMIN_ROLE:
             if is_self_certification(user["sub"], quotation.get("created_by")):
@@ -2767,30 +2796,36 @@ async def decide_quotation(
 
         target_project_id = quotation.get("project_id")
         if decision == "won" and not target_project_id:
-            # Fallback matching: attempt to find an existing project linked by quotation_id, opportunity_id, tender_id, client_org_id, or client_name
-            cand = (await db.execute(
+            # Fallback matching on the quotation's own lineage only (the
+            # project already points at it, or shares its opportunity/tender).
+            # A client account or name is not lineage - one client has many
+            # projects - and linking here replaces that project's budget.
+            cands = (await db.execute(
                 text("""
-                    SELECT id FROM projects.projects
+                    SELECT id, (quotation_id = CAST(:item_id AS uuid)) AS is_direct
+                    FROM projects.projects
                     WHERE organization_id = :org_id AND is_deleted = false
                       AND (
-                        quotation_id = :item_id
-                        OR (opportunity_id IS NOT NULL AND opportunity_id = :opp_id)
-                        OR (tender_id IS NOT NULL AND tender_id = :tender_id)
-                        OR (client_org_id IS NOT NULL AND client_org_id = :client_org_id)
-                        OR (client_name IS NOT NULL AND lower(trim(client_name)) = lower(trim(:client_name)))
+                        quotation_id = CAST(:item_id AS uuid)
+                        OR (opportunity_id IS NOT NULL AND opportunity_id = CAST(:opp_id AS uuid))
+                        OR (tender_id IS NOT NULL AND tender_id = CAST(:tender_id AS uuid))
                       )
-                    ORDER BY (quotation_id = :item_id) DESC, created_at DESC
-                    LIMIT 1
+                    ORDER BY (quotation_id = CAST(:item_id AS uuid)) DESC NULLS LAST, created_at DESC
+                    LIMIT 2
                 """),
                 {
                     "item_id": item_id,
                     "org_id": user["org_id"],
                     "opp_id": quotation.get("opportunity_id"),
                     "tender_id": quotation.get("tender_id"),
-                    "client_org_id": quotation.get("client_org_id"),
-                    "client_name": quotation.get("client_name") or "",
                 }
-            )).first()
+            )).all()
+            cand = cands[0] if cands and (len(cands) == 1 or cands[0].is_direct) else None
+            if cands and not cand:
+                budget_pending_reason = (
+                    "More than one project shares this quotation's opportunity/tender - "
+                    "link it to the right project from the project's Budget tab."
+                )
             if cand:
                 target_project_id = cand.id
                 await db.execute(
@@ -2805,12 +2840,17 @@ async def decide_quotation(
         if decision == "won" and target_project_id:
             calc_input = build_calc_input_from_metadata(item_id, metadata)
             calculation = QuotationCalculator.calculate(calc_input)
-            budget_id = await seed_project_budget_from_quotation(
-                db, user["org_id"], str(target_project_id), item_id, calculation, created_by=user["sub"],
+            budget_pending_reason = (
+                quotation_budget_block_reason(metadata, calculation)
+                or await protected_budget_block_reason(db, user, str(target_project_id))
             )
-            await seed_boq_line_items_from_quotation(
-                db, user["org_id"], str(target_project_id), item_id, metadata, created_by=user["sub"],
-            )
+            if not budget_pending_reason:
+                budget_id = await seed_project_budget_from_quotation(
+                    db, user["org_id"], str(target_project_id), item_id, calculation, created_by=user["sub"],
+                )
+                await seed_boq_line_items_from_quotation(
+                    db, user["org_id"], str(target_project_id), item_id, metadata, created_by=user["sub"],
+                )
             forecast_metrics = await refresh_project_forecast(
                 db, user["org_id"], str(target_project_id), computed_by=user["sub"],
             )
@@ -2871,11 +2911,14 @@ async def decide_quotation(
             "project_id": str(target_project_id) if target_project_id else None,
             "project_linked": bool(target_project_id),
             "budget_id": budget_id,
+            "budget_pending_reason": budget_pending_reason,
             "forecast": forecast_metrics,
             "margin_alert_raised": alert_raised,
         },
         "message": f"Quotation marked as {decision}." + (
-            " Project execution budget seeded from this quotation." if budget_id else ""
+            " Project execution budget seeded from this quotation." if budget_id
+            else f" Project budget left unchanged: {budget_pending_reason}" if budget_pending_reason
+            else ""
         ),
         "meta": {"user_id": user["user_id"]},
     }
@@ -3020,11 +3063,13 @@ async def convert_quotation_to_project(
         {"project_id": new_project_id, "org_id": user["org_id"]},
     )
 
-    # Seed execution budget & BOQ lines
+    # Seed execution budget & BOQ lines. A failure here fails the whole
+    # conversion (nothing is committed) rather than leaving a project
+    # without the budget the response implies it has.
     budget_id = None
-    try:
-        calc_input = build_calc_input_from_metadata(item_id, meta)
-        calculation = QuotationCalculator.calculate(calc_input)
+    calculation = QuotationCalculator.calculate(build_calc_input_from_metadata(item_id, meta))
+    budget_pending_reason = quotation_budget_block_reason(meta, calculation)
+    if not budget_pending_reason:
         budget_id = await seed_project_budget_from_quotation(
             db, user["org_id"], str(new_project_id), item_id, calculation, created_by=user["sub"],
         )
@@ -3034,8 +3079,6 @@ async def convert_quotation_to_project(
         await refresh_project_forecast(
             db, user["org_id"], str(new_project_id), computed_by=user["sub"],
         )
-    except Exception as exc:
-        logger.warning("Could not auto-seed budget during conversion of quotation %s: %s", item_id, exc)
 
     await db.commit()
 
@@ -3046,8 +3089,11 @@ async def convert_quotation_to_project(
             "project_code": project_code,
             "project_name": project_name,
             "budget_id": str(budget_id) if budget_id else None,
+            "budget_pending_reason": budget_pending_reason,
         },
-        "message": f"Quotation successfully converted to Project '{project_name}' ({project_code}).",
+        "message": f"Quotation successfully converted to Project '{project_name}' ({project_code})." + (
+            f" No budget was set: {budget_pending_reason}" if budget_pending_reason else ""
+        ),
     }
 
 
@@ -3089,6 +3135,7 @@ async def link_quotation_to_project(
     )
 
     budget_id = None
+    budget_pending_reason = None
     if payload.seed_budget:
         meta = q_row["metadata"] or {}
         if isinstance(meta, str):
@@ -3096,9 +3143,12 @@ async def link_quotation_to_project(
                 meta = json.loads(meta)
             except Exception:
                 meta = {}
-        try:
-            calc_input = build_calc_input_from_metadata(item_id, meta)
-            calculation = QuotationCalculator.calculate(calc_input)
+        calculation = QuotationCalculator.calculate(build_calc_input_from_metadata(item_id, meta))
+        budget_pending_reason = (
+            quotation_budget_block_reason(meta, calculation)
+            or await protected_budget_block_reason(db, user, str(proj_row["id"]))
+        )
+        if not budget_pending_reason:
             budget_id = await seed_project_budget_from_quotation(
                 db, user["org_id"], str(proj_row["id"]), item_id, calculation, created_by=user["sub"],
             )
@@ -3108,8 +3158,6 @@ async def link_quotation_to_project(
             await refresh_project_forecast(
                 db, user["org_id"], str(proj_row["id"]), computed_by=user["sub"],
             )
-        except Exception as exc:
-            logger.warning("Could not auto-seed budget during linking of quote %s: %s", item_id, exc)
 
     await db.commit()
 
@@ -3121,8 +3169,11 @@ async def link_quotation_to_project(
             "project_code": proj_row["project_code"],
             "quotation_id": item_id,
             "budget_id": str(budget_id) if budget_id else None,
+            "budget_pending_reason": budget_pending_reason,
         },
-        "message": f"Quotation successfully linked to Project '{proj_row['name']}'.",
+        "message": f"Quotation successfully linked to Project '{proj_row['name']}'." + (
+            f" Budget left unchanged: {budget_pending_reason}" if budget_pending_reason else ""
+        ),
     }
 
 

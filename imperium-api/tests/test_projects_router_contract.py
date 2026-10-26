@@ -167,48 +167,32 @@ class ProjectsRouterContractTests(unittest.TestCase):
         self.assertIn('/budget/link-quotation', PROJECTS_ROUTER)
 
     def test_quotation_cost_breakdown_extractor_unit(self):
+        """The preview is the canonical QuotationCalculator result - the same
+        numbers import-quotation and a quotation win write - not a separate
+        estimate (which used to diverge and invent splits)."""
         from routers.projects import extract_quotation_cost_breakdown
 
-        # Case 1: quote with stored calculation direct_costs_breakdown
-        meta1 = {
-            "calculation": {
-                "direct_costs_breakdown": {
-                    "materials": 20000,
-                    "labour": 15000,
-                    "equipment": 5000,
-                }
-            }
-        }
-        res1 = extract_quotation_cost_breakdown("quote-1", meta1, 50000)
-        self.assertEqual(res1["materials"], 20000)
-        self.assertEqual(res1["labour"], 15000)
-        self.assertEqual(res1["equipment"], 5000)
-
-        # Case 2: quote with items but no calculation (like live BOQ approval output)
-        meta2 = {
+        meta = {
             "items": [
-                {
-                    "category": "materials",
-                    "quantity": 10,
-                    "rate": 1000,
-                    "cost": 10000,
-                },
-                {
-                    "description": "Excavator Hire",
-                    "quantity": 2,
-                    "unit_rate": 2500,
-                    "total_amount": 5000,
-                },
+                {"description": "Concrete", "qty": 10, "rate": 0, "buildup": [
+                    {"type": "material", "qty": 1, "rate": 700},
+                    {"type": "labour", "qty": 1, "rate": 300},
+                ]},
+                {"description": "Excavator Hire", "qty": 2, "rate": 2500},
             ],
             "preliminaries": 2000,
-            "contingency_amount": 3000,
+            "contingency_pct": 10,
         }
-        res2 = extract_quotation_cost_breakdown("quote-2", meta2, 100000)
-        self.assertEqual(res2["materials"], 10000)
-        self.assertEqual(res2["equipment"], 5000)
-        self.assertEqual(res2["overhead"], 2000)
-        self.assertEqual(res2["contingency"], 3000)
+        res = extract_quotation_cost_breakdown("quote-2", meta, 100000)
+        self.assertEqual(res["materials"], 7000)
+        self.assertEqual(res["labour"], 3000)
+        self.assertEqual(res["other"], 5000)  # flat-rate line, no component split
+        self.assertEqual(res["overhead"], 2000)  # preliminaries
+        self.assertEqual(res["contingency"], 1700)  # 10% of direct + prelims
+        self.assertEqual(res["total"], 18700)
 
+        # No priced lines -> zeros, never a share of the 100k sell price.
+        self.assertEqual(extract_quotation_cost_breakdown("quote-3", {}, 100000)["total"], 0)
 
 if __name__ == "__main__":
     unittest.main()

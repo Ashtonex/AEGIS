@@ -25,8 +25,9 @@ from typing import Any, Dict, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.quotations.calculator import quotation_item_qty_rate
 from app.shared.events import emit_role_notification
-from core.security import SUPERADMIN_ROLE
+from core.security import SUPERADMIN_ROLE, user_has_permission
 
 COMMERCIAL_ALERT_ROLES = ["Executive (Admin)", "Finance Manager", SUPERADMIN_ROLE]
 
@@ -39,6 +40,62 @@ _DIRECT_COST_CATEGORY_MAP = {
     "transport": "other",
     "waste_allowance": "other",
 }
+
+
+class UnpricedQuotationError(ValueError):
+    """Raised instead of seeding an approved $0 execution budget."""
+
+
+def execution_budget_total(calculation) -> float:
+    """Everything the site may spend against: direct costs + preliminaries +
+    overhead + contingency. Profit is protected margin and excluded."""
+    return round(
+        float(calculation.direct_costs)
+        + float(calculation.preliminaries)
+        + float(calculation.overhead_amount)
+        + float(calculation.contingency_amount),
+        2,
+    )
+
+
+BUDGET_BASELINE_LOCK_PERMISSION = "projects.budget_baseline.lock"
+
+
+async def protected_budget_block_reason(db: AsyncSession, user: dict, project_id: str) -> Optional[str]:
+    """Same rule as POST /projects/{id}/budget: once a project has an
+    approved budget, replacing it is a budget-ceiling adjustment reserved
+    for holders of projects.budget_baseline.lock (Finance)."""
+    has_approved = (
+        await db.execute(
+            text("""
+                SELECT 1 FROM finance.project_budgets
+                WHERE project_id = CAST(:project_id AS uuid) AND organization_id = :org_id
+                  AND status = 'approved' AND is_deleted = false
+                LIMIT 1
+            """),
+            {"project_id": str(project_id), "org_id": user["org_id"]},
+        )
+    ).scalar()
+    if not has_approved or user.get("role") == SUPERADMIN_ROLE:
+        return None
+    if await user_has_permission(db, user, BUDGET_BASELINE_LOCK_PERMISSION):
+        return None
+    return "This project already has an approved budget baseline. Only Finance can replace it."
+
+
+def quotation_budget_block_reason(metadata: Optional[Dict[str, Any]], calculation) -> Optional[str]:
+    """Why a project budget must not be seeded from this quotation, or None.
+
+    Seeding supersedes the project's current approved budget and active BOQ
+    lines, so an unpriced quotation (no lines, or every rate still 0 - e.g.
+    a Drawing Takeoff import never priced) would replace a real budget with
+    an approved $0 one.
+    """
+    if not (metadata or {}).get("items"):
+        return "Quotation has no BOQ line items - price the BOQ before it can set the project budget."
+    if execution_budget_total(calculation) <= 0:
+        return "Quotation BOQ lines are unpriced ($0 execution cost) - price the BOQ before it can set the project budget."
+    return None
 
 
 async def compute_project_financials(
@@ -240,6 +297,46 @@ async def check_and_alert_margin_threat(
     return True
 
 
+def quotation_budget_lines(calculation, quotation_id: str) -> list[tuple[str, str, float]]:
+    """(cost_category, description, amount) budget lines for a quotation's
+    execution budget. Shared by seeding and by previews so what a user is
+    shown before importing is exactly what gets written."""
+    lines: list[tuple[str, str, float]] = []
+    breakdown = calculation.breakdown_log.get("direct_costs_breakdown", {}) or {}
+    for source_category, amount_str in breakdown.items():
+        amount = round(float(amount_str or 0), 2)
+        if amount > 0:
+            lines.append((
+                _DIRECT_COST_CATEGORY_MAP.get(source_category, "other"),
+                f"Auto-seeded {source_category} allowance from quotation {quotation_id}",
+                amount,
+            ))
+    # Lines priced with a flat rate and no buildup have no component split;
+    # carry that share as 'other' so the lines add up to the budget header.
+    unsplit = round(float(calculation.direct_costs) - sum(float(v or 0) for v in breakdown.values()), 2)
+    if unsplit > 0:
+        lines.append(("other", f"Direct costs without a component split, from quotation {quotation_id}", unsplit))
+    for category, label, amount in (
+        ("overhead", "Preliminaries & General allowance", float(calculation.preliminaries)),
+        ("overhead", "Overhead allocation", float(calculation.overhead_amount)),
+        ("contingency", "Contingency reserve", float(calculation.contingency_amount)),
+    ):
+        if amount > 0:
+            lines.append((category, f"{label} (from quotation {quotation_id})", round(amount, 2)))
+    return lines
+
+
+def quotation_budget_categories(calculation) -> Dict[str, float]:
+    """Per-category totals of quotation_budget_lines plus 'total'."""
+    totals: Dict[str, float] = {
+        k: 0.0 for k in ("materials", "labour", "equipment", "subcontract", "overhead", "contingency", "other")
+    }
+    for category, _desc, amount in quotation_budget_lines(calculation, ""):
+        totals[category] = round(totals.get(category, 0.0) + amount, 2)
+    totals["total"] = execution_budget_total(calculation)
+    return totals
+
+
 async def seed_project_budget_from_quotation(
     db: AsyncSession,
     org_id: str,
@@ -247,6 +344,7 @@ async def seed_project_budget_from_quotation(
     quotation_id: str,
     calculation,
     created_by: Optional[str] = None,
+    notes: Optional[str] = None,
 ) -> str:
     """Seeds an approved project budget from an accepted quotation's own
     cost calculation, so 'what we quoted' and 'what's actually being spent'
@@ -257,6 +355,12 @@ async def seed_project_budget_from_quotation(
     deliberately EXCLUDING profit_amount, which is protected margin, not
     money available for site execution costs.
     """
+    execution_budget_total_amount = execution_budget_total(calculation)
+    if execution_budget_total_amount <= 0:
+        raise UnpricedQuotationError(
+            f"Quotation {quotation_id} has a $0 execution cost; refusing to replace the approved budget."
+        )
+
     await db.execute(
         text("""
             UPDATE finance.project_budgets
@@ -278,12 +382,6 @@ async def seed_project_budget_from_quotation(
         )
     ).scalar()
 
-    direct_costs = float(calculation.direct_costs)
-    preliminaries = float(calculation.preliminaries)
-    overhead_amount = float(calculation.overhead_amount)
-    contingency_amount = float(calculation.contingency_amount)
-    execution_budget_total = direct_costs + preliminaries + overhead_amount + contingency_amount
-
     budget_id = (
         await db.execute(
             text("""
@@ -300,8 +398,8 @@ async def seed_project_budget_from_quotation(
                 "project_id": project_id,
                 "version": next_version,
                 "label": f"Seeded from accepted quotation {quotation_id}",
-                "total_amount": round(execution_budget_total, 2),
-                "notes": (
+                "total_amount": execution_budget_total_amount,
+                "notes": notes or (
                     f"Auto-seeded on quotation win. Client contract value (sell price): "
                     f"${float(calculation.grand_total):,.2f}. Protected profit "
                     f"${float(calculation.profit_amount):,.2f} is excluded from this execution budget."
@@ -312,11 +410,7 @@ async def seed_project_budget_from_quotation(
         )
     ).scalar()
 
-    breakdown = calculation.breakdown_log.get("direct_costs_breakdown", {})
-    for source_category, amount_str in breakdown.items():
-        amount = float(amount_str)
-        if amount <= 0:
-            continue
+    for cost_category, description, amount in quotation_budget_lines(calculation, quotation_id):
         await db.execute(
             text("""
                 INSERT INTO finance.budget_lines (
@@ -326,31 +420,9 @@ async def seed_project_budget_from_quotation(
             {
                 "org_id": org_id,
                 "budget_id": budget_id,
-                "cost_category": _DIRECT_COST_CATEGORY_MAP.get(source_category, "other"),
-                "description": f"Auto-seeded {source_category} allowance from quotation {quotation_id}",
-                "amount": round(amount, 2),
-                "created_by": created_by,
-            },
-        )
-
-    for label, amount in (
-        ("Preliminaries & General allowance", preliminaries),
-        ("Overhead allocation", overhead_amount),
-        ("Contingency reserve", contingency_amount),
-    ):
-        if amount <= 0:
-            continue
-        await db.execute(
-            text("""
-                INSERT INTO finance.budget_lines (
-                    organization_id, budget_id, cost_category, description, amount, created_by
-                ) VALUES (:org_id, :budget_id, 'overhead', :description, :amount, :created_by)
-            """),
-            {
-                "org_id": org_id,
-                "budget_id": budget_id,
-                "description": f"{label} (from quotation {quotation_id})",
-                "amount": round(amount, 2),
+                "cost_category": cost_category,
+                "description": description,
+                "amount": amount,
                 "created_by": created_by,
             },
         )
@@ -372,7 +444,27 @@ async def seed_boq_line_items_from_quotation(
     to date" against it. Any prior line items from an earlier win on this
     project are superseded rather than deleted, preserving their measurement
     history. Returns the number of line items seeded.
+
+    A quotation with no measurable lines seeds nothing and leaves the
+    project's current active BOQ untouched.
     """
+    rows = []
+    for idx, item in enumerate(metadata.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        raw_qty, raw_rate, unit = quotation_item_qty_rate(item)
+        try:
+            qty = float(raw_qty or 0)
+            rate = float(raw_rate or 0)
+        except (TypeError, ValueError):
+            continue
+        description = str(item.get("description") or "Unspecified item").strip()
+        if not description or qty <= 0:
+            continue
+        rows.append((idx, item, qty, rate, unit, description))
+    if not rows:
+        return 0
+
     await db.execute(
         text("""
             UPDATE finance.boq_line_items
@@ -383,17 +475,8 @@ async def seed_boq_line_items_from_quotation(
         {"project_id": project_id, "org_id": org_id},
     )
 
-    items = metadata.get("items") or []
     seeded = 0
-    for idx, item in enumerate(items):
-        try:
-            qty = float(item.get("qty") or 0)
-            rate = float(item.get("rate") or 0)
-        except (TypeError, ValueError):
-            continue
-        description = str(item.get("description") or "Unspecified item").strip()
-        if not description or qty <= 0:
-            continue
+    for idx, item, qty, rate, unit, description in rows:
         await db.execute(
             text("""
                 INSERT INTO finance.boq_line_items (
@@ -410,7 +493,7 @@ async def seed_boq_line_items_from_quotation(
                 "quotation_id": quotation_id,
                 "item_no": str(item.get("item_no")) if item.get("item_no") else None,
                 "description": description,
-                "unit": str(item.get("unit") or "item"),
+                "unit": str(unit or "item"),
                 "contract_qty": round(qty, 3),
                 "rate": round(rate, 4),
                 "sort_order": idx,
