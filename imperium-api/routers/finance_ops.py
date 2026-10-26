@@ -1047,23 +1047,41 @@ async def create_site_pay_run(
     """Gather every unpaid hour logged on the project in the period into one
     draft run, pricing each worker at their current rate."""
     org_id = user["org_id"]
+    # Claim the unpaid entries first: two runs drafted at the same time used
+    # to read the same unpaid hours, and both runs paid them. A waiting
+    # transaction re-checks pay_run_id after the lock and skips claimed rows.
+    entry_ids = [str(r.id) for r in await db.execute(
+        text("""
+            SELECT te.id FROM finance.site_time_entries te
+            WHERE te.organization_id = :org_id AND te.project_id = :project_id
+              AND te.work_date BETWEEN :start AND :end AND te.pay_run_id IS NULL
+            FOR UPDATE
+        """),
+        {"org_id": org_id, "project_id": payload.project_id, "start": payload.period_start, "end": payload.period_end},
+    )]
+    if not entry_ids:
+        raise HTTPException(status_code=409, detail="No unpaid site hours logged on this project in that period.")
     rows = await db.execute(
         text("""
-            SELECT w.id AS worker_id, w.full_name, w.hourly_rate, w.overtime_rate,
+            SELECT w.id AS worker_id, w.full_name, w.hourly_rate, w.overtime_rate, w.currency,
                    SUM(te.regular_hours) AS regular_hours, SUM(te.overtime_hours) AS overtime_hours,
                    array_agg(te.id) AS entry_ids
             FROM finance.site_time_entries te
             JOIN finance.site_workers w ON w.id = te.worker_id
-            WHERE te.organization_id = :org_id AND te.project_id = :project_id
-              AND te.work_date BETWEEN :start AND :end AND te.pay_run_id IS NULL
-            GROUP BY w.id, w.full_name, w.hourly_rate, w.overtime_rate
+            WHERE te.id = ANY(CAST(:ids AS uuid[]))
+            GROUP BY w.id, w.full_name, w.hourly_rate, w.overtime_rate, w.currency
             ORDER BY w.full_name
         """),
-        {"org_id": org_id, "project_id": payload.project_id, "start": payload.period_start, "end": payload.period_end},
+        {"ids": entry_ids},
     )
     workers = [dict(r._mapping) for r in rows]
-    if not workers:
-        raise HTTPException(status_code=409, detail="No unpaid site hours logged on this project in that period.")
+    # Runs are paid out of the cashbook in USD (see the pay action).
+    other_currency = sorted({w["full_name"] for w in workers if (w.get("currency") or "USD") != "USD"})
+    if other_currency:
+        raise HTTPException(
+            status_code=422,
+            detail="Site pay runs are paid in USD; these workers are paid in another currency: " + ", ".join(other_currency) + ".",
+        )
     deductions = {str(d.worker_id): d for d in payload.deductions}
 
     lines = []
