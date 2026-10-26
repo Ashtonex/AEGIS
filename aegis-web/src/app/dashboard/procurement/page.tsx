@@ -345,8 +345,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const receivePO = async (payload: Record<string, unknown>) => {
     setSaving("receive-po");
     try {
-      await recordGoodsReceived(payload);
-      setNotice("Goods received and stock ledger updated.");
+      const res = await recordGoodsReceived(payload);
+      setNotice(`${res?.data?.grn_number ? `${res.data.grn_number}: ` : ""}${res?.message || "Goods received and stock ledger updated."}`);
       setReceivingPO(null);
       setSelectedPO(null);
       await load();

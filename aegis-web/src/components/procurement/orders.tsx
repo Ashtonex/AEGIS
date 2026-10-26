@@ -102,43 +102,124 @@ export function PoPdfButton({ po, compact = false }: { po: Rec; compact?: boolea
 }
 
 
+type ReceiptLine = { id: string; description: string; uom: string; outstanding: number; received: string; rejected: string; reason: string };
+
 export function ReceiveGoodsModal({ po, stores, saving, onSubmit, onClose }: { po: Rec; stores: Rec[]; saving: boolean; onSubmit: (payload: Record<string, unknown>) => void; onClose: () => void; }) {
   const [form, setForm] = useState({ store_id: "", delivery_date: new Date().toISOString().slice(0, 10), delivery_note_ref: "", condition_notes: "" });
+  const poLines: Rec[] = Array.isArray(po.lines) ? po.lines : Array.isArray(po.line_items) ? po.line_items : [];
+  // Default every outstanding line to "all of it arrived"; the storekeeper
+  // lowers what fell short and records anything rejected at the gate.
+  const [receipt, setReceipt] = useState<ReceiptLine[]>(() =>
+    poLines
+      .map((line) => {
+        const outstanding = Math.max(0, num(line.quantity ?? line.qty) - num(line.quantity_received));
+        return { id: String(line.id), description: tx(line.description ?? line.item_description), uom: tx(line.unit_of_measure ?? line.uom, ""), outstanding, received: String(outstanding), rejected: "0", reason: "" };
+      })
+      .filter((line) => line.outstanding > 0),
+  );
   const set = (key: string, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
+  const setLine = (id: string, key: "received" | "rejected" | "reason", value: string) =>
+    setReceipt((prev) => prev.map((line) => (line.id === id ? { ...line, [key]: value } : line)));
+
+  const problems = receipt.flatMap((line) => {
+    const received = Number(line.received || 0);
+    const rejected = Number(line.rejected || 0);
+    if (!Number.isFinite(received) || !Number.isFinite(rejected) || received < 0 || rejected < 0) return [`${line.description}: enter quantities of 0 or more.`];
+    if (received > line.outstanding) return [`${line.description}: only ${line.outstanding} is still outstanding.`];
+    if (rejected > 0 && !line.reason.trim()) return [`${line.description}: say why ${rejected} was rejected.`];
+    return [];
+  });
+  const touched = receipt.filter((line) => Number(line.received || 0) > 0 || Number(line.rejected || 0) > 0);
+  const canSubmit = !saving && Boolean(form.delivery_date) && problems.length === 0 && (poLines.length === 0 || touched.length > 0);
+
+  const submit = () => onSubmit({
+    po_id: po.id,
+    store_id: form.store_id || null,
+    delivery_date: form.delivery_date,
+    delivery_note_ref: form.delivery_note_ref || null,
+    condition_notes: form.condition_notes || null,
+    // Without line data (older list payloads) the server books the full outstanding order.
+    ...(poLines.length > 0 ? {
+      lines: touched.map((line) => ({
+        po_line_id: line.id,
+        quantity_received: line.received || "0",
+        quantity_rejected: line.rejected || "0",
+        rejection_reason: line.reason.trim() || null,
+      })),
+    } : {}),
+  });
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg border border-ink-mid bg-ink text-paper shadow-2xl">
+      <div className="flex max-h-[92vh] w-full max-w-2xl flex-col border border-ink-mid bg-ink text-paper shadow-2xl">
         <header className="flex items-center justify-between border-b border-ink-mid p-4">
           <div>
             <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Goods Received Note</p>
             <h2 className="mt-1 text-lg font-semibold">{tx(po.po_number ?? po.reference_number, po.id.slice(0, 8).toUpperCase())}</h2>
           </div>
-          <button onClick={onClose} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
+          <button onClick={onClose} className="text-slate-light hover:text-paper" aria-label="Close"><X className="h-4 w-4" /></button>
         </header>
-        <div className="grid gap-3 p-5">
-          <div>
-            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Delivery Date *</label>
-            <input type="date" value={form.delivery_date} onChange={(e) => set("delivery_date", e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+        <div className="grid gap-3 overflow-y-auto p-5">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Delivery Date *</label>
+              <input type="date" value={form.delivery_date} onChange={(e) => set("delivery_date", e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Delivery Note Ref</label>
+              <input value={form.delivery_note_ref} onChange={(e) => set("delivery_note_ref", e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
           </div>
           <div>
             <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Receiving Store</label>
             <select value={form.store_id} onChange={(e) => set("store_id", e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper">
-              <option value="">No stock store selected</option>
+              <option value="">Project store (automatic)</option>
               {stores.map((store) => <option key={store.id} value={store.id}>{tx(store.name ?? store.store_code, store.id)}</option>)}
             </select>
           </div>
-          <div>
-            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Delivery Note Ref</label>
-            <input value={form.delivery_note_ref} onChange={(e) => set("delivery_note_ref", e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
-          </div>
+          {receipt.length > 0 && (
+            <section className="border border-ink-mid">
+              <p className="border-b border-ink-mid bg-ink-light/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-slate">
+                What arrived ({receipt.length} outstanding {receipt.length === 1 ? "line" : "lines"})
+              </p>
+              <ul className="divide-y divide-ink-mid">
+                {receipt.map((line) => (
+                  <li key={line.id} className="grid gap-2 p-3">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <span className="text-sm text-paper">{line.description}</span>
+                      <span className="font-mono text-[11px] text-slate-light">Outstanding {line.outstanding} {line.uom}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="grid gap-1 font-mono text-[10px] uppercase tracking-wider text-slate">
+                        Accepted
+                        <input type="number" inputMode="decimal" min={0} max={line.outstanding} step="any" value={line.received} onChange={(e) => setLine(line.id, "received", e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm normal-case tracking-normal text-paper" />
+                      </label>
+                      <label className="grid gap-1 font-mono text-[10px] uppercase tracking-wider text-slate">
+                        Rejected
+                        <input type="number" inputMode="decimal" min={0} step="any" value={line.rejected} onChange={(e) => setLine(line.id, "rejected", e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm normal-case tracking-normal text-paper" />
+                      </label>
+                    </div>
+                    {Number(line.rejected || 0) > 0 && (
+                      <input value={line.reason} onChange={(e) => setLine(line.id, "reason", e.target.value)} placeholder="Why was it rejected? (damaged, wrong spec...)" className="h-10 w-full border border-amber-500/40 bg-ink-light px-3 text-sm text-paper" />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <div>
             <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Condition Notes</label>
-            <textarea value={form.condition_notes} onChange={(e) => set("condition_notes", e.target.value)} rows={3} className="w-full resize-none border border-ink-mid bg-ink-light p-3 text-sm text-paper" />
+            <textarea value={form.condition_notes} onChange={(e) => set("condition_notes", e.target.value)} rows={2} className="w-full resize-none border border-ink-mid bg-ink-light p-3 text-sm text-paper" />
           </div>
+          {problems.length > 0 && (
+            <ul className="border border-amber-500/40 bg-amber-950/20 p-3 text-xs text-amber-200">
+              {problems.map((p) => <li key={p}>{p}</li>)}
+            </ul>
+          )}
         </div>
         <footer className="flex justify-end gap-2 border-t border-ink-mid p-4">
           <button onClick={onClose} className="h-9 border border-ink-mid px-3 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
-          <button onClick={() => onSubmit({ po_id: po.id, store_id: form.store_id || null, delivery_date: form.delivery_date, delivery_note_ref: form.delivery_note_ref || null, condition_notes: form.condition_notes || null })} disabled={saving || !form.delivery_date} className="inline-flex h-9 items-center gap-2 border border-emerald-500/50 bg-emerald-950/30 px-4 font-mono text-xs font-bold uppercase text-emerald-300 disabled:opacity-40">
+          <button onClick={submit} disabled={!canSubmit} className="inline-flex h-9 items-center gap-2 border border-emerald-500/50 bg-emerald-950/30 px-4 font-mono text-xs font-bold uppercase text-emerald-300 disabled:opacity-40">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackageCheck className="h-4 w-4" />}Confirm delivery
           </button>
         </footer>

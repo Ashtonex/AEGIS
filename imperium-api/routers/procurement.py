@@ -138,12 +138,23 @@ class IssuePoPayload(Payload):
     override_reason: Optional[str] = Field(default=None, max_length=2000)
 
 
+class GoodsReceivedLinePayload(Payload):
+    po_line_id: UUID
+    quantity_received: Decimal = Field(ge=0, max_digits=15, decimal_places=3)
+    quantity_rejected: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=3)
+    rejection_reason: Optional[str] = Field(default=None, max_length=500)
+
+
 class GoodsReceivedPayload(Payload):
     po_id: UUID
     store_id: Optional[UUID] = None
     delivery_date: date
     delivery_note_ref: Optional[str] = Field(default=None, max_length=160)
     condition_notes: Optional[str] = None
+    # Omitted = the whole outstanding quantity of every line arrived in good
+    # order. Given = what actually arrived per line (partial deliveries,
+    # shortages, damaged/rejected goods); unlisted lines received nothing.
+    lines: Optional[list[GoodsReceivedLinePayload]] = None
 
 
 class SupplierInvoicePayload(Payload):
@@ -3030,9 +3041,9 @@ async def get_invoice_match_inspection(
     matched_amount = Decimal(str(inv["matched_amount"] or 0))
     variance_amount = inv_total - matched_amount
 
-    # Tolerance rule: 0% quantity tolerance, 1% currency rounding tolerance (max $5.00)
-    is_within_tolerance = abs(variance_amount) <= Decimal("5.00") and (
-        po_total == 0 or (abs(variance_amount) / po_total) <= Decimal("0.01")
+    # Same tolerance three_way_match applies when it sets match_status.
+    is_within_tolerance = abs(variance_amount) <= MATCH_TOLERANCE_ABS and (
+        po_total == 0 or (abs(variance_amount) / po_total) <= MATCH_TOLERANCE_PCT
     )
 
     reconciliation = {
@@ -3048,11 +3059,65 @@ async def get_invoice_match_inspection(
             "is_within_tolerance": bool(is_within_tolerance),
             "tolerance_note": "Within 1% / $5 max variance" if is_within_tolerance else "Exceeds variance tolerance",
             "match_status": inv["match_status"],
-            "can_approve_payment": inv["match_status"] == "matched" or (is_within_tolerance and inv["status"] != "disputed"),
+            # Mirrors payment_decision, which only accepts a matched invoice.
+            "can_approve_payment": inv["match_status"] == "matched" and inv["status"] not in ("disputed", "rejected", "approved", "paid"),
         },
     }
 
     return ok(reconciliation, "Three-way match inspection details retrieved.")
+
+
+def _grn_receipts(
+    open_lines: list, requested: Optional[list[GoodsReceivedLinePayload]]
+) -> list[tuple[Any, Decimal, Decimal, Optional[str]]]:
+    """(po_line, quantity_received, quantity_rejected, reason) per GRN line,
+    validated against what is still outstanding on the PO."""
+    outstanding = {
+        str(line["id"]): Decimal(str(line["quantity"])) - Decimal(str(line["quantity_received"] or 0))
+        for line in open_lines
+    }
+    if requested is None:
+        return [(line, outstanding[str(line["id"])], Decimal("0"), None) for line in open_lines]
+
+    by_id = {str(line["id"]): line for line in open_lines}
+    receipts = []
+    seen: set[str] = set()
+    for req in requested:
+        key = str(req.po_line_id)
+        if key in seen:
+            raise HTTPException(status_code=422, detail="Each purchase order line can appear only once on a delivery.")
+        seen.add(key)
+        line = by_id.get(key)
+        if line is None:
+            raise HTTPException(
+                status_code=422,
+                detail="A delivery line is not an outstanding line of this purchase order.",
+            )
+        received, rejected = req.quantity_received, req.quantity_rejected
+        if received == 0 and rejected == 0:
+            continue
+        if received > outstanding[key]:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"'{line['description']}': receiving {received} but only {outstanding[key]} "
+                    "is still outstanding on the purchase order."
+                ),
+            )
+        if received + rejected > Decimal(str(line["quantity"])):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{line['description']}': accepted plus rejected exceeds the quantity ordered.",
+            )
+        if rejected > 0 and not (req.rejection_reason or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{line['description']}': give a reason for the rejected quantity.",
+            )
+        receipts.append((line, received, rejected, (req.rejection_reason or "").strip() or None))
+    if not receipts:
+        raise HTTPException(status_code=422, detail="Enter the quantity received or rejected for at least one line.")
+    return receipts
 
 
 @router.post("/goods-received", status_code=status.HTTP_201_CREATED)
@@ -3061,11 +3126,14 @@ async def receive_goods(
     user: dict = Depends(require_permission("procurement.grn.create")),
     db: AsyncSession = Depends(get_db),
 ):
+    # Locked so two receipts against the same PO (double click, two
+    # storekeepers) are applied one after the other, never both against the
+    # same outstanding quantities.
     po = (
         (
             await db.execute(
                 text(
-                    "SELECT * FROM procurement.purchase_orders WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+                    "SELECT * FROM procurement.purchase_orders WHERE id=:id AND organization_id=:org_id AND is_deleted=false FOR UPDATE"
                 ),
                 {"id": payload.po_id, "org_id": user["org_id"]},
             )
@@ -3080,6 +3148,24 @@ async def receive_goods(
             status_code=409,
             detail="Goods can only be received against an issued purchase order.",
         )
+    if payload.delivery_note_ref:
+        already = (
+            await db.execute(
+                text("""
+                    SELECT grn_number FROM procurement.goods_received_notes
+                    WHERE po_id = :po_id AND organization_id = :org_id AND is_deleted = false
+                      AND status <> 'cancelled'
+                      AND lower(trim(delivery_note_ref)) = lower(trim(:ref))
+                    LIMIT 1
+                """),
+                {"po_id": payload.po_id, "org_id": user["org_id"], "ref": payload.delivery_note_ref},
+            )
+        ).scalar()
+        if already:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Delivery note {payload.delivery_note_ref} is already recorded on {already} for this purchase order.",
+            )
     receipt_store_id = payload.store_id
     if receipt_store_id is None and po["project_id"]:
         setup = await ensure_project_operational_setup(
@@ -3113,6 +3199,7 @@ async def receive_goods(
         SELECT * FROM procurement.purchase_order_lines
         WHERE po_id=:po_id AND organization_id=:org_id AND is_deleted=false
           AND quantity_received < quantity
+        FOR UPDATE
     """),
                 {"po_id": payload.po_id, "org_id": user["org_id"]},
             )
@@ -3125,6 +3212,7 @@ async def receive_goods(
             status_code=409,
             detail="Purchase order has no outstanding receivable lines.",
         )
+    receipts = _grn_receipts(lines, payload.lines)
     grn_no = await next_number(db, user["org_id"], "goods_received_note", "GRN")
     grn_id = (
         await db.execute(
@@ -3153,19 +3241,17 @@ async def receive_goods(
             },
         )
     ).scalar()
-    for line in lines:
-        remaining = Decimal(str(line["quantity"])) - Decimal(
-            str(line["quantity_received"])
-        )
+    for line, remaining, rejected, rejection_reason in receipts:
         grn_line_id = (
             await db.execute(
                 text("""
             INSERT INTO procurement.grn_lines (
                 organization_id, grn_id, po_line_id, item_id, description,
-                quantity_ordered, quantity_received, quantity_rejected, unit_price
+                quantity_ordered, quantity_received, quantity_rejected, unit_price,
+                rejection_reason
             ) VALUES (
                 :org_id, :grn_id, :po_line_id, :item_id, :description,
-                :ordered, :received, 0, :unit_price
+                :ordered, :received, :rejected, :unit_price, :rejection_reason
             ) RETURNING id
         """),
                 {
@@ -3176,10 +3262,16 @@ async def receive_goods(
                     "description": line["description"],
                     "ordered": line["quantity"],
                     "received": remaining,
+                    "rejected": rejected,
                     "unit_price": line["unit_price"],
+                    "rejection_reason": rejection_reason,
                 },
             )
         ).scalar()
+        if remaining <= 0:
+            # Fully rejected: recorded on the GRN, nothing enters stock and
+            # the PO line stays outstanding for a replacement delivery.
+            continue
         await db.execute(
             text(
                 "UPDATE procurement.purchase_order_lines SET quantity_received = quantity_received + :received WHERE id=:id"
@@ -3306,6 +3398,25 @@ async def create_invoice(
                 status_code=404,
                 detail="Confirmed GRN not found for this purchase order",
             )
+    # finance.supplier_invoices' unique (supplier, supplier_invoice_ref)
+    # constraint is DEFERRABLE INITIALLY DEFERRED - it only fires at COMMIT,
+    # after the VAT accrual below - so check explicitly and answer 409.
+    duplicate = (
+        await db.execute(
+            text("""
+                SELECT invoice_number FROM procurement.supplier_invoices
+                WHERE organization_id = :org_id AND supplier_id = :supplier_id AND is_deleted = false
+                  AND lower(trim(supplier_invoice_ref)) = lower(trim(:ref))
+                LIMIT 1
+            """),
+            {"org_id": user["org_id"], "supplier_id": po["supplier_id"], "ref": payload.supplier_invoice_ref},
+        )
+    ).scalar()
+    if duplicate:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Supplier invoice {payload.supplier_invoice_ref} is already registered as {duplicate}.",
+        )
     invoice_no = await next_number(db, user["org_id"], "supplier_invoice", "INV")
     total = payload.subtotal + payload.tax_amount
     try:
@@ -3362,11 +3473,55 @@ async def create_invoice(
     # above. See vat_engine.py.
     await vat_engine.accrue_input_vat(db, org_id=user["org_id"], invoice_id=invoice_id)
     await vat_engine.check_input_vat_rate_mismatch(db, org_id=user["org_id"], invoice_id=invoice_id)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Duplicate supplier invoice reference."
+        ) from exc
     return ok(
         {"id": str(invoice_id), "invoice_number": invoice_no},
         "Supplier invoice registered.",
     )
+
+
+MATCH_TOLERANCE_ABS = Decimal("5.00")
+MATCH_TOLERANCE_PCT = Decimal("0.01")
+
+
+def three_way_match(
+    *,
+    invoice_subtotal: Decimal,
+    invoice_total: Decimal,
+    po_subtotal: Decimal,
+    received_value: Decimal,
+    other_invoiced: Decimal,
+) -> tuple[str, Decimal]:
+    """(match_status, matched_amount) for one invoice; the table derives
+    variance_amount = total_amount - matched_amount itself.
+
+    Compared ex-VAT on both sides: PO and GRN values are built from line
+    unit prices (ex-VAT), so comparing them to a VAT-inclusive invoice total
+    made every VAT invoice a partial match. Other live invoices already
+    registered against the same PO use up the ordered and received value
+    first, so the same delivery cannot be matched twice.
+    matched_amount is in invoice-total (VAT-inclusive) terms, as before.
+    Tolerance is the rule the match inspection already states: 0% on
+    quantity, currency rounding up to 1% of the PO and never above $5.
+    """
+    orderable = po_subtotal - other_invoiced
+    receivable = received_value - other_invoiced
+    cap = max(Decimal("0"), min(orderable, receivable))
+    excess = invoice_subtotal - cap
+    within_tolerance = excess <= MATCH_TOLERANCE_ABS and (
+        po_subtotal <= 0 or excess / po_subtotal <= MATCH_TOLERANCE_PCT
+    )
+    if excess <= 0 or within_tolerance:
+        return "matched", invoice_total
+    status = "over_invoice" if invoice_subtotal > orderable else "partial_match"
+    share = cap / invoice_subtotal if invoice_subtotal > 0 else Decimal("0")
+    return status, (invoice_total * share).quantize(Decimal("0.01"))
 
 
 @router.post("/invoices/{invoice_id}/match")
@@ -3379,10 +3534,8 @@ async def match_invoice(
         (
             await db.execute(
                 text("""
-        SELECT inv.*, po.total_amount AS po_total,
-               COALESCE((SELECT SUM(quantity_received * unit_price) FROM procurement.grn_lines gl JOIN procurement.goods_received_notes grn ON grn.id=gl.grn_id WHERE grn.po_id=inv.po_id AND grn.organization_id=inv.organization_id AND grn.status='confirmed' AND gl.is_deleted=false), 0) AS grn_total
+        SELECT inv.*
         FROM procurement.supplier_invoices inv
-        JOIN procurement.purchase_orders po ON po.id=inv.po_id AND po.organization_id=inv.organization_id
         WHERE inv.id=:id AND inv.organization_id=:org_id AND inv.is_deleted=false
     """),
                 {"id": invoice_id, "org_id": user["org_id"]},
@@ -3393,24 +3546,55 @@ async def match_invoice(
     )
     if not inv:
         raise HTTPException(status_code=404, detail="Supplier invoice not found")
-    total = Decimal(str(inv["total_amount"]))
-    matched_amount = min(
-        total, Decimal(str(inv["po_total"] or 0)), Decimal(str(inv["grn_total"] or 0))
-    )
-    match_status = (
-        "matched"
-        if matched_amount == total
-        else (
-            "over_invoice"
-            if total > Decimal(str(inv["po_total"] or 0))
-            else "partial_match"
+    if not inv["po_id"]:
+        raise HTTPException(
+            status_code=409,
+            detail="This invoice is not linked to a purchase order, so there is nothing to match it against.",
         )
+    if inv["status"] in ("approved", "paid", "rejected", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Invoice is already {inv['status']}; matching can no longer change it.",
+        )
+    # Lock the PO so two invoices on it are matched one after the other.
+    figures = (
+        (
+            await db.execute(
+                text("""
+        SELECT po.subtotal AS po_subtotal,
+               COALESCE((SELECT SUM(gl.quantity_received * gl.unit_price)
+                         FROM procurement.grn_lines gl
+                         JOIN procurement.goods_received_notes grn ON grn.id=gl.grn_id
+                         WHERE grn.po_id=po.id AND grn.organization_id=po.organization_id
+                           AND grn.status='confirmed' AND grn.is_deleted=false AND gl.is_deleted=false), 0) AS received_value,
+               COALESCE((SELECT SUM(o.subtotal) FROM procurement.supplier_invoices o
+                         WHERE o.po_id=po.id AND o.organization_id=po.organization_id AND o.id<>:id
+                           AND o.is_deleted=false AND o.status NOT IN ('rejected','cancelled')), 0) AS other_invoiced
+        FROM procurement.purchase_orders po
+        WHERE po.id=:po_id AND po.organization_id=:org_id
+        FOR UPDATE OF po
+    """),
+                {"id": invoice_id, "po_id": inv["po_id"], "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not figures:
+        raise HTTPException(status_code=404, detail="Purchase order for this invoice not found")
+    match_status, matched_amount = three_way_match(
+        invoice_subtotal=Decimal(str(inv["subtotal"] or 0)),
+        invoice_total=Decimal(str(inv["total_amount"] or 0)),
+        po_subtotal=Decimal(str(figures["po_subtotal"] or 0)),
+        received_value=Decimal(str(figures["received_value"] or 0)),
+        other_invoiced=Decimal(str(figures["other_invoiced"] or 0)),
     )
     status_value = "matched" if match_status == "matched" else "matching"
     await db.execute(
         text("""
         UPDATE procurement.supplier_invoices
-        SET matched_amount=:matched_amount, match_status=:match_status, status=:status, is_duplicate_checked=true, updated_at=NOW()
+        SET matched_amount=:matched_amount, match_status=:match_status,
+            status=:status, is_duplicate_checked=true, updated_at=NOW()
         WHERE id=:id
     """),
         {
@@ -3435,6 +3619,7 @@ async def match_invoice(
             "id": str(invoice_id),
             "match_status": match_status,
             "matched_amount": str(matched_amount),
+            "variance_amount": str(Decimal(str(inv["total_amount"] or 0)) - matched_amount),
         },
         "Invoice matching completed.",
     )

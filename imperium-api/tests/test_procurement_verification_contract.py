@@ -119,9 +119,12 @@ class Phase3AIntegrationHookContractTests(unittest.TestCase):
         # Regression guard for the "additive only" decision: the existing
         # header-amount match_status computation must not be touched by
         # this phase - the new checks are advisory flags alongside it.
+        # (The header computation itself was later corrected to compare ex-VAT
+        # and cumulatively - REG-014; its behaviour is pinned in
+        # test_supplier_invoice_three_way_match.py.)
         match_fn = PROCUREMENT_ROUTER.split("async def match_invoice")[1].split("\n@router")[0]
         self.assertNotIn("procurement_verification", match_fn)
-        self.assertIn("matched_amount = min(", match_fn)
+        self.assertIn("three_way_match(", match_fn)
 
     def test_supplier_bank_edit_is_stamped_with_actor_and_timestamp(self):
         self.assertIn("SUPPLIER_BANK_COLUMNS", SUPPLIER_RECORDS_ROUTER)
