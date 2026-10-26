@@ -81,6 +81,19 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
   const editable = status === "open";
   const running = status === "started";
   const now = useNow(running);
+  // A day shift closed after its date (or a night/double shift after the
+  // next day) must say when people actually left, or the server would have
+  // to book the whole night as overtime - it refuses instead.
+  const [leftSiteAt, setLeftSiteAt] = useState("");
+  const lateClose = useMemo(() => {
+    const day = String(briefing?.briefing_date ?? "").slice(0, 10);
+    if (!running || !day) return false;
+    const last = new Date(`${day}T00:00:00`);
+    if (String(briefing?.shift ?? "day") !== "day") last.setDate(last.getDate() + 1);
+    return new Date(now).toLocaleDateString("en-CA") > last.toLocaleDateString("en-CA");
+  }, [running, briefing?.briefing_date, briefing?.shift, now]);
+  const leftSiteIso = lateClose && leftSiteAt ? new Date(leftSiteAt).toISOString() : undefined;
+  const needsLeftTime = lateClose && !leftSiteIso;
 
   useEffect(() => {
     setToolbox({ toolbox_topic: briefing?.toolbox_topic ?? "", toolbox_notes: briefing?.toolbox_notes ?? "" });
@@ -405,8 +418,8 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
                         <span className={`font-mono text-sm tabular-nums ${working ? "text-emerald-300" : "text-slate-light"}`}>{elapsed(a.clock_in_at, a.clock_out_at, now)}</span>
                       ) : null}
                       {working && running ? (
-                        <Btn tone="ghost" className="h-8 px-2" busy={busy === `out-${a.id}`} icon={<LogOut className="h-3.5 w-3.5" />}
-                          onClick={() => void run(`out-${a.id}`, () => clockOutSiteDayAttendance(a.id))}>Out</Btn>
+                        <Btn tone="ghost" className="h-8 px-2" busy={busy === `out-${a.id}`} disabled={needsLeftTime} icon={<LogOut className="h-3.5 w-3.5" />}
+                          onClick={() => void run(`out-${a.id}`, () => clockOutSiteDayAttendance(a.id, leftSiteIso))}>Out</Btn>
                       ) : null}
                       {editable ? (
                         <button aria-label={`Remove ${a.worker_name}`} disabled={busy === `rm-${a.id}`} onClick={() => void run(`rm-${a.id}`, () => removeSiteDayAttendance(a.id))}
@@ -485,8 +498,16 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
             </Panel>
           ) : running ? (
             <Panel title="End of day" subtitle="Clocks out everyone still on site and sends the hours to HR for acceptance and billing.">
-              <Btn className="w-full" tone="danger" busy={busy === "close"} icon={<Square className="h-4 w-4" />}
-                onClick={() => { if (window.confirm(`Clock out ${clockedIn} people and close the site day?`)) void run("close", () => closeSiteDay(briefing.id)); }}>
+              {lateClose ? (
+                <label className="mb-3 grid gap-1.5 text-sm text-amber-200">
+                  This site day is from an earlier date. When did people actually leave site?
+                  <input type="datetime-local" value={leftSiteAt} min={`${String(briefing?.briefing_date ?? "").slice(0, 10)}T00:00`}
+                    onChange={(e) => setLeftSiteAt(e.target.value)}
+                    className="h-11 w-full border border-amber-500/40 bg-ink-light px-3 text-sm text-paper" />
+                </label>
+              ) : null}
+              <Btn className="w-full" tone="danger" busy={busy === "close"} disabled={needsLeftTime} icon={<Square className="h-4 w-4" />}
+                onClick={() => { if (window.confirm(`Clock out ${clockedIn} people and close the site day?`)) void run("close", () => closeSiteDay(briefing.id, leftSiteIso)); }}>
                 Close site day
               </Btn>
             </Panel>

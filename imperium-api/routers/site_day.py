@@ -103,6 +103,12 @@ class DayOpen(Payload):
     site_id: Optional[UUID] = None
 
 
+class ClockOut(Payload):
+    # When people actually left site. Required when the day is being closed
+    # (or someone clocked out) on a later calendar day than the shift allows.
+    left_site_at: Optional[datetime] = None
+
+
 class DayUpdate(Payload):
     toolbox_topic: Optional[str] = Field(default=None, max_length=200)
     toolbox_notes: Optional[str] = Field(default=None, max_length=4000)
@@ -213,11 +219,28 @@ async def _briefing(db: AsyncSession, org_id: str, briefing_id: UUID, *, user: O
     return dict(row)
 
 
+async def _linked_report_id(db: AsyncSession, org_id: str, briefing_id: Any) -> Optional[UUID]:
+    """The daily report raised for this site day. The link lives on the
+    report (daily_site_reports.briefing_id); site_day_briefings.daily_report_id
+    is never populated, so reading it skipped every close/clock-out sync."""
+    return (
+        await db.execute(
+            text("""
+            SELECT id FROM projects.daily_site_reports
+            WHERE briefing_id = :briefing_id AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+            ORDER BY created_at DESC LIMIT 1
+        """),
+            {"briefing_id": briefing_id, "org_id": org_id},
+        )
+    ).scalar()
+
+
 async def _attendance_row(db: AsyncSession, org_id: str, attendance_id: UUID) -> dict[str, Any]:
     row = (
         await db.execute(
             text("""
-            SELECT a.*, b.status AS day_status, b.regular_hours_cap, b.break_minutes
+            SELECT a.*, b.status AS day_status, b.regular_hours_cap, b.break_minutes,
+                   b.briefing_date, b.shift
             FROM projects.site_day_attendance a
             JOIN projects.site_day_briefings b ON b.id=a.briefing_id
             WHERE a.id=:id AND a.organization_id=:org_id
@@ -345,142 +368,188 @@ async def sync_attendance_to_daily_report(
     project_id: Optional[UUID] = None,
     report_date: Optional[date] = None,
 ) -> None:
-    """Synchronize site_day_attendance rows (employees & project hires) into daily_report_labour for the draft report."""
+    """Mirror site_day_attendance (employees & project hires) into the
+    report's daily_report_labour lines.
+
+    Hours come only from the register. Someone with no recorded hours yet
+    (still on site, or never clocked in) gets no labour line - the table
+    requires positive hours, and a placeholder 8 h used to be booked
+    instead; a line this sync created earlier for them is withdrawn.
+    Only draft/rejected reports change: a submitted or approved report stays
+    as it was signed. Runs in a savepoint so a failure here can never leave
+    the caller's transaction (start/close day) aborted.
+    """
+    status = (
+        await db.execute(
+            text("SELECT status FROM projects.daily_site_reports WHERE id = :id AND organization_id = CAST(:org_id AS uuid)"),
+            {"id": report_id, "org_id": org_id},
+        )
+    ).scalar()
+    if status not in ("draft", "rejected"):
+        return
     try:
-        attendance_rows = (
+        async with db.begin_nested():
+            await _sync_attendance_rows(
+                db, org_id=org_id, briefing_id=briefing_id, report_id=report_id,
+                project_id=project_id, report_date=report_date,
+            )
+    except Exception as exc:
+        logger.error("sync_attendance_to_daily_report_failed", report_id=str(report_id), error=str(exc))
+
+
+async def _sync_attendance_rows(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    briefing_id: Optional[UUID],
+    report_id: UUID,
+    project_id: Optional[UUID],
+    report_date: Optional[date],
+) -> None:
+    attendance_rows = (
+        await db.execute(
+            text("""
+            SELECT a.id AS attendance_id, a.employee_id, a.site_worker_id,
+                   COALESCE(a.worker_name, w.full_name, e.employee_name, 'Site Worker') AS worker_name,
+                   COALESCE(a.worker_kind, CASE WHEN a.site_worker_id IS NOT NULL THEN 'project_hire' ELSE 'employee' END) AS worker_kind,
+                   COALESCE(a.trade, w.trade, e.job_title, 'Site Worker') AS trade,
+                   COALESCE(a.hourly_rate, w.hourly_rate, 0) AS hourly_rate,
+                   COALESCE(a.regular_hours, 0) AS calc_regular_hours,
+                   COALESCE(a.overtime_hours, 0) AS calc_overtime_hours,
+                   a.notes
+            FROM projects.site_day_attendance a
+            LEFT JOIN finance.site_workers w ON w.id = a.site_worker_id
+            LEFT JOIN hr.employees e ON e.id = a.employee_id
+            WHERE a.organization_id = CAST(:org_id AS uuid)
+              AND (
+                (CAST(:briefing_id AS uuid) IS NOT NULL AND a.briefing_id = CAST(:briefing_id AS uuid))
+                OR (CAST(:project_id AS uuid) IS NOT NULL AND (
+                    (a.project_id = CAST(:project_id AS uuid) AND (
+                        DATE(a.clock_in_at) = CAST(:report_date AS date)
+                        OR DATE(a.created_at) = CAST(:report_date AS date)
+                    ))
+                    OR a.briefing_id IN (
+                        SELECT b.id FROM projects.site_day_briefings b
+                        WHERE b.organization_id = CAST(:org_id AS uuid)
+                          AND b.project_id = CAST(:project_id AS uuid)
+                          AND b.briefing_date = CAST(:report_date AS date)
+                          AND b.is_deleted = false
+                    )
+                ))
+              )
+        """),
+            {
+                "briefing_id": briefing_id,
+                "org_id": org_id,
+                "project_id": project_id,
+                "report_date": report_date,
+            },
+        )
+    ).mappings().all()
+
+    for att in attendance_rows:
+        cost_rate = Decimal(str(att["hourly_rate"] or 0))
+        # The register is the source of truth: someone not yet clocked
+        # out (or never clocked in) has worked 0 recorded hours so far.
+        reg_hours = Decimal(str(att["calc_regular_hours"] or 0))
+        ot_hours = Decimal(str(att["calc_overtime_hours"] or 0))
+        if reg_hours + ot_hours <= 0:
             await db.execute(
                 text("""
-                SELECT a.id AS attendance_id, a.employee_id, a.site_worker_id,
-                       COALESCE(a.worker_name, w.full_name, e.employee_name, 'Site Worker') AS worker_name,
-                       COALESCE(a.worker_kind, CASE WHEN a.site_worker_id IS NOT NULL THEN 'project_hire' ELSE 'employee' END) AS worker_kind,
-                       COALESCE(a.trade, w.trade, e.job_title, 'Site Worker') AS trade,
-                       COALESCE(a.hourly_rate, w.hourly_rate, 0) AS hourly_rate,
-                       COALESCE(a.regular_hours, 8) AS calc_regular_hours,
-                       COALESCE(a.overtime_hours, 0) AS calc_overtime_hours,
-                       a.notes
-                FROM projects.site_day_attendance a
-                LEFT JOIN finance.site_workers w ON w.id = a.site_worker_id
-                LEFT JOIN hr.employees e ON e.id = a.employee_id
-                WHERE a.organization_id = CAST(:org_id AS uuid)
+                UPDATE projects.daily_report_labour SET is_deleted = true
+                WHERE report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+                  AND attendance_id = :att_id AND is_deleted = false
+            """),
+                {"report_id": report_id, "org_id": org_id, "att_id": att["attendance_id"]},
+            )
+            continue
+        trade = att["trade"] or "Site Worker"
+        worker_kind = att["worker_kind"] or ("project_hire" if att["site_worker_id"] else "employee")
+        worker_name = att["worker_name"] or ("Project Hire" if worker_kind == "project_hire" else "Employee")
+
+        existing_labour = (
+            await db.execute(
+                text("""
+                SELECT id FROM projects.daily_report_labour
+                WHERE report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
                   AND (
-                    (CAST(:briefing_id AS uuid) IS NOT NULL AND a.briefing_id = CAST(:briefing_id AS uuid))
-                    OR (CAST(:project_id AS uuid) IS NOT NULL AND (
-                        (a.project_id = CAST(:project_id AS uuid) AND (
-                            DATE(a.clock_in_at) = CAST(:report_date AS date)
-                            OR DATE(a.created_at) = CAST(:report_date AS date)
-                        ))
-                        OR a.briefing_id IN (
-                            SELECT b.id FROM projects.site_day_briefings b
-                            WHERE b.organization_id = CAST(:org_id AS uuid)
-                              AND b.project_id = CAST(:project_id AS uuid)
-                              AND b.briefing_date = CAST(:report_date AS date)
-                              AND b.is_deleted = false
-                        )
-                    ))
+                    (attendance_id = :att_id AND :att_id IS NOT NULL)
+                    OR (employee_id = :emp_id AND :emp_id IS NOT NULL)
+                    OR (site_worker_id = :site_worker_id AND :site_worker_id IS NOT NULL)
+                    OR (worker_name = :worker_name AND worker_name IS NOT NULL)
                   )
+                  AND is_deleted = false
+                LIMIT 1
             """),
                 {
-                    "briefing_id": briefing_id,
+                    "report_id": report_id,
                     "org_id": org_id,
-                    "project_id": project_id,
-                    "report_date": report_date,
+                    "att_id": att["attendance_id"],
+                    "emp_id": att["employee_id"],
+                    "site_worker_id": att["site_worker_id"],
+                    "worker_name": worker_name,
                 },
             )
-        ).mappings().all()
+        ).scalar()
 
-        for att in attendance_rows:
-            cost_rate = Decimal(str(att["hourly_rate"] or 0))
-            reg_hours = Decimal(str(att["calc_regular_hours"] or 8))
-            ot_hours = Decimal(str(att["calc_overtime_hours"] or 0))
-            trade = att["trade"] or "Site Worker"
-            worker_kind = att["worker_kind"] or ("project_hire" if att["site_worker_id"] else "employee")
-            worker_name = att["worker_name"] or ("Project Hire" if worker_kind == "project_hire" else "Employee")
-
-            existing_labour = (
-                await db.execute(
-                    text("""
-                    SELECT id FROM projects.daily_report_labour
-                    WHERE report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
-                      AND (
-                        (attendance_id = :att_id AND :att_id IS NOT NULL)
-                        OR (employee_id = :emp_id AND :emp_id IS NOT NULL)
-                        OR (site_worker_id = :site_worker_id AND :site_worker_id IS NOT NULL)
-                        OR (worker_name = :worker_name AND worker_name IS NOT NULL)
-                      )
-                      AND is_deleted = false
-                    LIMIT 1
-                """),
-                    {
-                        "report_id": report_id,
-                        "org_id": org_id,
-                        "att_id": att["attendance_id"],
-                        "emp_id": att["employee_id"],
-                        "site_worker_id": att["site_worker_id"],
-                        "worker_name": worker_name,
-                    },
-                )
-            ).scalar()
-
-            if existing_labour:
-                await db.execute(
-                    text("""
-                    UPDATE projects.daily_report_labour
-                    SET regular_hours = :reg_hours,
-                        overtime_hours = :ot_hours,
-                        cost_rate = :cost_rate,
-                        role_on_site = :trade,
-                        attendance_id = COALESCE(attendance_id, :att_id),
-                        site_worker_id = COALESCE(site_worker_id, :site_worker_id),
-                        worker_name = COALESCE(worker_name, :worker_name),
-                        worker_kind = COALESCE(worker_kind, :worker_kind)
-                    WHERE id = :labour_id
-                """),
-                    {
-                        "reg_hours": reg_hours,
-                        "ot_hours": ot_hours,
-                        "cost_rate": cost_rate,
-                        "trade": trade,
-                        "att_id": att["attendance_id"],
-                        "site_worker_id": att["site_worker_id"],
-                        "worker_name": worker_name,
-                        "worker_kind": worker_kind,
-                        "labour_id": existing_labour,
-                    },
-                )
-            else:
-                try:
-                    async with db.begin_nested():
-                        await db.execute(
-                            text("""
-                            INSERT INTO projects.daily_report_labour (
-                                organization_id, report_id, employee_id, site_worker_id,
-                                attendance_id, worker_name, worker_kind, role_on_site,
-                                regular_hours, overtime_hours, cost_rate, notes
-                            ) VALUES (
-                                CAST(:org_id AS uuid), :report_id, :employee_id, :site_worker_id,
-                                :att_id, :worker_name, :worker_kind, :trade,
-                                :reg_hours, :ot_hours, :cost_rate, :notes
-                            )
-                        """),
-                            {
-                                "org_id": org_id,
-                                "report_id": report_id,
-                                "employee_id": att["employee_id"],
-                                "site_worker_id": att["site_worker_id"],
-                                "att_id": att["attendance_id"],
-                                "worker_name": worker_name,
-                                "worker_kind": worker_kind,
-                                "trade": trade,
-                                "reg_hours": reg_hours,
-                                "ot_hours": ot_hours,
-                                "cost_rate": cost_rate,
-                                "notes": att["notes"] or "",
-                            },
+        if existing_labour:
+            await db.execute(
+                text("""
+                UPDATE projects.daily_report_labour
+                SET regular_hours = :reg_hours,
+                    overtime_hours = :ot_hours,
+                    cost_rate = :cost_rate,
+                    role_on_site = :trade,
+                    attendance_id = COALESCE(attendance_id, :att_id),
+                    site_worker_id = COALESCE(site_worker_id, :site_worker_id),
+                    worker_name = COALESCE(worker_name, :worker_name),
+                    worker_kind = COALESCE(worker_kind, :worker_kind)
+                WHERE id = :labour_id
+            """),
+                {
+                    "reg_hours": reg_hours,
+                    "ot_hours": ot_hours,
+                    "cost_rate": cost_rate,
+                    "trade": trade,
+                    "att_id": att["attendance_id"],
+                    "site_worker_id": att["site_worker_id"],
+                    "worker_name": worker_name,
+                    "worker_kind": worker_kind,
+                    "labour_id": existing_labour,
+                },
+            )
+        else:
+            try:
+                async with db.begin_nested():
+                    await db.execute(
+                        text("""
+                        INSERT INTO projects.daily_report_labour (
+                            organization_id, report_id, employee_id, site_worker_id,
+                            attendance_id, worker_name, worker_kind, role_on_site,
+                            regular_hours, overtime_hours, cost_rate, notes
+                        ) VALUES (
+                            CAST(:org_id AS uuid), :report_id, :employee_id, :site_worker_id,
+                            :att_id, :worker_name, :worker_kind, :trade,
+                            :reg_hours, :ot_hours, :cost_rate, :notes
                         )
-                except Exception as exc_inner:
-                    logger.warning(f"Skipped duplicate or invalid labour line for {worker_name}: {exc_inner}")
-    except Exception as exc:
-        logger.warning("sync_attendance_to_daily_report_failed", error=str(exc))
+                    """),
+                        {
+                            "org_id": org_id,
+                            "report_id": report_id,
+                            "employee_id": att["employee_id"],
+                            "site_worker_id": att["site_worker_id"],
+                            "att_id": att["attendance_id"],
+                            "worker_name": worker_name,
+                            "worker_kind": worker_kind,
+                            "trade": trade,
+                            "reg_hours": reg_hours,
+                            "ot_hours": ot_hours,
+                            "cost_rate": cost_rate,
+                            "notes": att["notes"] or "",
+                        },
+                    )
+            except Exception as exc_inner:
+                logger.warning(f"Skipped duplicate or invalid labour line for {worker_name}: {exc_inner}")
 
 
 async def _day_payload(db: AsyncSession, org_id: str, briefing: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -500,11 +569,21 @@ async def _day_payload(db: AsyncSession, org_id: str, briefing: Optional[dict[st
     )
 
     unique_headcount = len({(r.get("employee_id") or r.get("site_worker_id") or r.get("worker_name")) for r in attendance})
-    total_reg = sum(Decimal(str(r.get("regular_hours") or (8 if r.get("clock_in_at") else 0))) for r in attendance)
+    projected_cap = Decimal(str(briefing.get("regular_hours_cap") or 8))
+
+    def regular_of(r: dict[str, Any]) -> Decimal:
+        # Recorded hours once clocked out (0 is a real answer); a full
+        # regular day is projected only for people still on site.
+        if r.get("clock_out_at"):
+            return Decimal(str(r.get("regular_hours") or 0))
+        return projected_cap if r.get("clock_in_at") else Decimal("0")
+
+    still_on_site = sum(1 for r in attendance if r.get("clock_in_at") and not r.get("clock_out_at"))
+    total_reg = sum(regular_of(r) for r in attendance)
     total_ot = sum(Decimal(str(r.get("overtime_hours") or 0)) for r in attendance)
     missing_rates = sum(1 for r in attendance if r.get("hourly_rate") is None)
     est_cost = sum(
-        (Decimal(str(r.get("regular_hours") or (8 if r.get("clock_in_at") else 0))) * Decimal(str(r.get("hourly_rate") or 0))) +
+        (regular_of(r) * Decimal(str(r.get("hourly_rate") or 0))) +
         (Decimal(str(r.get("overtime_hours") or 0)) * Decimal(str(r.get("hourly_rate") or 0)))
         for r in attendance if r.get("hourly_rate") is not None
     )
@@ -538,6 +617,9 @@ async def _day_payload(db: AsyncSession, org_id: str, briefing: Optional[dict[st
         "total_hours": float(total_reg + total_ot),
         "estimated_cost": float(est_cost),
         "missing_rates_count": missing_rates,
+        # >0 means regular_hours / estimated_cost include a projected full
+        # day for people not yet clocked out.
+        "projected_workers": still_on_site,
     }
 
     report_dict = dict(linked_report) if linked_report else None
@@ -778,8 +860,9 @@ async def _insert_attendance(
              "site_worker_id": site_worker_id, "employee_id": employee_id, "name": name, "trade": trade,
              "rate": rate, "ppe_ok": ppe_ok, "clock_in": clock_in, "user_id": user["user_id"]},
         )
-        if briefing.get("daily_report_id"):
-            await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing["id"], report_id=briefing["daily_report_id"])
+        report_id = await _linked_report_id(db, org_id, briefing["id"])
+        if report_id:
+            await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing["id"], report_id=report_id)
     except Exception as exc:  # unique index: already on today's register
         if "site_day_attendance_" in str(exc):
             await db.rollback()
@@ -975,6 +1058,35 @@ async def start_site_day(
                   f"Site day started. {len(attendance)} people clocked in.")
 
 
+def clock_out_time(
+    *, briefing_date: date, shift: Optional[str], clock_in_at: Optional[datetime],
+    now: datetime, left_site_at: Optional[datetime],
+) -> datetime:
+    """The clock-out time to book. A day closed late (the next morning, or
+    days later) used to clock everyone out at the close time, so each person
+    was booked a 24 h shift - 8 h regular + 16 h overtime - which then flowed
+    to site time entries for pay. Now the actual leaving time must be given
+    once the close is past the shift's last calendar day (the briefing date
+    for day shifts; the following day for night/double shifts)."""
+    if left_site_at is not None:
+        at = left_site_at if left_site_at.tzinfo else left_site_at.replace(tzinfo=HARARE)
+        if at > now + timedelta(minutes=5):
+            raise HTTPException(status_code=422, detail="The time people left site can't be in the future.")
+        if clock_in_at and at < clock_in_at:
+            raise HTTPException(status_code=422, detail="The time people left site is before they clocked in.")
+        return at
+    last_day = briefing_date + timedelta(days=0 if (shift or "day") == "day" else 1)
+    if now.astimezone(HARARE).date() > last_day:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This {shift or 'day'} shift from {briefing_date} is being closed on a later day. "
+                "Enter the time people actually left site, otherwise the overnight hours would be booked as overtime."
+            ),
+        )
+    return now
+
+
 async def _clock_out(db: AsyncSession, row: dict[str, Any], at: datetime, cap: Decimal, break_minutes: int) -> None:
     if not row["clock_in_at"] or row["clock_out_at"]:
         return
@@ -990,6 +1102,7 @@ async def _clock_out(db: AsyncSession, row: dict[str, Any], at: datetime, cap: D
 @router.post("/day/attendance/{attendance_id}/clock-out")
 async def clock_out_attendance(
     attendance_id: UUID,
+    payload: Optional[ClockOut] = None,
     user: dict = Depends(require_any_permission(*SITE_DAY_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -998,10 +1111,15 @@ async def clock_out_attendance(
         raise HTTPException(status_code=409, detail="This person hasn't clocked in yet.")
     if row["clock_out_at"]:
         raise HTTPException(status_code=409, detail="Already clocked out.")
-    await _clock_out(db, row, datetime.now(timezone.utc), row["regular_hours_cap"], row["break_minutes"])
+    at = clock_out_time(
+        briefing_date=row["briefing_date"], shift=row["shift"], clock_in_at=row["clock_in_at"],
+        now=datetime.now(timezone.utc), left_site_at=payload.left_site_at if payload else None,
+    )
+    await _clock_out(db, row, at, row["regular_hours_cap"], row["break_minutes"])
     briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
-    if briefing.get("daily_report_id"):
-        await sync_attendance_to_daily_report(db, org_id=user["org_id"], briefing_id=briefing["id"], report_id=briefing["daily_report_id"])
+    report_id = await _linked_report_id(db, user["org_id"], briefing["id"])
+    if report_id:
+        await sync_attendance_to_daily_report(db, org_id=user["org_id"], briefing_id=briefing["id"], report_id=report_id)
     await db.commit()
     return result(await _day_payload(db, user["org_id"], briefing), f"{row['worker_name']} clocked out.")
 
@@ -1009,6 +1127,7 @@ async def clock_out_attendance(
 @router.post("/day/{briefing_id}/close")
 async def close_site_day(
     briefing_id: UUID,
+    payload: Optional[ClockOut] = None,
     user: dict = Depends(require_any_permission(*SITE_DAY_WRITE)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1017,9 +1136,15 @@ async def close_site_day(
     if briefing["status"] != "started":
         raise HTTPException(status_code=409, detail="Only a started site day can be closed.")
     now = datetime.now(timezone.utc)
+    left_at = clock_out_time(
+        briefing_date=briefing["briefing_date"], shift=briefing.get("shift"), clock_in_at=briefing.get("started_at"),
+        now=now, left_site_at=payload.left_site_at if payload else None,
+    )
     rows = (await _day_payload(db, org_id, briefing))["attendance"]
     for row in rows:
-        await _clock_out(db, row, now, briefing["regular_hours_cap"], briefing["break_minutes"])
+        # Someone clocked in after the given leaving time worked no time.
+        await _clock_out(db, row, max(left_at, row["clock_in_at"]) if row.get("clock_in_at") else left_at,
+                         briefing["regular_hours_cap"], briefing["break_minutes"])
     await db.execute(
         text("UPDATE projects.site_day_attendance SET hr_status='pending', updated_at=NOW() WHERE briefing_id=:id AND organization_id=:org_id AND hr_status='open'"),
         {"id": briefing_id, "org_id": org_id},
@@ -1030,8 +1155,9 @@ async def close_site_day(
                 WHERE id=:id AND organization_id=:org_id"""),
         {"now": now, "user_id": user["user_id"], "id": briefing_id, "org_id": org_id},
     )
-    if briefing.get("daily_report_id"):
-        await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=briefing["daily_report_id"])
+    report_id = await _linked_report_id(db, org_id, briefing_id)
+    if report_id:
+        await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=report_id)
     project_name = await _project_name(db, org_id, briefing["project_id"], user=user)
     hires = sum(1 for r in rows if r["worker_kind"] == "project_hire")
     await emit_role_notification(

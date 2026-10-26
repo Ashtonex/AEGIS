@@ -27,7 +27,10 @@ export async function getSiteDay(params: { projectId: string; date?: string; shi
 export const openSiteDay = (payload: { project_id: string; briefing_date?: string; shift?: string }) => post(`${SITE}/day/open`, payload);
 export const updateSiteDay = (briefingId: string, payload: Record<string, unknown>) => post(`${SITE}/day/${briefingId}`, payload, "PATCH");
 export const startSiteDay = (briefingId: string) => post(`${SITE}/day/${briefingId}/start`);
-export const closeSiteDay = (briefingId: string) => post(`${SITE}/day/${briefingId}/close`);
+// leftSiteAt (ISO) is required by the server when the day is closed on a
+// later calendar day than the shift ran, so overnight hours aren't booked.
+export const closeSiteDay = (briefingId: string, leftSiteAt?: string) =>
+  post(`${SITE}/day/${briefingId}/close`, leftSiteAt ? { left_site_at: leftSiteAt } : undefined);
 export const addSiteDayAttendance = (briefingId: string, payload: { site_worker_id?: string; employee_id?: string; ppe_ok: boolean }) =>
   post(`${SITE}/day/${briefingId}/attendance`, payload);
 export const addSiteDayAttendanceBatch = (briefingId: string, payload: { items: Array<{ site_worker_id?: string; employee_id?: string; ppe_ok: boolean }> }) =>
@@ -35,7 +38,8 @@ export const addSiteDayAttendanceBatch = (briefingId: string, payload: { items: 
 export const updateSiteDayAttendance = (attendanceId: string, payload: { ppe_ok?: boolean; notes?: string }) =>
   post(`${SITE}/day/attendance/${attendanceId}`, payload, "PATCH");
 export const removeSiteDayAttendance = (attendanceId: string) => post(`${SITE}/day/attendance/${attendanceId}`, undefined, "DELETE");
-export const clockOutSiteDayAttendance = (attendanceId: string) => post(`${SITE}/day/attendance/${attendanceId}/clock-out`);
+export const clockOutSiteDayAttendance = (attendanceId: string, leftSiteAt?: string) =>
+  post(`${SITE}/day/attendance/${attendanceId}/clock-out`, leftSiteAt ? { left_site_at: leftSiteAt } : undefined);
 export const registerProjectHire = (payload: Record<string, unknown>) => post(`${SITE}/day/project-hires`, payload);
 
 export const generateDailyTargets = (budgetId: string, payload: { working_days: number[]; replace_open?: boolean; notify?: boolean }) =>
