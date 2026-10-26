@@ -2,7 +2,7 @@
 
 Statuses: UNTESTED / FAILED / IN PROGRESS / BLOCKED / VERIFIED / NOT APPLICABLE.
 Evidence for every VERIFIED entry is in `SYSTEM_VERIFICATION_REPORT.md`.
-Working changes are **uncommitted on `main`** (nothing pushed, nothing deployed).
+REG-001..020 are deployed (commits 755d66a..5eb36e5, 2026-10-26). REG-010 and REG-022..025 are in the working tree, not yet committed.
 
 ## Repairs
 
@@ -91,11 +91,38 @@ Working changes are **uncommitted on `main`** (nothing pushed, nothing deployed)
 - **Root cause:** the sync caught every exception and only logged a warning, after the DB error had already aborted the request's transaction, so the following statements (or the commit) failed with an unrelated error.
 - **Repair:** sync runs in its own savepoint and logs at error level with the report id.
 
+### REG-010 - P1 - Push/email sent before commit; expired subscriptions committed the caller's transaction - VERIFIED
+- **Root cause:** `emit_notification` called `dispatch_user_pushes` (and urgent email) inline, so people were alerted about records a later failure rolled back; when any push subscription had expired, `dispatch_user_pushes` ran `await db.commit()` on the **caller's** session mid-request, committing half-finished operations.
+- **Repair:** `app/shared/notification_delivery.py` - the notification row is still written in the caller's transaction; delivery is queued on the session and starts only after it commits (dropped on rollback), on its own session, and skips any notification whose row did not survive (e.g. a rolled-back savepoint). Subscription clean-up now commits only the delivery session.
+- **Verification:** unit tests on a real `Session` (nothing before commit, sent after commit, dropped on rollback, later commit doesn't resurrect); live `scripts/verify_notification_delivery.py`: rollback schedules nothing; commit schedules delivery, which finds no committed row and sends nothing.
+- **Limit:** delivery is an in-process task - a process restart in the seconds after commit loses that push (same best-effort level as before, minus the false alerts).
+
+### REG-022 - P1 - Two site pay runs could pay the same hours - VERIFIED
+- **Root cause:** `create_site_pay_run` read unpaid entries without locking, then stamped them; two drafts at once both priced the same hours (each run then pays them). Non-USD workers would be posted to the cashbook as USD.
+- **Repair:** unpaid entries claimed `FOR UPDATE` before pricing (a waiting request re-checks and skips claimed rows); non-USD workers refused with a clear 422.
+- **Verification:** `scripts/verify_site_pay_run.py` - 146 entries claimed once, gross = hours × rates per worker (3,391.38), re-draft 409, pay before approval 409, paid → one cashbook outflow (net) + one labour cost (gross), pay/cancel on paid 409, cancelled draft releases hours.
+- **Note:** that live draft includes the overnight hours in DEC-003.
+
+### REG-023 - P1 - Double-submitted stock movements booked twice - VERIFIED
+- **Root cause:** manual receipt/issue/transfer/adjustment used a new random `source_id` per request, so the ledger's idempotency key never matched a retry.
+- **Repair:** optional client `request_id` becomes the source id; a repeat returns the recorded movement (`already_recorded`). Inventory forms generate one per submission (the store panel rotates it only after a success).
+- **Verification:** `scripts/verify_stock_movements.py` - each movement type submitted twice is recorded once.
+
+### REG-024 - P1 - Second issue of an item to a work order / vehicle silently dropped; parts cost collided with work-order cost - VERIFIED
+- **Root cause:** those issues used the work order / vehicle id as the ledger source id (unique per source+item), so the second one hit `ON CONFLICT DO NOTHING` while the API said "Stock issue recorded"; the parts cost used the same key as the work-order completion cost, which overwrites on conflict.
+- **Repair:** every issue is its own source (`work_order_parts_issue` / `fleet_consumable_issue`, linkage kept in notes). No such rows existed in production.
+- **Verification:** two issues of one item to the same vehicle → two ledger rows.
+
+### REG-025 - P1 - Issuing parts to a work order or vehicle always failed with 500 - VERIFIED
+- **Root cause:** the inventory reference checker's allow-list lacked `fleet.maintenance_work_orders` / `fleet.fleet` ("Unsupported reference validation"). Scan of the other two checkers found no further gaps.
+
+### Verified without defects
+- Requisition → submit → approve (self-approval refused) → PO (rationale required; second PO from the same requisition refused) → Finance then director sign-off (out of order refused; issue before sign-off refused) → issue → exactly one commitment; re-issue refused. `scripts/verify_requisition_to_po.py`.
+
 ## Open defects found, not yet repaired
 
 | ID | Sev | Workflow | Finding | Status |
 |---|---|---|---|---|
-| REG-010 | P2 | K notifications | `emit_notification` sends web push (and email for `urgent`) **before** the caller's transaction commits; a request that later rolls back still alerts users about records that don't exist. Should enqueue after commit (outbox/Arq). | FAILED (not repaired) |
 | REG-011 | P2 | B quotations | Frontend `decideQuotation` sends no `Idempotency-Key`; server guard (REG-008) now covers repeats. | IN PROGRESS (server side done) |
 | REG-016 | P3 | E procurement | Test invoice INV-000003 on test PO `PO-P8A-TEST-01` is `approved` with `partial_match`, no GRN and no approver - written on 2026-09-12 by an earlier version of the match step; current code cannot produce it. Test data; leave or cancel at Finance's discretion. | NOT APPLICABLE (data note) |
 | REG-017 | P3 | E procurement | 45 of 47 supplier invoices have no PO (registered via `inventory.py` / historical import) - they cannot be three-way matched and now get a clear 409 instead of "invoice not found". | UNTESTED (by design?) |
@@ -108,9 +135,12 @@ Working changes are **uncommitted on `main`** (nothing pushed, nothing deployed)
 - **DEC-003 - Correct the overnight hours already accepted.** Site time entries for 2026-10-16 (320 OT h, 30 entries) and 2026-10-21 (272 OT h, 17 entries) come from days closed late (REG-019); they are not in a pay run yet. Only site can say when people actually left. Until corrected they will be paid in the next site pay run. Draft daily reports for those days mirror the same register hours.
 - **DEC-004 - The approved 2026-10-22 daily report** records 80 h against 30 h in the register (REG-018). It was signed, so it was not changed automatically; reopen/reject it if the 80 h is wrong.
 
+- **DEC-005 - Stock valuation method.** Issues, transfers and count adjustments take the unit cost typed into the form (default 0). Production's 4 transfers moved 128 units at $0, so value stays in the source store while the units move; stock issued to a project at $0 would post $0 actual cost. Choose a method (e.g. weighted average of receipts per store) before issues start - no issue movements exist yet.
+- **DEC-006 - Segregation on site pay runs.** Supplier payment batches and requisitions block the creator from approving; site pay runs let one person draft, approve and pay. Decide whether wage runs need the same rule.
+
 ## Next workflows in priority order
 
-1. D material request → procurement identity; E stock issue / transfer / returns and PO cancellation.
-2. REG-010 notification delivery after commit.
-3. G payroll run from site time entries (0 runs in production) - check it uses accepted hours only.
-4. F finance posting / reversal flows; H plant; I compliance; J dashboards traced to source.
+1. F finance posting / reversal / period close flows.
+2. H plant & fleet (allocation, usage, work orders end to end); I compliance & documents.
+3. J executive dashboards traced to source; K portals.
+4. Material requests (0 in production) and PO cancellation / returns.

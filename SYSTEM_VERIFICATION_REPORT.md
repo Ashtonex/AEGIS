@@ -74,6 +74,17 @@ Automated: `tests/test_site_day_hours_truth.py` (10) plus site/HR time suites (4
 - `scripts/sql_explain_check.py` against the live schema (read-only, rolled back): 2,198 statements, **FAILURES: 0**.
 - `ruff check --select F821` : clean. `aegis-web`: `tsc --noEmit` clean, `npm run build` exit 0.
 
+## 2026-10-26 (batch 2) - Notifications, site pay run, stock movements, requisition → PO
+
+All rolled back with push/email stubbed; production counts checked after.
+- `scripts/verify_notification_delivery.py` - ALL PASSED (rollback schedules nothing; post-commit delivery finds no committed row → nothing sent).
+- `scripts/verify_site_pay_run.py` - ALL PASSED (11 checks).
+- `scripts/verify_stock_movements.py` - ALL PASSED; its first run exposed REG-025 (work-order/vehicle issues always 500).
+- `scripts/verify_requisition_to_po.py` - ALL PASSED (13 checks, no defects).
+- New tests: `test_notification_delivery_after_commit.py`, `test_site_pay_run_claims.py`, `test_stock_movement_idempotency.py`.
+- Full checks: `pytest tests` **1490 passed, 29 skipped, 0 failed**; SQL health check 2,201 statements, **FAILURES: 0**; `ruff --select F821` clean; `npm run build` exit 0.
+- Production after the runs: stock ledger 228, site pay runs 0, unpaid time entries 166, requisitions 1, POs 2, commitments 2 - unchanged. The 48 notifications created in the window are the 04:00/06:00 scheduled jobs and one real HR confirmation, none from these runs.
+
 ## Verification limits
 - No isolated dev/test database exists; all mutation tests are rollback-only against production.
 - Browser end-to-end runs not yet performed for this batch (backend-only change).
