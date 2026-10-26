@@ -14,9 +14,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.shared.pwa import dispatch_user_pushes
-from core.config import settings
-from core.email import send_email
+from app.shared.notification_delivery import queue_notification_delivery
 
 
 async def emit_event(
@@ -95,10 +93,9 @@ async def emit_notification(
     action_url: Optional[str] = None,
     metadata: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Insert a notification into core.notifications.
-
-    This is a synchronous write-path notification.  Asynchronous delivery
-    (email, push) is handled separately by workers when they are wired.
+    """Insert a notification into core.notifications, in the caller's
+    transaction. Push (and email for urgent ones) is sent only after that
+    transaction commits - see app/shared/notification_delivery.py.
     """
     result = await db.execute(
         text("""
@@ -125,8 +122,9 @@ async def emit_notification(
     )
     row = result.first()
     if row:
-        await dispatch_user_pushes(
+        queue_notification_delivery(
             db,
+            notification_id=str(row.id),
             org_id=org_id,
             user_id=user_id,
             payload={
@@ -138,39 +136,8 @@ async def emit_notification(
                 "action_url": action_url,
                 "metadata": metadata or {},
             },
+            email_urgent=priority == "urgent",
         )
-        if priority == "urgent":
-            await _email_escalate(db, user_id=user_id, title=title, message=message, action_url=action_url)
-
-
-async def _email_escalate(
-    db: AsyncSession,
-    *,
-    user_id: str,
-    title: str,
-    message: str,
-    action_url: Optional[str],
-) -> None:
-    """Best-effort email for urgent notifications. Never raises - a failed
-    or unconfigured email send must not block the in-app notification that
-    already landed."""
-    recipient = (
-        await db.execute(
-            text("SELECT email, full_name FROM core.users WHERE id = :user_id"),
-            {"user_id": user_id},
-        )
-    ).first()
-    if not recipient or not recipient.email:
-        return
-    base = settings.PUBLIC_APP_URL.strip().rstrip("/")
-    full_url = f"{base}{action_url}" if action_url and base else None
-    link_html = f'<p><a href="{full_url}">View details</a></p>' if full_url else ""
-    await send_email(
-        to=recipient.email,
-        subject=f"[AEGIS] {title}",
-        html=f"<p>Hi {recipient.full_name or ''},</p><p>{message}</p>{link_html}",
-        text=message,
-    )
 
 
 async def emit_role_notification(

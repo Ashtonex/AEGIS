@@ -33,7 +33,7 @@ def check(cond: bool, label: str) -> None:
 @contextlib.contextmanager
 def block_outbound():
     import core.email
-    import app.shared.events as events
+    import app.shared.notification_delivery as delivery
     import app.shared.pwa as pwa
 
     async def fake_push(subscription, payload):
@@ -54,7 +54,7 @@ def block_outbound():
         setattr(obj, name, value)
 
     patch(pwa, "send_web_push", fake_push)
-    patch(events, "_email_escalate", fake_escalate)
+    patch(delivery, "email_escalate", fake_escalate)
     real_send_email = core.email.send_email
     patch(core.email, "send_email", fake_email)
     # Modules that did `from core.email import send_email` hold their own reference.
