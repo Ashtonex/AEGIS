@@ -1001,6 +1001,13 @@ export default function TendersCommand() {
             >
               ← Back to Command
             </Link>
+            <Link
+              href="/dashboard/crm/tenders/discovery"
+              className="flex items-center space-x-1.5 px-3.5 py-1.5 border border-[#D4AF37]/30 bg-[#D4AF37]/5 hover:bg-[#D4AF37]/10 rounded-sm text-[10px] font-mono tracking-widest text-[#D4AF37] uppercase transition-all"
+            >
+              <Search className="w-3.5 h-3.5" />
+              <span>e-GP Discovery</span>
+            </Link>
             <button
               onClick={() => setIsModalOpen(true)}
               className="flex items-center space-x-1.5 px-4 py-1.5 bg-[#D4AF37] text-black hover:bg-[#D4AF37]/90 rounded-sm text-[10px] font-mono tracking-widest uppercase font-bold transition-all shadow-[0_0_15px_rgba(212,175,55,0.2)]"

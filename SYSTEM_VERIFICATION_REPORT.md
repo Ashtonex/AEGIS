@@ -85,6 +85,24 @@ All rolled back with push/email stubbed; production counts checked after.
 - Full checks: `pytest tests` **1490 passed, 29 skipped, 0 failed**; SQL health check 2,201 statements, **FAILURES: 0**; `ruff --select F821` clean; `npm run build` exit 0.
 - Production after the runs: stock ledger 228, site pay runs 0, unpaid time entries 166, requisitions 1, POs 2, commitments 2 - unchanged. The 48 notifications created in the window are the 04:00/06:00 scheduled jobs and one real HR confirmation, none from these runs.
 
+## 2026-10-26/28 - e-GP tender discovery and intake (new feature, not deployed)
+
+Isolated environment: a local PostgreSQL 16 cluster built from production's
+schema (catalog read only - no rows, no personal data) plus a synthetic
+organisation/users; migration 275 applied there twice (idempotent). Production
+was never written: after all runs `crm.tenders` still 50 live / 57 total, and
+no migration-275 objects exist there.
+
+- `tests/test_egp_parser_and_matching.py` - **20 passed** (fixtures: pagination, login shell/CAPTCHA, hidden and commented-out values ignored, missing/untimed closing dates, board-vs-notice conflicts, scoring/eligibility, host allowlist, 429 not retried, bounded 5xx retries, pacing).
+- `scripts/verify_egp_tender_intake.py` (isolated DB, fixture portal) - **73/73 PASS**: authorisation; connection states from real responses; full/partial/resumed runs with no duplicates; no-matches vs empty board vs access failed vs restricted vs page cap; failed notice extraction stays unverified; import persists, appears in `/crm/tenders`, published vs internal checklist, tasks, audit, notification; reimport/retry idempotent; uncertain match flagged then linked; recheck keeps user edits, change history with evidence, apply/acknowledge; withdrawn notice flagged; failed-extraction document not "ready"; `.exe` rejected; no cookies stored; no email sent.
+  Its first runs found and fixed: checkpoint skipping past a failed page (resume would have lost it), a `varchar`/`text` bind clash in task creation, test-reset order.
+- **Live portal (read-only GETs, isolated DB)** `scripts/live_check_egp_portal.py --pages 2 --details 4`: probe verified 792 notices / 40 pages, portal clock UTC+2 = Africa/Harare; 2 pages read, run labelled partial (page cap); 1 notice opened and imported into the isolated DB with 6 published + 5 internal checklist items. 2026-10-28 UI run: 928 notices / 47 pages, 2 pages, 2 notice pages read, no failures.
+- **Browser (isolated API + production build, `next start`)**: authenticated workspace, Re-verify, Run discovery with live progress, review drawer with provenance, owner + review date saved, import, tender visible on Tenders & Bids after reload with deadline, checklist and e-GP chip; read-only user sees no run/import controls. Found and fixed: the drawer footer sat under the app's release banner (z-index).
+- SQL health check against the migrated isolated schema: 2,245 statements; the single failure is `hr/performance.py` reading `auth.users.last_sign_in_at`, absent from the local auth stub (not a production failure). All e-GP SQL plans.
+- `pytest tests` (imperium-api): **1510 passed, 29 skipped, 0 failed**. `ruff --select F821` clean. `aegis-web`: `tsc --noEmit` clean, `npm run build` exit 0.
+
+Not verified: authenticated e-GP access (not supported by design - see docs/EGP_TENDER_DISCOVERY.md); document upload from the browser (needs a real Supabase session; attach path verified at API level); a full 40+ page live run; behaviour on the production database before migration 275 is applied.
+
 ## Verification limits
 - No isolated dev/test database exists; all mutation tests are rollback-only against production.
 - Browser end-to-end runs not yet performed for this batch (backend-only change).

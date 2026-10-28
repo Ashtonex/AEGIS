@@ -6,6 +6,7 @@ import { ArrowLeft, Loader2, AlertCircle } from "lucide-react";
 import { getCrmTenderById } from "@/lib/api/crm";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { CommercialWorkspaceModal, type CommercialEntityData } from "@/components/crm/CommercialWorkspaceModal";
+import { EgpSourceChip } from "@/components/crm/tender-discovery/EgpSourceChip";
 
 export default function TenderCanonicalPage({
   params,
@@ -103,6 +104,7 @@ export default function TenderCanonicalPage({
           </div>
         ) : (
           <div className="relative">
+            <EgpSourceChip tenderId={tender.id} />
             <CommercialWorkspaceModal
               isOpen={true}
               onClose={() => {

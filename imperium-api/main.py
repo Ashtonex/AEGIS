@@ -26,6 +26,7 @@ from routers import hr_performance
 from routers import site_day
 from routers import corporate_credentials
 from routers import tender_requirement_templates
+from routers import tender_discovery
 from routers import finance_assistant
 from routers import financial_statements
 from routers import audit_controls
@@ -247,6 +248,7 @@ def create_app() -> FastAPI:
     app.include_router(tender_bids.router, prefix="/api/v1/tender-bids", tags=["Tender Bids"], dependencies=[Depends(require_resource_permission("tender_bids"))])  # fmt: skip
     app.include_router(corporate_credentials.router, prefix="/api/v1/compliance/corporate-credentials", tags=["Corporate Credentials Vault"], dependencies=[Depends(get_current_user)])  # fmt: skip
     app.include_router(tender_requirement_templates.router, prefix="/api/v1/tenders/requirements-library", tags=["Tender Requirements Library"], dependencies=[Depends(get_current_user)])  # fmt: skip
+    app.include_router(tender_discovery.router, prefix="/api/v1/tender-discovery", tags=["e-GP Tender Discovery"])
     app.include_router(maintenance_schedules.router, prefix="/api/v1/maintenance-schedules", tags=["Maintenance Schedules"], dependencies=[Depends(require_resource_permission("maintenance_schedules"))])  # fmt: skip
     app.include_router(automated_reports.router, prefix="/api/v1/automated-reports", tags=["Automated Reports"], dependencies=[Depends(require_resource_permission("automated_reports"))])  # fmt: skip
 

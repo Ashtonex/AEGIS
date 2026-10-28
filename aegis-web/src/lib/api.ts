@@ -26,3 +26,4 @@ export * from "./api/data-room";
 export * from "./api/site-day";
 export * from "./api/projects";
 export * from "./api/invoices";
+export * from "./api/tender-discovery";
