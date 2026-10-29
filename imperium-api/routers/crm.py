@@ -397,6 +397,40 @@ def _normalize_compliance_status(value: Any) -> Any:
     return key
 
 
+# Optional free-text identifiers the form sends as "" when left blank. Stored
+# as "" they collide on subcontractors_org_registration_uidx (which only skips
+# NULLs), so the second vendor registered without a number could never save.
+SUBCONTRACTOR_BLANK_TO_NULL_FIELDS = (
+    "registration_number",
+    "tax_clearance_number",
+    "vat_number",
+    "nssa_number",
+    "praz_number",
+    "contact_name",
+    "contact_email",
+    "contact_phone",
+    "physical_address",
+)
+
+
+def _blank_to_none(value: Any) -> Any:
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _subcontractor_integrity_error(exc: IntegrityError, registration_number: Optional[str]) -> HTTPException:
+    if "subcontractors_org_registration_uidx" in str(exc.orig):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A subcontractor with company registration number {registration_number} is already registered.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Subcontractor payload violates CRM database constraints.",
+    )
+
+
 class SubcontractorCreate(CrmPayload):
     name: str = Field(..., min_length=1, max_length=255)
     capability_tags: Optional[List[str]] = None
@@ -433,6 +467,11 @@ class SubcontractorCreate(CrmPayload):
     def normalize_compliance_status(cls, value: Any) -> Any:
         return _normalize_compliance_status(value)
 
+    @field_validator(*SUBCONTRACTOR_BLANK_TO_NULL_FIELDS, mode="before")
+    @classmethod
+    def blank_to_null(cls, value: Any) -> Any:
+        return _blank_to_none(value)
+
 
 class SubcontractorUpdate(CrmPayload):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
@@ -462,6 +501,11 @@ class SubcontractorUpdate(CrmPayload):
     @classmethod
     def normalize_compliance_status(cls, value: Any) -> Any:
         return _normalize_compliance_status(value)
+
+    @field_validator(*SUBCONTRACTOR_BLANK_TO_NULL_FIELDS, mode="before")
+    @classmethod
+    def blank_to_null(cls, value: Any) -> Any:
+        return _blank_to_none(value)
 
 
 SUBCONTRACTOR_COLUMNS = (
@@ -3573,7 +3617,10 @@ async def create_subcontractor(
     except HTTPException:
         await db.rollback()
         raise
-    except (DataError, IntegrityError) as exc:
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _subcontractor_integrity_error(exc, payload.registration_number) from exc
+    except DataError as exc:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -3661,7 +3708,10 @@ async def update_subcontractor(
         await db.commit()
     except HTTPException:
         raise
-    except (DataError, IntegrityError) as exc:
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _subcontractor_integrity_error(exc, payload.registration_number) from exc
+    except DataError as exc:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

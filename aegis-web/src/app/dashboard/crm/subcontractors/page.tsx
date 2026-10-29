@@ -7,7 +7,7 @@ import {
   Briefcase, X, Save, Edit2, Grid, ClipboardList, BarChart2,
   Building2, Calendar, Award
 } from 'lucide-react';
-import { getSubcontractors, createSubcontractor, updateSubcontractor } from '@/lib/api';
+import { ApiError, getSubcontractors, createSubcontractor, updateSubcontractor } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 
@@ -420,7 +420,12 @@ export default function SubcontractorRegistry() {
       }
       setShowModal(false);
     } catch (err) {
-      setSaveError('Save failed. Please retry once the connection is ready.');
+      // HTTP rejections carry the API's own user-facing detail (e.g. a
+      // duplicate registration number) - only network/timeout failures
+      // (status 0) warrant the generic retry message.
+      setSaveError(err instanceof ApiError && err.status > 0 && err.message
+        ? err.message
+        : 'Save failed. Please retry once the connection is ready.');
     } finally {
       setIsSaving(false);
     }
