@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
@@ -8,6 +8,7 @@ import {
   createExternalPlantHireAgreement,
   generateExternalPlantHireInvoice,
   getExternalPlantHireAgreements,
+  getFleet,
   getPlantRequests,
   recordExternalPlantHireSupplierInvoice,
   updateExternalPlantHireAgreement,
@@ -158,6 +159,7 @@ function CommercialHireDashboard() {
     | { type: "new" }
     | { type: "invoice"; agreement: RecordItem }
     | { type: "supplier_invoice"; agreement: RecordItem }
+    | { type: "switch_machine"; agreement: RecordItem }
     | { type: "official_invoice"; agreement: RecordItem; billableHours?: number; standingHours?: number }
     | null
   >(null);
@@ -442,7 +444,12 @@ function CommercialHireDashboard() {
                           </div>
                         ) : (
                           <div>
-                            <p className="text-xs text-paper">{text(agr, "required_asset_type") || "Company Unit"}</p>
+                            <p className="text-xs text-paper">{text(agr, "sourced_asset_make_model", "required_asset_type") || "Company Unit"}</p>
+                            {text(agr, "sourced_asset_reg_serial") && (
+                              <p className="font-mono text-[10px] text-slate-light">
+                                Reg: {text(agr, "sourced_asset_reg_serial")} | Meter: {Number(agr.sourced_meter_start ?? 0)}h
+                              </p>
+                            )}
                           </div>
                         )}
                       </TableCell>
@@ -493,6 +500,14 @@ function CommercialHireDashboard() {
 
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setModal({ type: "switch_machine", agreement: agr })}
+                            className="inline-flex items-center gap-1 border border-blue-500/50 bg-blue-500/10 px-2 py-1 text-[11px] text-blue-200 hover:bg-blue-500/20"
+                            title="Swap the machine deployed on this agreement"
+                          >
+                            <ArrowRightLeft size={11} /> Switch Machine
+                          </button>
                           {isCrossHire && (
                             <button
                               type="button"
@@ -576,6 +591,19 @@ function CommercialHireDashboard() {
             onSuccess={() => {
               setModal(null);
               setNotice("Supplier invoice record updated successfully.");
+              void refetch();
+            }}
+          />
+        )}
+
+        {/* Modal: Switch Machine */}
+        {modal?.type === "switch_machine" && modal.agreement && (
+          <SwitchMachineModal
+            agreement={modal.agreement}
+            onClose={() => setModal(null)}
+            onSuccess={(label) => {
+              setModal(null);
+              setNotice(`Machine switched to ${label}.`);
               void refetch();
             }}
           />
@@ -1288,6 +1316,203 @@ function SupplierInvoiceModal({
               className="bg-signal px-4 py-2 text-xs font-semibold text-ink hover:bg-signal/90 disabled:opacity-50"
             >
               {submitting ? "Saving..." : "Update Supplier Record"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function SwitchMachineModal({
+  agreement,
+  onClose,
+  onSuccess,
+}: {
+  agreement: RecordItem;
+  onClose: () => void;
+  onSuccess: (label: string) => void;
+}) {
+  const isCrossHire = ["cross_hire", "sub_lease"].includes(text(agreement, "fulfillment_type"));
+  const [fleet, setFleet] = useState<RecordItem[]>([]);
+  const [fleetLoading, setFleetLoading] = useState(!isCrossHire);
+  const [fleetAssetId, setFleetAssetId] = useState("");
+  const [formData, setFormData] = useState({
+    sourced_asset_category: text(agreement, "sourced_asset_category"),
+    sourced_asset_make_model: text(agreement, "sourced_asset_make_model", "required_asset_type"),
+    sourced_asset_reg_serial: text(agreement, "sourced_asset_reg_serial"),
+    sourced_meter_start: Number(agreement.sourced_meter_start ?? 0),
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Owned-fleet deals swap to another unit from the company register; cross-hire
+  // machines come from the supplier, so those are entered by hand.
+  useEffect(() => {
+    if (isCrossHire) return;
+    let cancelled = false;
+    getFleet()
+      .then((res) => {
+        if (cancelled) return;
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        setFleet(rows.filter((item): item is RecordItem => Boolean(item && typeof item === "object" && item.id)));
+      })
+      .catch(() => {
+        if (!cancelled) setErr("Could not load the fleet register. You can still enter the machine manually.");
+      })
+      .finally(() => {
+        if (!cancelled) setFleetLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCrossHire]);
+
+  const pickFleetAsset = (id: string) => {
+    setFleetAssetId(id);
+    const asset = fleet.find((a) => a.id === id);
+    if (!asset) return;
+    const makeModel = [text(asset, "make"), text(asset, "model")].filter(Boolean).join(" ");
+    setFormData({
+      sourced_asset_category: text(asset, "asset_category", "asset_type", "vehicle_type"),
+      sourced_asset_make_model: makeModel || text(asset, "asset_type", "vehicle_type", "asset_code", "vehicle_registration"),
+      sourced_asset_reg_serial: text(asset, "vehicle_registration", "serial_number", "asset_code"),
+      sourced_meter_start: Number(asset.current_meter_reading ?? asset.engine_hours ?? 0),
+    });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const makeModel = formData.sourced_asset_make_model.trim();
+    if (!makeModel) {
+      setErr("Machine make / model is required.");
+      return;
+    }
+    setSubmitting(true);
+    setErr(null);
+    try {
+      await updateExternalPlantHireAgreement(agreement.id, {
+        sourced_asset_category: formData.sourced_asset_category.trim() || null,
+        sourced_asset_make_model: makeModel,
+        sourced_asset_reg_serial: formData.sourced_asset_reg_serial.trim() || null,
+        sourced_meter_start: Math.round(Number(formData.sourced_meter_start || 0) * 100) / 100,
+      });
+      onSuccess(makeModel);
+    } catch (e: any) {
+      setErr(e instanceof ApiError ? e.message : "Failed to switch machine.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-4 backdrop-blur-sm">
+      <div className="relative w-full max-w-md border border-ink-mid bg-ink shadow-2xl">
+        <div className="flex items-center justify-between border-b border-ink-mid px-5 py-4">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Switch Machine</h2>
+            <p className="text-[11px] text-slate-light">
+              {text(agreement, "hire_agreement_number") || agreement.id.slice(0, 8)} · {text(agreement, "customer_name") || "Client"}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate hover:text-paper">
+            <X size={18} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {err && <div className="border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{err}</div>}
+
+          <div className="border border-ink-mid bg-ink-light p-3">
+            <p className="text-xs text-slate-light">
+              Current machine:{" "}
+              <span className="text-paper font-semibold">
+                {text(agreement, "sourced_asset_make_model", "required_asset_type", "sourced_asset_category") || "Not recorded"}
+              </span>
+            </p>
+            <p className="font-mono text-[10px] text-slate-light">
+              Reg/SN: {text(agreement, "sourced_asset_reg_serial") || "N/A"} | Meter: {Number(agreement.sourced_meter_start ?? 0)}h
+            </p>
+          </div>
+
+          {!isCrossHire && (
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">Pick from company fleet</label>
+              <select
+                value={fleetAssetId}
+                onChange={(e) => pickFleetAsset(e.target.value)}
+                disabled={fleetLoading}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper disabled:opacity-50"
+              >
+                <option value="">{fleetLoading ? "Loading fleet register..." : "Select a fleet unit (or enter below)"}</option>
+                {fleet.map((asset) => {
+                  const label = [text(asset, "make"), text(asset, "model")].filter(Boolean).join(" ") || text(asset, "asset_type", "vehicle_type") || "Unit";
+                  const reg = text(asset, "vehicle_registration", "asset_code");
+                  const st = text(asset, "operational_status").replace(/_/g, " ");
+                  return (
+                    <option key={asset.id} value={asset.id}>
+                      {label}{reg ? ` — ${reg}` : ""}{st ? ` (${st})` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">Asset Category</label>
+              <input
+                type="text"
+                value={formData.sourced_asset_category}
+                onChange={(e) => setFormData({ ...formData, sourced_asset_category: e.target.value })}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+                placeholder="Excavator, Tipper, Grader"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">Make & Model *</label>
+              <input
+                type="text"
+                value={formData.sourced_asset_make_model}
+                onChange={(e) => setFormData({ ...formData, sourced_asset_make_model: e.target.value })}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+                placeholder="e.g. CAT 320D"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">Reg / Serial Number</label>
+              <input
+                type="text"
+                value={formData.sourced_asset_reg_serial}
+                onChange={(e) => setFormData({ ...formData, sourced_asset_reg_serial: e.target.value })}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+                placeholder="Plate / Serial #"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">Starting Meter (hrs)</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                value={formData.sourced_meter_start}
+                onChange={(e) => setFormData({ ...formData, sourced_meter_start: Number(e.target.value) })}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs font-mono text-paper"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-ink-mid">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-slate hover:text-paper">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="bg-signal px-4 py-2 text-xs font-semibold text-ink hover:bg-signal/90 disabled:opacity-50"
+            >
+              {submitting ? "Switching..." : "Switch Machine"}
             </button>
           </div>
         </form>
