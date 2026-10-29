@@ -1042,9 +1042,10 @@ async def hr_expiry_alerts_job(ctx):
 
 
 async def close_attendance_day_job(ctx):
-    """Daily 16:35 Harare: stops the clock at 16:30 for everyone checked in by
-    signing in to AEGIS (app/services/hr/time_tracking.py). Also closes
-    yesterday, in case the worker was down at 16:35."""
+    """Daily 17:05 Harare: stops the clock at each person's day end (17:00 at
+    the latest, for site staff Mon-Thu) for everyone checked in by signing in
+    to AEGIS (app/services/hr/time_tracking.py). Also closes yesterday, in
+    case the worker was down."""
     job_id = ctx.get("job_id", "unknown")
     worker_job_id_ctx.set(job_id)
     try:
@@ -1207,7 +1208,7 @@ class WorkerSettings:
         # Hourly; acts from 07:00 Harare time, each warning sent once (hr.expiry_alerts).
         cron(hr_expiry_alerts_job, minute=25, run_at_startup=False),
         # 14:35 UTC = 16:35 Harare: the attendance clock stops at 16:30.
-        cron(close_attendance_day_job, hour=14, minute=35, run_at_startup=False),
+        cron(close_attendance_day_job, hour=15, minute=5, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

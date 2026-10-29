@@ -284,6 +284,7 @@ function EmploymentTab({ card, catalogue, busy, disabled, run }: { card: PersonC
     employment_status: p.employment_status === "terminated" ? "active" : p.employment_status,
     start_date: p.start_date ?? "",
     work_location: p.work_location ?? "",
+    work_pattern: p.work_pattern ?? "office",
     annual_leave_days: String(p.annual_leave_days ?? 21),
     line_manager_id: card.line_manager?.manager_employee_id ?? "",
   });
@@ -314,6 +315,7 @@ function EmploymentTab({ card, catalogue, busy, disabled, run }: { card: PersonC
       employment_status: form.employment_status,
       start_date: form.start_date || null,
       work_location: form.work_location.trim() || null,
+      work_pattern: form.work_pattern,
       annual_leave_days: Number(form.annual_leave_days),
     };
     if ((card.line_manager?.manager_employee_id ?? "") !== form.line_manager_id) payload.line_manager_id = form.line_manager_id || null;
@@ -352,6 +354,12 @@ function EmploymentTab({ card, catalogue, busy, disabled, run }: { card: PersonC
         </Field>
         <Field label="Day work started"><input type="date" className={inputClass} value={form.start_date} onChange={(e) => set("start_date", e.target.value)} disabled={!editable} max={today()} /></Field>
         <Field label="Base / site"><input className={inputClass} value={form.work_location} onChange={(e) => set("work_location", e.target.value)} disabled={!editable} maxLength={255} placeholder="Head office, Harare" /></Field>
+        <Field label="Working hours" hint="Office: Mon-Thu 8.5 h, Fri 8, Sat 5. Site: Mon-Thu 9 h, Fri 8, Sat 5.">
+          <select className={inputClass} value={form.work_pattern} onChange={(e) => set("work_pattern", e.target.value)} disabled={!editable}>
+            <option value="office">Office staff</option>
+            <option value="site">Site staff</option>
+          </select>
+        </Field>
         <Field label="Annual leave days"><input type="number" min={0} max={60} className={inputClass} value={form.annual_leave_days} onChange={(e) => set("annual_leave_days", e.target.value)} disabled={!editable} /></Field>
         <Field label="Status">
           <select className={inputClass} value={form.employment_status} onChange={(e) => set("employment_status", e.target.value)} disabled={!editable}>

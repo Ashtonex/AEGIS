@@ -23,6 +23,7 @@ from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.finance.cash_position import compute_cash_runway
 from app.services.inventory_service import post_cost_transaction
 from routers.payroll_runs import _compute_gross
+from routers.bank_accounts import next_cash_account_code
 from routers.bank_transactions import _next_cashbook_transaction_number
 
 router = APIRouter()
@@ -51,7 +52,8 @@ class VariationCreate(BaseModel):
 
 class CashAccountCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    account_code: str = Field(min_length=1, max_length=40)
+    # Codes are generated (routers.bank_accounts.next_cash_account_code); a supplied one is ignored.
+    account_code: Optional[str] = Field(default=None, max_length=40)
     account_name: str = Field(min_length=1, max_length=255)
     account_type: str = Field(min_length=1, max_length=24)
     bank_name: Optional[str] = Field(default=None, max_length=160)
@@ -86,6 +88,10 @@ class CashbookTransactionCreate(BaseModel):
     department_id: Optional[UUID] = None
     counterparty_type: Optional[str] = Field(default=None, max_length=40)
     counterparty_name: Optional[str] = Field(default=None, max_length=255)
+    # Another of our own cash/bank accounts on the other side: the posting
+    # becomes a transfer with a mirror leg on that account (bank -> cash
+    # lowers the bank and raises the cash).
+    counterparty_cash_account_id: Optional[UUID] = None
     payment_method: str = Field(default="bank_transfer", max_length=40)
     reference: Optional[str] = Field(default=None, max_length=160)
 
@@ -2127,7 +2133,7 @@ async def create_cash_account(
                 """),
                 {
                     "org_id": user["org_id"],
-                    "account_code": payload.account_code,
+                    "account_code": await next_cash_account_code(db, str(user["org_id"]), payload.account_type),
                     "account_name": payload.account_name,
                     "account_type": payload.account_type,
                     "bank_name": payload.bank_name,
@@ -2212,60 +2218,84 @@ async def post_cashbook_transaction(
     direction = CASHBOOK_TRANSACTION_DIRECTIONS.get(payload.transaction_type, payload.direction)
     if not direction:
         raise HTTPException(status_code=400, detail="direction is required for adjustment transactions.")
+    counter_id = payload.counterparty_cash_account_id
+    if counter_id and counter_id == payload.cash_account_id:
+        raise HTTPException(status_code=400, detail="Choose a different account on the other side of the transfer.")
 
     try:
-        # Verify cash account exists
-        acc_check = await db.execute(
-            text("SELECT 1 FROM finance.cash_accounts WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
-            {"id": payload.cash_account_id, "org_id": user["org_id"]},
-        )
-        if not acc_check.first():
-            raise HTTPException(status_code=404, detail="Cash account not found.")
-
-        transaction_number = await _next_cashbook_transaction_number(db, str(user["org_id"]))
-
-        tx_id = (
-            await db.execute(
+        wanted = [payload.cash_account_id] + ([counter_id] if counter_id else [])
+        names = {
+            row.id: row.account_name
+            for row in await db.execute(
                 text("""
-                    INSERT INTO finance.cashbook_transactions (
-                        organization_id, cash_account_id, transaction_number, transaction_date,
-                        transaction_type, direction, amount, currency, description,
-                        project_id, department_id, counterparty_type, counterparty_name, payment_method,
-                        reference, posted_by
-                    ) VALUES (
-                        :org_id, :cash_account_id, :transaction_number, :transaction_date,
-                        :transaction_type, :direction, :amount, :currency, :description,
-                        :project_id, :department_id, :counterparty_type, :counterparty_name, :payment_method,
-                        :reference, :user_id
-                    ) RETURNING id
+                    SELECT id, account_name FROM finance.cash_accounts
+                    WHERE id = ANY(:ids) AND organization_id = :org_id AND is_deleted = false
                 """),
-                {
-                    "org_id": user["org_id"],
-                    "cash_account_id": payload.cash_account_id,
-                    "transaction_number": transaction_number,
-                    "transaction_date": payload.transaction_date,
-                    "transaction_type": payload.transaction_type,
-                    "direction": direction,
-                    "amount": payload.amount,
-                    "currency": payload.currency or "USD",
-                    "description": payload.description,
-                    "project_id": payload.project_id,
-                    "department_id": payload.department_id,
-                    "counterparty_type": payload.counterparty_type,
-                    "counterparty_name": payload.counterparty_name,
-                    "payment_method": payload.payment_method,
-                    "reference": payload.reference,
-                    "user_id": user["sub"],
-                },
+                {"ids": wanted, "org_id": user["org_id"]},
             )
-        ).scalar()
+        }
+        if payload.cash_account_id not in names:
+            raise HTTPException(status_code=404, detail="Cash account not found.")
+        if counter_id and counter_id not in names:
+            raise HTTPException(status_code=404, detail="Counterparty account not found.")
+
+        async def insert_leg(account_id, leg_type, leg_direction, counterparty_type, counterparty_name):
+            return (
+                await db.execute(
+                    text("""
+                        INSERT INTO finance.cashbook_transactions (
+                            organization_id, cash_account_id, transaction_number, transaction_date,
+                            transaction_type, direction, amount, currency, description,
+                            project_id, department_id, counterparty_type, counterparty_name, payment_method,
+                            reference, posted_by
+                        ) VALUES (
+                            :org_id, :cash_account_id, :transaction_number, :transaction_date,
+                            :transaction_type, :direction, :amount, :currency, :description,
+                            :project_id, :department_id, :counterparty_type, :counterparty_name, :payment_method,
+                            :reference, :user_id
+                        ) RETURNING id
+                    """),
+                    {
+                        "org_id": user["org_id"],
+                        "cash_account_id": account_id,
+                        "transaction_number": await _next_cashbook_transaction_number(db, str(user["org_id"])),
+                        "transaction_date": payload.transaction_date,
+                        "transaction_type": leg_type,
+                        "direction": leg_direction,
+                        "amount": payload.amount,
+                        "currency": payload.currency or "USD",
+                        "description": payload.description,
+                        "project_id": payload.project_id,
+                        "department_id": payload.department_id,
+                        "counterparty_type": counterparty_type,
+                        "counterparty_name": counterparty_name,
+                        "payment_method": payload.payment_method,
+                        "reference": payload.reference,
+                        "user_id": user["sub"],
+                    },
+                )
+            ).scalar()
 
         # current_balance is maintained by the finance.cashbook_transactions_sync_balance
-        # trigger (migration 037/192) - it fires on this INSERT automatically. A manual
+        # trigger (migration 037/192) - it fires on each INSERT automatically. A manual
         # update here used to double-count every receipt/payment (fixed in Phase 4).
+        if not counter_id:
+            tx_id = await insert_leg(payload.cash_account_id, payload.transaction_type, direction,
+                                     payload.counterparty_type, payload.counterparty_name)
+            await db.commit()
+            return ok({"id": str(tx_id)}, "Cashbook transaction posted.")
 
+        # Money moving between two of our own accounts: one leg out, one leg in,
+        # posted together so both balances move or neither does.
+        mirror = "inflow" if direction == "outflow" else "outflow"
+        leg_type = {"outflow": "transfer_out", "inflow": "transfer_in"}
+        tx_id = await insert_leg(payload.cash_account_id, leg_type[direction], direction,
+                                 "cash_account", names[counter_id])
+        mirror_id = await insert_leg(counter_id, leg_type[mirror], mirror,
+                                     "cash_account", names[payload.cash_account_id])
         await db.commit()
-        return ok({"id": str(tx_id)}, "Cashbook transaction posted.")
+        return ok({"id": str(tx_id), "mirror_id": str(mirror_id)},
+                  f"Transfer posted: {names[payload.cash_account_id]} and {names[counter_id]} both updated.")
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Transaction number already exists.")

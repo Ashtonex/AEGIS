@@ -52,7 +52,7 @@ CASH_WITHDRAWAL = "cash_withdrawal"
 SITE_PETTY_CASH = "site_petty_cash"   # a use of HQ cash: handed to a project's petty cash float
 EXCLUDED_FROM_PROJECT_BOOKS = ("reversal", "internal_transfer", SITE_PETTY_CASH)
 HQ_PETTY_CASH_CODE = "HQPC"
-HQ_PETTY_CASH_NAME = "HQ Petty Cash"
+HQ_PETTY_CASH_NAME = "Cash"  # renamed from "HQ Petty Cash" 2026-10-29; found by code, not name
 
 # GL account codes (see migration 228 for 1010/1060/5950/6900/7800)
 BANK, HQ_PETTY, RECEIVABLE, INTER_ACCOUNT, SUSPENSE = "1000", "1010", "1100", "1060", "1900"

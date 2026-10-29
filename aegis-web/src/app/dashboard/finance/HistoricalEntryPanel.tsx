@@ -64,7 +64,7 @@ export function HistoricalEntryPanel() {
     new_client_name: "", new_contact_name: "", new_contact_email: "",
   });
   const [cashAccountForm, setCashAccountForm] = useState({
-    account_code: "", account_name: "Main Account", account_type: "bank", opening_balance: "0",
+    account_name: "Main Account", account_type: "bank", opening_balance: "0",
   });
   const [revenueForm, setRevenueForm] = useState({ amount: "", historical_date: today(), description: "", evidence_quality: "" as string, document_id: "" });
   const [costForm, setCostForm] = useState({
@@ -129,22 +129,21 @@ export function HistoricalEntryPanel() {
 
   async function createOpeningBalance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!cashAccountForm.account_code.trim() || !cashAccountForm.account_name.trim()) {
-      setNotice("Account code and name are required.");
+    if (!cashAccountForm.account_name.trim()) {
+      setNotice("Account name is required.");
       return;
     }
     setBusy("cash");
     setNotice(null);
     try {
       await createFinanceCashAccount({
-        account_code: cashAccountForm.account_code,
         account_name: cashAccountForm.account_name,
         account_type: cashAccountForm.account_type,
         currency: "USD",
         opening_balance: Number(cashAccountForm.opening_balance || 0),
       });
       setNotice("Opening cash balance recorded.");
-      setCashAccountForm({ account_code: "", account_name: "Main Account", account_type: "bank", opening_balance: "0" });
+      setCashAccountForm({ account_name: "Main Account", account_type: "bank", opening_balance: "0" });
       await load();
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Could not record the opening balance.");
@@ -344,10 +343,6 @@ export function HistoricalEntryPanel() {
           <span className="font-mono text-xs uppercase tracking-wider text-slate">Step 1 - Opening cash position</span>
         </div>
         <div className="grid gap-3 p-4 md:grid-cols-4">
-          <div>
-            <label className={labelClass}>Account code</label>
-            <input value={cashAccountForm.account_code} onChange={(e) => setCashAccountForm((c) => ({ ...c, account_code: e.target.value }))} className={inputClass} placeholder="MAIN-USD" />
-          </div>
           <div>
             <label className={labelClass}>Account name</label>
             <input value={cashAccountForm.account_name} onChange={(e) => setCashAccountForm((c) => ({ ...c, account_name: e.target.value }))} className={inputClass} />

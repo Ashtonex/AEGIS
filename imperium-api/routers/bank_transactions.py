@@ -850,7 +850,7 @@ async def create_project_entry(
     message = {
         "matched": "Recorded and matched to the bank statement.",
         "suggested": "Recorded. Possible bank lines found - confirm which one it is.",
-        "not_bank": "Cash entry recorded through HQ Petty Cash.",
+        "not_bank": "Cash entry recorded through the Cash account.",
     }.get(entry["match_status"], "Recorded. It will be matched when the bank statement is uploaded.")
     return ok(entry, message)
 

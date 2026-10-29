@@ -25,6 +25,7 @@ export type PersonCore = {
   start_date: string | null;
   end_date: string | null;
   work_location: string | null;
+  work_pattern: "office" | "site";
   annual_leave_days: number | null;
   version: number;
   login_email: string | null;

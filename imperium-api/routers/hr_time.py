@@ -185,8 +185,8 @@ async def close_day(
     user: dict = Depends(require_permission("hr.attendance.record")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Stop the clock at 16:30 now instead of waiting for the afternoon job."""
+    """Stop the clock now instead of waiting for the evening job."""
     d = day or tt.local_now().date()
-    if d == tt.local_now().date() and tt.local_now() < tt.day_end_at(d):
-        raise HTTPException(409, "It is not 16:30 yet")
+    if d == tt.local_now().date() and tt.local_now() < tt.latest_day_end_at(d):
+        raise HTTPException(409, f"The working day runs until {tt.latest_day_end_at(d):%H:%M}")
     return ok({"closed": await tt.close_day(db, d, user["org_id"])}, "Day closed.")

@@ -4,9 +4,14 @@ The rules the business asked for (2026-10-04):
 
 * Signing in to AEGIS checks you in. The first sign-in of the day (Harare time)
   is the check-in time, and later sign-ins change nothing.
-* The clock stops at 16:30. hours = 16:30 (or now, if earlier today) minus
-  check-in. app.workers.arq_worker.close_attendance_day_job writes the 16:30
-  check-out each afternoon.
+* Standard hours (2026-10-29), from 08:00 (WORK_PATTERNS):
+    office staff  Mon-Thu 8.5, Fri 8, Sat 5
+    site staff    Mon-Thu 9,   Fri 8, Sat 5
+  hr.employees.work_pattern says which applies. Signing in within 30 minutes
+  of the start earns the day's standard hours. Signing in later is a late
+  arrival: only the hours from check-in to the day's end count.
+  app.workers.arq_worker.close_attendance_day_job writes the check-out each
+  evening.
 * The working week runs Saturday to Friday. From Friday (with catch-up until
   Monday) the first sign-in shows the person their week, and they confirm it or
   correct it with a reason. A day on approved leave is excluded (0 hours) and
@@ -32,9 +37,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 HARARE = timezone(timedelta(hours=2), "CAT")
-DAY_END = time(16, 30)
-LATE_AFTER = time(8, 15)
-STANDARD_HOURS = 8.5  # 08:00-16:30
+DAY_START = time(8, 0)
+GRACE = timedelta(minutes=30)  # signing in this late or later is a late arrival
+LATE_AFTER = time(8, 30)
+# Standard hours by weekday (Monday = 0). Sunday is not a working day.
+WORK_PATTERNS: dict[str, tuple[float, ...]] = {
+    "office": (8.5, 8.5, 8.5, 8.5, 8.0, 5.0, 0.0),
+    "site": (9.0, 9.0, 9.0, 9.0, 8.0, 5.0, 0.0),
+}
+DEFAULT_PATTERN = "office"
 CATCH_UP_DAYS = 3  # Friday's confirmation is still offered Sat, Sun and Mon
 
 
@@ -42,8 +53,25 @@ def local_now() -> datetime:
     return datetime.now(HARARE)
 
 
-def day_end_at(day: date) -> datetime:
-    return datetime.combine(day, DAY_END, tzinfo=HARARE)
+def standard_hours(day: date, pattern: Optional[str] = None) -> float:
+    return WORK_PATTERNS.get(pattern or DEFAULT_PATTERN, WORK_PATTERNS[DEFAULT_PATTERN])[day.weekday()]
+
+
+def is_workday(day: date, holidays) -> bool:
+    return day.weekday() != 6 and day not in holidays
+
+
+def day_end_at(day: date, pattern: Optional[str] = None) -> datetime:
+    """When the clock stops: 08:00 plus the day's standard hours."""
+    return datetime.combine(day, DAY_START, tzinfo=HARARE) + timedelta(hours=standard_hours(day, pattern))
+
+
+def latest_day_end_at(day: date) -> datetime:
+    return max(day_end_at(day, p) for p in WORK_PATTERNS)
+
+
+def arrived_late(check_in: datetime, day: date) -> bool:
+    return check_in.astimezone(HARARE) >= datetime.combine(day, DAY_START, tzinfo=HARARE) + GRACE
 
 
 def week_end_for(day: date) -> date:
@@ -62,22 +90,25 @@ def confirmation_week_due(today: date) -> Optional[date]:
     return friday if (today - friday).days <= CATCH_UP_DAYS else None
 
 
-def worked_hours(check_in: Optional[datetime], check_out: Optional[datetime], day: date, now: datetime) -> float:
-    """Hours from check-in to check-out, or to 16:30 (or now, while today is still running)."""
+def worked_hours(check_in: Optional[datetime], check_out: Optional[datetime], day: date, now: datetime,
+                 pattern: Optional[str] = None) -> float:
+    """The day's standard hours for an on-time sign-in; for a late one, check-in
+    to the day's end. While today is still running, the hours so far."""
     if not check_in:
         return 0.0
+    end = day_end_at(day, pattern)
+    if day >= now.astimezone(HARARE).date() and now < end:
+        return round(max(0.0, (now - check_in).total_seconds() / 3600), 2)
+    if not arrived_late(check_in, day):
+        return standard_hours(day, pattern)
     if check_out:
-        end = check_out
-    elif day < now.astimezone(HARARE).date():
-        end = day_end_at(day)
-    else:
-        end = min(now, day_end_at(day))
+        end = min(check_out, end)
     return round(max(0.0, (end - check_in).total_seconds() / 3600), 2)
 
 
 async def own_employee(db: AsyncSession, user: dict) -> Optional[dict]:
     row = (await db.execute(text("""
-        SELECT id, employee_name, employee_number, employment_status, start_date FROM hr.employees
+        SELECT id, employee_name, employee_number, employment_status, start_date, work_pattern FROM hr.employees
         WHERE organization_id=:org AND linked_user_id=:uid AND is_deleted=false
     """), {"org": user["org_id"], "uid": user["user_id"]})).mappings().first()
     return dict(row) if row else None
@@ -90,7 +121,8 @@ async def check_in(db: AsyncSession, user: dict, *, now: Optional[datetime] = No
         return {"linked": False}
     now = (now or local_now()).astimezone(HARARE)
     today = now.date()
-    status = "late" if today.weekday() < 5 and now.time() > LATE_AFTER else "present"
+    pattern = employee["work_pattern"]
+    status = "late" if standard_hours(today, pattern) > 0 and arrived_late(now, today) else "present"
     created = (await db.execute(text("""
         INSERT INTO hr.attendance_records (organization_id, employee_id, attendance_date, check_in, status,
           regular_hours, overtime_hours, source, recorded_by, notes)
@@ -122,8 +154,9 @@ async def check_in(db: AsyncSession, user: dict, *, now: Optional[datetime] = No
         "checked_in_now": bool(created),
         "check_in": record["check_in"] if record else None,
         "status": record["status"] if record else None,
-        "hours_so_far": worked_hours(record["check_in"], record["check_out"], today, now) if record else 0,
-        "day_ends_at": day_end_at(today).isoformat(),
+        "hours_so_far": worked_hours(record["check_in"], record["check_out"], today, now, pattern) if record else 0,
+        "day_ends_at": day_end_at(today, pattern).isoformat(),
+        "work_pattern": pattern,
         "weekly_confirmation_due": week_due,
     }
 
@@ -161,14 +194,16 @@ async def week_view(db: AsyncSession, org_id, employee_id, week_end: date, *, no
     """), {"org": org_id, "emp": employee_id, "s": start, "e": week_end})).mappings()}
     holidays = await _holidays(db, org_id, start, week_end)
     leave = await _leave(db, org_id, [employee_id], start, week_end)
+    pattern = (await db.execute(text("SELECT work_pattern FROM hr.employees WHERE organization_id=:org AND id=:emp"),
+                                {"org": org_id, "emp": employee_id})).scalar()
     days = []
     for offset in range(7):
         d = start + timedelta(days=offset)
         rec = records.get(d)
         leave_type = leave.get((str(employee_id), d))
-        workday = d.weekday() < 5 and d not in holidays
+        workday = is_workday(d, holidays)
         if rec and rec["check_in"]:
-            hours = worked_hours(rec["check_in"], rec["check_out"], d, now)
+            hours = worked_hours(rec["check_in"], rec["check_out"], d, now, pattern)
         else:
             hours = float(rec["regular_hours"] or 0) + float(rec["overtime_hours"] or 0) if rec else 0.0
         if leave_type and workday:
@@ -190,6 +225,8 @@ async def week_view(db: AsyncSession, org_id, employee_id, week_end: date, *, no
             "check_out": rec["check_out"].astimezone(HARARE).strftime("%H:%M") if rec and rec["check_out"] else None,
             "auto_closed": bool(rec and rec["auto_closed"]),
             "source": rec["source"] if rec else None,
+            "late": bool(rec and rec["check_in"] and workday and arrived_late(rec["check_in"], d)),
+            "standard_hours": standard_hours(d, pattern) if workday else 0.0,
             "recorded_hours": 0.0 if kind == "leave" else hours,
         })
     existing = (await db.execute(text("""SELECT id, status, days, confirmed_hours, decision_note, submitted_at, decided_at
@@ -200,7 +237,9 @@ async def week_view(db: AsyncSession, org_id, employee_id, week_end: date, *, no
         "recorded_hours": round(sum(d["recorded_hours"] for d in days), 2),
         "leave_days": sum(1 for d in days if d["kind"] == "leave"),
         "absent_days": sum(1 for d in days if d["kind"] == "absent"),
-        "standard_hours": STANDARD_HOURS * sum(1 for d in days if d["workday"] and d["kind"] != "leave"),
+        "standard_hours": sum(d["standard_hours"] for d in days if d["kind"] != "leave"),
+        "late_days": sum(1 for d in days if d["late"]),
+        "work_pattern": pattern or DEFAULT_PATTERN,
         "confirmation": dict(existing) if existing else None,
     }
 
@@ -262,18 +301,24 @@ async def line_manager_user(db, org_id, employee_id) -> Optional[str]:
 
 
 async def close_day(db: AsyncSession, day: date, org_id: Optional[str] = None) -> int:
-    """Stop the clock at 16:30 for every sign-in record of `day` still open."""
-    result = await db.execute(text("""
-        UPDATE hr.attendance_records r
-        SET check_out = GREATEST(r.check_in, CAST(:end_at AS timestamptz)),
-            regular_hours = ROUND(CAST(GREATEST(0, EXTRACT(EPOCH FROM (CAST(:end_at AS timestamptz) - r.check_in)) / 3600) AS numeric), 2),
-            auto_closed = true, updated_at = now()
+    """Stop the clock at each person's day end for every sign-in record of `day` still open."""
+    rows = (await db.execute(text("""
+        SELECT r.id, r.check_in, e.work_pattern FROM hr.attendance_records r
+        JOIN hr.employees e ON e.id = r.employee_id AND e.organization_id = r.organization_id
         WHERE r.attendance_date = :day AND r.check_out IS NULL AND r.check_in IS NOT NULL AND r.is_deleted = false
           AND r.source = 'aegis_login'
           AND (CAST(:org AS uuid) IS NULL OR r.organization_id = CAST(:org AS uuid))
-    """), {"day": day, "end_at": day_end_at(day), "org": org_id})
+    """), {"day": day, "org": org_id})).mappings().all()
+    closing_time = latest_day_end_at(day) + timedelta(days=1)  # any moment after every day end
+    for r in rows:
+        end_at = max(r["check_in"], day_end_at(day, r["work_pattern"]))
+        await db.execute(text("""
+            UPDATE hr.attendance_records SET check_out = :end_at, regular_hours = :hours, auto_closed = true, updated_at = now()
+            WHERE id = :id
+        """), {"id": r["id"], "end_at": end_at,
+               "hours": worked_hours(r["check_in"], end_at, day, closing_time, r["work_pattern"])})
     await db.commit()
-    return result.rowcount or 0
+    return len(rows)
 
 
 async def day_board(db: AsyncSession, org_id, day: date) -> list[dict[str, Any]]:
@@ -282,7 +327,7 @@ async def day_board(db: AsyncSession, org_id, day: date) -> list[dict[str, Any]]
     holidays = await _holidays(db, org_id, day, day)
     leave = await _leave(db, org_id, None, day, day)
     rows = (await db.execute(text("""
-        SELECT e.id, e.employee_number, e.employee_name, p.name AS position_name,
+        SELECT e.id, e.employee_number, e.employee_name, e.work_pattern, p.name AS position_name,
                r.check_in, r.check_out, r.status, r.source, r.regular_hours, r.overtime_hours, r.auto_closed
         FROM hr.employees e
         LEFT JOIN hr.positions p ON p.id=e.position_id AND p.organization_id=e.organization_id
@@ -292,11 +337,11 @@ async def day_board(db: AsyncSession, org_id, day: date) -> list[dict[str, Any]]
         ORDER BY r.check_in NULLS LAST, e.employee_name
     """), {"org": org_id, "day": day})).mappings()
     out = []
-    workday = day.weekday() < 5 and day not in holidays
+    workday = is_workday(day, holidays)
     for r in rows:
         leave_type = leave.get((str(r["id"]), day))
         if r["check_in"]:
-            hours = worked_hours(r["check_in"], r["check_out"], day, now)
+            hours = worked_hours(r["check_in"], r["check_out"], day, now, r["work_pattern"])
             state = "late" if r["status"] == "late" else "in"
         elif r["status"]:
             hours = float(r["regular_hours"] or 0) + float(r["overtime_hours"] or 0)
@@ -306,7 +351,7 @@ async def day_board(db: AsyncSession, org_id, day: date) -> list[dict[str, Any]]
             state = "leave" if leave_type else "holiday" if day in holidays else "not_in" if workday else "off"
         out.append({
             "employee_id": str(r["id"]), "employee_number": r["employee_number"], "employee_name": r["employee_name"],
-            "position_name": r["position_name"], "state": state, "leave_type": leave_type,
+            "position_name": r["position_name"], "work_pattern": r["work_pattern"], "state": state, "leave_type": leave_type,
             "check_in": r["check_in"].astimezone(HARARE).strftime("%H:%M") if r["check_in"] else None,
             "check_out": r["check_out"].astimezone(HARARE).strftime("%H:%M") if r["check_out"] else None,
             "auto_closed": bool(r["auto_closed"]), "source": r["source"], "hours": hours,
@@ -321,7 +366,7 @@ async def absence_report(db: AsyncSession, org_id, start: date, end: date) -> li
     holidays = await _holidays(db, org_id, start, end)
     leave = await _leave(db, org_id, None, start, end)
     people = (await db.execute(text("""
-        SELECT e.id, e.employee_number, e.employee_name, e.start_date, e.end_date, p.name AS position_name
+        SELECT e.id, e.employee_number, e.employee_name, e.start_date, e.end_date, e.work_pattern, p.name AS position_name
         FROM hr.employees e LEFT JOIN hr.positions p ON p.id=e.position_id AND p.organization_id=e.organization_id
         WHERE e.organization_id=:org AND e.is_deleted=false
           AND (e.employment_status <> 'terminated' OR e.end_date >= :s)
@@ -347,10 +392,10 @@ async def absence_report(db: AsyncSession, org_id, start: date, end: date) -> li
         d = first
         while d <= stop:
             rec = by_person.get(pid, {}).get(d)
-            is_workday = d.weekday() < 5 and d not in holidays
+            workday = is_workday(d, holidays)
             if rec:
-                hours += worked_hours(rec["check_in"], rec["check_out"], d, now) if rec["check_in"] else float(rec["regular_hours"] or 0)
-            if is_workday:
+                hours += worked_hours(rec["check_in"], rec["check_out"], d, now, p["work_pattern"]) if rec["check_in"] else float(rec["regular_hours"] or 0)
+            if workday:
                 workdays += 1
                 lt = leave.get((pid, d))
                 if lt:

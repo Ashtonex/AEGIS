@@ -137,7 +137,7 @@ def working_days(start: date, end: date, *, holidays: set[date], leave: set[date
     days = []
     d = start
     while d <= end:
-        if d.weekday() < 5 and d not in holidays and d not in leave and (employed_from is None or d >= employed_from):
+        if tt.is_workday(d, holidays) and d not in leave and (employed_from is None or d >= employed_from):
             days.append(d)
         d += timedelta(days=1)
     return days

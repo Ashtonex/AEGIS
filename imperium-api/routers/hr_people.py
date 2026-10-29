@@ -48,6 +48,8 @@ class EmploymentUpdate(Input):
     employment_type: Optional[Literal["permanent", "fixed_term", "casual", "intern", "consultant"]] = None
     start_date: Optional[date] = None
     work_location: Optional[str] = Field(default=None, max_length=255)
+    # Office or site working hours (app/services/hr/time_tracking.py WORK_PATTERNS).
+    work_pattern: Optional[Literal["office", "site"]] = None
     annual_leave_days: Optional[int] = Field(default=None, ge=0, le=60)
     employment_status: Optional[Literal["active", "on_leave", "suspended"]] = None
     # Sentinel: omit to leave unchanged, null to clear the line manager.
@@ -263,7 +265,7 @@ async def _dossier(db: AsyncSession, user: dict, employee_id, *, is_self: bool =
     employment_keys = (
         "id", "employee_number", "employee_name", "job_title", "employment_status", "employment_type",
         "category_id", "category_name", "category_code", "position_id", "position_name", "position_code",
-        "position_grade", "department_id", "department_name", "start_date", "end_date", "work_location",
+        "position_grade", "department_id", "department_name", "start_date", "end_date", "work_location", "work_pattern",
         "annual_leave_days", "version", "login_email", "login_active", "left_reason", "left_recorded_at",
         "left_recorded_by_name", "created_at", "self_profile_updated_at",
     )
@@ -506,7 +508,7 @@ async def people_register(
         await db.execute(
             text("""
             SELECT e.id, e.employee_number, e.employee_name, e.job_title, e.employment_status, e.employment_type,
-                   e.start_date, e.end_date, e.work_location, e.version,
+                   e.start_date, e.end_date, e.work_location, e.work_pattern, e.version,
                    c.id AS category_id, c.name AS category_name, p.name AS position_name, d.name AS department_name,
                    u.email AS login_email, u.is_active AS login_active,
                    m.employee_name AS line_manager_name, m.id AS line_manager_id,

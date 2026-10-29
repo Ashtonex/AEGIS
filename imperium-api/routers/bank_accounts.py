@@ -29,7 +29,8 @@ _RESERVE = frozenset({"id", "created_at", "updated_at", "organization_id", "crea
 class CashAccountCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    account_code: str = Field(min_length=1, max_length=30)
+    # Codes are generated (see next_cash_account_code); a supplied one is ignored.
+    account_code: Optional[str] = Field(default=None, max_length=30)
     account_name: str = Field(min_length=1, max_length=160)
     account_type: str = Field(default="bank", pattern=r"^(bank|cash|mobile_money)$")
     bank_name: Optional[str] = Field(default=None, max_length=160)
@@ -52,6 +53,26 @@ class CashAccountUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+ACCOUNT_CODE_PREFIX = {"bank": "BANK", "cash": "CASH", "mobile_money": "MOB"}
+
+
+async def next_cash_account_code(db: AsyncSession, org_id: str, account_type: str) -> str:
+    """The next free code for this account type: BANK-01, CASH-04, MOB-01...
+    A bare prefix (the original "CASH") counts as number 1."""
+    prefix = ACCOUNT_CODE_PREFIX.get(account_type, "ACC")
+    highest = (await db.execute(
+        text("""
+            SELECT COALESCE(MAX(CASE WHEN account_code = :bare THEN 1
+                                     ELSE CAST(substring(account_code FROM CAST(:numbered AS text)) AS int) END), 0)
+            FROM finance.cash_accounts
+            WHERE organization_id = :org_id
+              AND (account_code = :bare OR account_code ~ CAST(:numbered AS text))
+        """),
+        {"org_id": org_id, "bare": prefix, "numbered": f"^{prefix}-([0-9]+)$"},
+    )).scalar() or 0
+    return f"{prefix}-{highest + 1:02d}"
+
 
 def _require_org(user: dict) -> str:
     org_id = user.get("org_id")
@@ -146,7 +167,7 @@ async def create_cash_account(
             """),
             {
                 "org_id": org_id,
-                "account_code": payload.account_code,
+                "account_code": await next_cash_account_code(db, org_id, payload.account_type),
                 "account_name": payload.account_name,
                 "account_type": payload.account_type,
                 "bank_name": payload.bank_name,

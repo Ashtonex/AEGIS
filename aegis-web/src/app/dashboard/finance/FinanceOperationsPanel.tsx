@@ -52,8 +52,8 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
   const [cashbookTotal, setCashbookTotal] = useState<number | null>(null);
   const [cashbookLoadingMore, setCashbookLoadingMore] = useState(false);
 
-  const [cashAccount, setCashAccount] = useState({ account_code: "", account_name: "", account_type: "bank", bank_name: "", account_number: "", currency: "USD", opening_balance: "0" });
-  const [cashTx, setCashTx] = useState({ cash_account_id: "", transaction_date: today(), transaction_type: "receipt", project_id: "", counterparty_name: "", payment_method: "bank_transfer", reference: "", description: "", amount: "0", currency: "USD" });
+  const [cashAccount, setCashAccount] = useState({ account_name: "", account_type: "bank", bank_name: "", account_number: "", currency: "USD", opening_balance: "0" });
+  const [cashTx, setCashTx] = useState({ cash_account_id: "", transaction_date: today(), transaction_type: "receipt", project_id: "", counterparty_cash_account_id: "", counterparty_name: "", payment_method: "bank_transfer", reference: "", description: "", amount: "0", currency: "USD" });
   const [receipt, setReceipt] = useState({ cash_account_id: "", progress_claim_id: "", transaction_date: today(), amount: "0", reference: "", counterparty_name: "" });
   const [claims, setClaims] = useState<RecordData[]>([]);
 
@@ -125,7 +125,14 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
 
   const postCashbook = (event: React.FormEvent) => {
     event.preventDefault();
-    void runAction(() => postFinanceCashbookTransaction({ ...cashTx, project_id: cashTx.project_id || null, amount: Number(cashTx.amount) }), "Cashbook transaction posted.");
+    const transfer = Boolean(cashTx.counterparty_cash_account_id);
+    void runAction(() => postFinanceCashbookTransaction({
+      ...cashTx,
+      project_id: cashTx.project_id || null,
+      counterparty_cash_account_id: cashTx.counterparty_cash_account_id || null,
+      counterparty_name: transfer ? null : cashTx.counterparty_name || null,
+      amount: Number(cashTx.amount),
+    }), transfer ? "Transfer posted - both account balances updated." : "Cashbook transaction posted.");
   };
 
   const allocateReceipt = (event: React.FormEvent) => {
@@ -151,13 +158,13 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
         <section className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           <Panel title="Cash Accounts">
             <form onSubmit={createAccount} className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              <input className={inputClass} placeholder="Code" value={cashAccount.account_code} onChange={e => setCashAccount({ ...cashAccount, account_code: e.target.value })} required />
               <input className={inputClass} placeholder="Account name" value={cashAccount.account_name} onChange={e => setCashAccount({ ...cashAccount, account_name: e.target.value })} required />
               <select className={inputClass} value={cashAccount.account_type} onChange={e => setCashAccount({ ...cashAccount, account_type: e.target.value })}><option value="bank">Bank</option><option value="cash">Cash</option><option value="mobile_money">Mobile money</option></select>
               <input className={inputClass} placeholder="Opening balance" value={cashAccount.opening_balance} onChange={e => setCashAccount({ ...cashAccount, opening_balance: e.target.value })} />
               <input className={inputClass} placeholder="Bank" value={cashAccount.bank_name} onChange={e => setCashAccount({ ...cashAccount, bank_name: e.target.value })} />
               <input className={inputClass} placeholder="Account number" value={cashAccount.account_number} onChange={e => setCashAccount({ ...cashAccount, account_number: e.target.value })} />
               <button disabled={busy} className={buttonClass}><Plus className="h-4 w-4" />Create Account</button>
+              <p className="text-xs text-slate self-center">The account code is generated automatically.</p>
             </form>
             <SimpleTable rows={accounts} columns={["account_code", "account_name", "account_type", "current_balance"]} />
           </Panel>
@@ -207,7 +214,28 @@ function SelectAccount({ accounts, value, onChange }: { accounts: RecordData[]; 
 }
 
 function CashbookForm({ accounts, projects, cashTx, setCashTx, onSubmit, busy }: { accounts: RecordData[]; projects: RecordData[]; cashTx: RecordData; setCashTx: (value: any) => void; onSubmit: (event: React.FormEvent) => void; busy: boolean }) {
-  return <form onSubmit={onSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-3"><SelectAccount accounts={accounts} value={cashTx.cash_account_id} onChange={v => setCashTx({ ...cashTx, cash_account_id: v })} /><input className={inputClass} type="date" value={cashTx.transaction_date} onChange={e => setCashTx({ ...cashTx, transaction_date: e.target.value })} /><select className={inputClass} value={cashTx.transaction_type} onChange={e => setCashTx({ ...cashTx, transaction_type: e.target.value })}><option value="receipt">Receipt</option><option value="payment">Payment</option><option value="transfer_in">Transfer in</option><option value="transfer_out">Transfer out</option><option value="bank_charge">Bank charge</option><option value="adjustment">Adjustment</option></select>{cashTx.transaction_type === "adjustment" && <select className={inputClass} value={cashTx.direction || ""} onChange={e => setCashTx({ ...cashTx, direction: e.target.value })} required><option value="">Adjustment direction</option><option value="inflow">Increase cash (inflow)</option><option value="outflow">Decrease cash (outflow)</option></select>}<select className={inputClass} value={cashTx.project_id} onChange={e => setCashTx({ ...cashTx, project_id: e.target.value })}><option value="">No project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><input className={inputClass} placeholder="Counterparty" value={cashTx.counterparty_name} onChange={e => setCashTx({ ...cashTx, counterparty_name: e.target.value })} /><input className={inputClass} placeholder="Reference" value={cashTx.reference} onChange={e => setCashTx({ ...cashTx, reference: e.target.value })} /><input className={inputClass} placeholder="Amount" value={cashTx.amount} onChange={e => setCashTx({ ...cashTx, amount: e.target.value })} /><input className={inputClass} placeholder="Description" value={cashTx.description} onChange={e => setCashTx({ ...cashTx, description: e.target.value })} required /><button disabled={busy} className={buttonClass}><Plus className="h-4 w-4" />Post Transaction</button></form>;
+  return <form onSubmit={onSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-3"><SelectAccount accounts={accounts} value={cashTx.cash_account_id} onChange={v => setCashTx({ ...cashTx, cash_account_id: v, counterparty_cash_account_id: cashTx.counterparty_cash_account_id === v ? "" : cashTx.counterparty_cash_account_id })} /><input className={inputClass} type="date" value={cashTx.transaction_date} onChange={e => setCashTx({ ...cashTx, transaction_date: e.target.value })} /><select className={inputClass} value={cashTx.transaction_type} onChange={e => setCashTx({ ...cashTx, transaction_type: e.target.value })}><option value="receipt">Receipt</option><option value="payment">Payment</option><option value="transfer_in">Transfer in</option><option value="transfer_out">Transfer out</option><option value="bank_charge">Bank charge</option><option value="adjustment">Adjustment</option></select>{cashTx.transaction_type === "adjustment" && <select className={inputClass} value={cashTx.direction || ""} onChange={e => setCashTx({ ...cashTx, direction: e.target.value })} required><option value="">Adjustment direction</option><option value="inflow">Increase cash (inflow)</option><option value="outflow">Decrease cash (outflow)</option></select>}<select className={inputClass} value={cashTx.project_id} onChange={e => setCashTx({ ...cashTx, project_id: e.target.value })}><option value="">No project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><CounterpartySelect accounts={accounts} cashTx={cashTx} setCashTx={setCashTx} /><input className={inputClass} placeholder="Reference" value={cashTx.reference} onChange={e => setCashTx({ ...cashTx, reference: e.target.value })} /><input className={inputClass} placeholder="Amount" value={cashTx.amount} onChange={e => setCashTx({ ...cashTx, amount: e.target.value })} /><input className={inputClass} placeholder="Description" value={cashTx.description} onChange={e => setCashTx({ ...cashTx, description: e.target.value })} required /><button disabled={busy} className={buttonClass}><Plus className="h-4 w-4" />Post Transaction</button></form>;
+}
+
+const EXTERNAL_PARTY = "__external__";
+
+// The other side of the posting: one of our own control accounts (a transfer -
+// bank to cash lowers the bank and raises the cash) or an outside party by name.
+function CounterpartySelect({ accounts, cashTx, setCashTx }: { accounts: RecordData[]; cashTx: RecordData; setCashTx: (value: any) => void }) {
+  const external = !cashTx.counterparty_cash_account_id;
+  const selectValue = cashTx.counterparty_cash_account_id || EXTERNAL_PARTY;
+  const others = accounts.filter((account) => account.id !== cashTx.cash_account_id);
+  return (
+    <>
+      <select className={inputClass} value={selectValue} onChange={e => setCashTx({ ...cashTx, counterparty_cash_account_id: e.target.value === EXTERNAL_PARTY ? "" : e.target.value })} aria-label="Counterparty">
+        <option value={EXTERNAL_PARTY}>Counterparty: external party</option>
+        {others.map(account => <option key={account.id} value={account.id}>{account.account_code} - {account.account_name}</option>)}
+      </select>
+      {external
+        ? <input className={inputClass} placeholder="External party name" value={cashTx.counterparty_name} onChange={e => setCashTx({ ...cashTx, counterparty_name: e.target.value })} />
+        : <p className="text-xs text-slate self-center">Posts as a transfer: money {["receipt", "transfer_in"].includes(cashTx.transaction_type) || cashTx.direction === "inflow" ? "comes in from" : "goes out to"} this account, so both balances move.</p>}
+    </>
+  );
 }
 
 const MATCH_STATUS_CLASS: Record<string, string> = {

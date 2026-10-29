@@ -34,10 +34,11 @@ def test_grade_bands():
     assert perf.grade_for(None) is None
 
 
-def test_working_days_skip_weekends_holidays_leave_and_before_start():
+def test_working_days_skip_sundays_holidays_leave_and_before_start():
+    # Saturday 3 Oct is a (5-hour) working day; Sunday 4 Oct is not.
     days = perf.working_days(date(2026, 10, 2), date(2026, 10, 8), holidays={date(2026, 10, 5)},
                              leave={date(2026, 10, 6)}, employed_from=date(2026, 10, 3))
-    assert days == [date(2026, 10, 7), date(2026, 10, 8)]
+    assert days == [date(2026, 10, 3), date(2026, 10, 7), date(2026, 10, 8)]
 
 
 def full_week(**overrides) -> WeekMetrics:
