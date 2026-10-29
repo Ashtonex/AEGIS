@@ -381,6 +381,17 @@ async def main() -> None:
         check(t1["review_workflow_status"] == workflow.QS_PREPARATION and t1["stage"] == "Bid Prep",
               "7. verified -> QS Preparation and stage Bid Prep")
         check(len(prep) == 3, f"7. preparation tasks: site visit, BOQ, clarifications ({[p['title'][:30] for p in prep]})")
+        prep_id = await scalar(db, """SELECT id FROM crm.tasks WHERE entity_id = :t AND source_event = 'tender_qs_preparation'
+                                      ORDER BY created_at LIMIT 1""", t=tid)
+        try:
+            await crm_tasks.update_task(prep_id, crm_tasks.TaskUpdate(status="completed", evidence_ref="BOQ priced"),
+                                        BackgroundTasks(), user=qs_x, db=db)
+            prep_status = await scalar(db, "SELECT status FROM crm.tasks WHERE id = :i", i=prep_id)
+        except HTTPException as exc:
+            await db.rollback()
+            prep_status = f"HTTP {exc.status_code}: {exc.detail}"
+        check(prep_status in ("completed", "under_review"),
+              f"7. the QS can complete a preparation task from the Tasks page ({prep_status})")
         events = await rows(db, "SELECT action FROM crm.tender_workflow_events WHERE tender_id = :t ORDER BY created_at", t=tid)
         actions = [e["action"] for e in events]
         check({"captured", "review_assigned", "source_material_collected", "review_submitted", "qs_assigned",
@@ -406,6 +417,27 @@ async def main() -> None:
         await notify.deliver_pending(db, tender_id=mid)
         sent_to_gloria = [s for s in SENT if s[0] == gloria["email"].lower() and f"Manual tender {tag}" in s[1]]
         check(len(sent_to_gloria) == 1, f"9. retried once and delivered once ({len(sent_to_gloria)})")
+
+        # No reviewers configured: the tender waits in Captured, then moves to
+        # review as soon as reviewers are saved.
+        await db.execute(text("UPDATE crm.tender_automation_settings SET review_user_ids = '[]' WHERE organization_id = :org"), {"org": org_id})
+        await db.commit()
+        bt = BackgroundTasks()
+        created = await crm_router.create_tender(crm_router.TenderCreate(tender_name=f"Captured tender {tag}", stage="Tender Identified"),
+                                                 bt, user=admin, db=db)
+        cid = created["data"]["id"]
+        check(await scalar(db, "SELECT review_workflow_status FROM crm.tenders WHERE id = :t", t=cid) == workflow.CAPTURED,
+              "4. with no reviewers configured a new tender waits in Captured")
+        saved = await tw.update_settings(tw.SettingsUpdate(review_user_ids=[rev_a["user_id"], rev_b["user_id"]]), user=admin, db=db)
+        ct = (await rows(db, "SELECT * FROM crm.tenders WHERE id = :t", t=cid))[0]
+        review_tasks = await scalar(db, """SELECT count(*) FROM crm.tasks WHERE entity_id = :t AND source_event = 'tender_intake_review'
+                                           AND is_deleted = false""", t=cid)
+        check(ct["review_workflow_status"] == workflow.PENDING_REVIEW and ct["review_primary_user_id"] is not None and review_tasks == 2
+              and "moved to initial review" in saved["message"],
+              f"4. saving reviewers moves the waiting tender to review with tasks ({ct['review_workflow_status']}, {review_tasks})")
+        again = await workflow.start_workflow(db, org_id=org_id, tender_id=cid, actor=admin["user_id"], origin="admin_start")
+        await db.rollback()
+        check(again.get("already_started") is True, "4. starting it again leaves it as it is")
 
         view = await tw._tender_view(db, admin, tid, await tw._perms(db, admin))
         check(view["workflow"]["status"] == workflow.QS_PREPARATION and view["documents"], "tender record view loads with documents and history")

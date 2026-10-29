@@ -15,7 +15,9 @@ done or not-applicable-with-a-reason, the facts each item confirms must
 actually be recorded, and the reviewer must explicitly confirm. Review and QS
 tasks are crm.tasks rows tagged generation_rule = 'tender_workflow_gate'; the
 generic task screen refuses to complete them (routers/crm_tasks.py) so the
-gate can't be skipped by ticking a task.
+gate can't be skipped by ticking a task. QS preparation tasks carry the same
+tag (so they list and reassign with the tender) but are ordinary work the QS
+completes from the task screen - nothing in the workflow closes them.
 
 Every function writes in the caller's transaction and never commits.
 """
@@ -48,6 +50,8 @@ STATUS_LABELS = {
 }
 REVIEW_OPEN = (PENDING_REVIEW, RETURNED)
 GATE_RULE = "tender_workflow_gate"
+# Tagged GATE_RULE but not a gate: completed by the QS on the task screen.
+PREPARATION_EVENT = "tender_qs_preparation"
 TENDER_URL = "/dashboard/crm/tenders/{id}"
 
 # (key, label, guidance). All required; any can be marked not applicable
@@ -257,16 +261,18 @@ async def _ensure_review_items(db: AsyncSession, org_id: str, tender_id: str) ->
 
 
 async def start_workflow(db: AsyncSession, *, org_id: str, tender_id: str, actor: Optional[str], origin: str) -> dict:
-    """Idempotent: a tender already on the workflow is left as it is.
+    """Idempotent: a tender already past Captured is left as it is. A tender
+    waiting in Captured (no reviewers were configured) resumes here.
     Returns {"status", "primary", "support", "blocked"}."""
     tender = await load_tender(db, org_id, tender_id, lock=True)
-    if tender["review_workflow_status"]:
+    if tender["review_workflow_status"] not in (None, CAPTURED):
         return {"status": tender["review_workflow_status"], "already_started": True}
     settings = await get_settings(db, org_id, lock=True)
-    await db.execute(text("UPDATE crm.tenders SET review_workflow_status = :s, updated_at = NOW() WHERE id = :id"),
-                     {"s": CAPTURED, "id": tender_id})
-    await record_event(db, org_id=org_id, tender_id=tender_id, action="captured", actor=actor, from_status=None,
-                       to_status=CAPTURED, data={"origin": origin})
+    if tender["review_workflow_status"] is None:
+        await db.execute(text("UPDATE crm.tenders SET review_workflow_status = :s, updated_at = NOW() WHERE id = :id"),
+                         {"s": CAPTURED, "id": tender_id})
+        await record_event(db, org_id=org_id, tender_id=tender_id, action="captured", actor=actor, from_status=None,
+                           to_status=CAPTURED, data={"origin": origin})
     await _ensure_review_items(db, org_id, tender_id)
 
     reviewers = await active_users(db, org_id, _id_list(settings["review_user_ids"]))
@@ -315,6 +321,21 @@ async def start_workflow(db: AsyncSession, *, org_id: str, tender_id: str, actor
                        data={"primary_user_id": str(primary["id"]), "primary_name": primary["full_name"],
                              "support_user_ids": [str(s["id"]) for s in support], "due_date": due.isoformat()})
     return {"status": PENDING_REVIEW, "primary": primary, "support": support, "blocked": None}
+
+
+async def resume_captured(db: AsyncSession, org_id: str, *, actor: Optional[str]) -> int:
+    """Start review on every tender left waiting in Captured (saved while no
+    reviewers were configured). Returns how many moved to review."""
+    ids = (await db.execute(
+        text("""SELECT id FROM crm.tenders WHERE organization_id = :org_id AND is_deleted = false
+                  AND review_workflow_status = :s ORDER BY created_at"""),
+        {"org_id": org_id, "s": CAPTURED},
+    )).scalars().all()
+    started = 0
+    for tender_id in ids:
+        result = await start_workflow(db, org_id=org_id, tender_id=str(tender_id), actor=actor, origin="reviewers_configured")
+        started += result["status"] == PENDING_REVIEW
+    return started
 
 
 # ----------------------------------------------------------------------------
@@ -701,7 +722,7 @@ async def _create_preparation_tasks(db: AsyncSession, *, org_id: str, tender: di
                          f"{visit_day:%d %b %Y %H:%M}{where}. Bring what the bidding document asks for and collect the "
                          f"attendance certificate.\n{tender['site_visit_details'] or ''}"),
             assignee=qs, due=max(today, visit_day.date() - timedelta(days=1)), priority="urgent",
-            source_event="tender_qs_preparation", actor=actor)
+            source_event=PREPARATION_EVENT, actor=actor)
         if task:
             created.append(task)
     boq_due = max(today, deadline_day - timedelta(days=3)) if deadline_day else today + timedelta(days=5)
@@ -709,7 +730,7 @@ async def _create_preparation_tasks(db: AsyncSession, *, org_id: str, tender: di
         db, org_id=org_id, tender_id=tender_id, dedupe=f"TENDER_WF:{tender_id}:qs_prep:boq",
         title=f"Prepare, review and price the BOQ: {name}",
         description="Take the BOQ from the attached bidding documents, take off and price it, and get it reviewed before the deadline.",
-        assignee=qs, due=boq_due, priority="high", source_event="tender_qs_preparation", actor=actor)
+        assignee=qs, due=boq_due, priority="high", source_event=PREPARATION_EVENT, actor=actor)
     if task:
         created.append(task)
     outstanding = (tender["outstanding_notes"] or "").strip()
@@ -720,7 +741,7 @@ async def _create_preparation_tasks(db: AsyncSession, *, org_id: str, tender: di
             title=f"Follow up missing technical information / clarifications: {name}",
             description=("Outstanding from review:\n" + (outstanding or "-") + (f"\n\nQS notes:\n{notes}" if notes else "")
                          + "\nSend clarification requests before the clarification deadline."),
-            assignee=qs, due=max(today, clarification_due), priority="high", source_event="tender_qs_preparation",
+            assignee=qs, due=max(today, clarification_due), priority="high", source_event=PREPARATION_EVENT,
             actor=actor)
         if task:
             created.append(task)
@@ -745,7 +766,7 @@ async def reassign(db: AsyncSession, user: dict, tender_id: str, *, role: str, u
     elif role == "qs":
         if tender["review_workflow_status"] not in (PENDING_QS, RETURNED, QS_PREPARATION):
             raise HTTPException(status_code=409, detail="A QS is only assigned once the review has been submitted.")
-        column, events = "qs_assigned_user_id", ("tender_qs_verification", "tender_qs_preparation")
+        column, events = "qs_assigned_user_id", ("tender_qs_verification", PREPARATION_EVENT)
     else:
         raise HTTPException(status_code=422, detail="Role must be primary_reviewer or qs.")
     old = str(tender[column]) if tender[column] else None

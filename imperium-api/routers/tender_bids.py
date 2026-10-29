@@ -367,8 +367,13 @@ async def create_item(
 
     try:
         result = await db.execute(query, params)
-        await db.commit()
         new_id = str(result.scalar())
+        # Initial-review workflow and new-tender emails, as for every new
+        # tender - in the same transaction, so a tender never exists off it.
+        await on_tender_entered(db, org_id=user["org_id"], tender_id=new_id,
+                                actor=user.get("user_id") or user.get("sub"), origin="manual_entry")
+        await db.commit()
+        background_tasks.add_task(tender_after_commit, user["org_id"], [new_id], post_import_hooks=False)
 
         # Best-effort Microsoft Calendar sync (Phase 15/16) - only fires if
         # the create payload actually set a deadline/visit date.
@@ -376,16 +381,6 @@ async def create_item(
             db, org_id=user["org_id"], item_id=new_id,
             sync_submission="submission_deadline" in safe_keys, sync_visit="site_visit_at" in safe_keys,
         )
-
-        # Initial-review workflow and new-tender emails, as for every new tender.
-        try:
-            await on_tender_entered(db, org_id=user["org_id"], tender_id=new_id,
-                                    actor=user.get("user_id") or user.get("sub"), origin="manual_entry")
-            await db.commit()
-            background_tasks.add_task(tender_after_commit, user["org_id"], [new_id], post_import_hooks=False)
-        except Exception:  # noqa: BLE001 - the tender is saved; the workflow can be started by an admin
-            await db.rollback()
-            logger.exception("tender_workflow.start_failed", tender_id=new_id)
 
         return {
             "success": True,

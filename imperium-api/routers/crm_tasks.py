@@ -16,7 +16,7 @@ from core.security import require_permission, user_has_permission
 from app.shared.events import emit_notification
 from app.shared import task_routing
 from app.shared.task_gates import sync_gate_from_task
-from app.services.tenders.workflow import GATE_RULE as TENDER_GATE_RULE
+from app.services.tenders.workflow import GATE_RULE as TENDER_GATE_RULE, PREPARATION_EVENT as TENDER_PREP_EVENT
 from app.shared.task_stacks import ENTITY_DEPARTMENT_CODE, generate_task_stack
 from app.services.microsoft import teams_notify
 
@@ -839,7 +839,7 @@ async def update_task(
                        review_submitted_at, review_submitted_by_user_id,
                        gate_effect, applicability_result, created_by,
                        contribution_target_type, contribution_target_id, contribution_target_field,
-                       generation_rule, entity_id
+                       generation_rule, source_event, entity_id
                 FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false
             """),
             {"id": task_id, "org_id": org_id},
@@ -853,8 +853,9 @@ async def update_task(
     if not safe_keys:
         return {"success": True, "data": {"id": str(task_id)}, "message": "No fields to update.", "meta": {}}
     # Tender review / QS tasks close from the tender's review and QS actions,
-    # which enforce the checklist gate - never from here.
-    if current["generation_rule"] == TENDER_GATE_RULE and (
+    # which enforce the checklist gate - never from here. QS preparation tasks
+    # (site visit, BOQ, clarifications) come after the gate and close here.
+    if current["generation_rule"] == TENDER_GATE_RULE and current["source_event"] != TENDER_PREP_EVENT and (
         ("status" in safe_keys and values["status"] in ("under_review", "completed", "not_applicable", "cancelled", "superseded"))
         or ("applicability_result" in safe_keys and values["applicability_result"] == "not_applicable")
     ):
@@ -1077,10 +1078,11 @@ async def delete_task(
                 updated_at = NOW()
             WHERE id = :id AND organization_id = :org_id
               AND status NOT IN ('completed','cancelled','superseded')
-              AND generation_rule IS DISTINCT FROM :gate_rule
+              AND (generation_rule IS DISTINCT FROM :gate_rule OR source_event = :prep_event)
             RETURNING id
         """),
-        {"id": task_id, "org_id": user["org_id"], "user_id": user["user_id"], "gate_rule": TENDER_GATE_RULE},
+        {"id": task_id, "org_id": user["org_id"], "user_id": user["user_id"], "gate_rule": TENDER_GATE_RULE,
+         "prep_event": TENDER_PREP_EVENT},
     )
     if not result.first():
         await db.rollback()

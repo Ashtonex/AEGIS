@@ -189,8 +189,13 @@ export function TenderReviewPanel({ tenderId, onChanged }: { tenderId: string; o
             <button className={btn.ghost} disabled={!!busy} onClick={() => run("start", () => startTenderWorkflow(tenderId, false))}>Start review</button>
             <button className={btn.primary} disabled={!!busy} onClick={() => run("start", () => startTenderWorkflow(tenderId, true))}>Start review + send new-tender email</button>
           </>
+        ) : status === "captured" && perms.is_admin ? (
+          <button className={btn.primary} disabled={!!busy} onClick={() => run("start", () => startTenderWorkflow(tenderId, false))}>Assign reviewers</button>
         ) : undefined}
       >
+        {status === "captured" && (
+          <p className="mb-3 text-sm text-amber-200">No initial reviewers were configured when this tender arrived, so it is waiting in Captured. Add reviewers in Tender automation (waiting tenders move to review when you save), or{perms.is_admin ? " assign them here." : " ask a tender workflow admin to assign them."}</p>
+        )}
         {status === null ? (
           <p className="text-sm text-slate-light">This tender was entered before the review workflow existed and is not on it.{perms.is_admin ? "" : " A tender workflow admin can start it."}</p>
         ) : (

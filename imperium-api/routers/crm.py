@@ -3390,6 +3390,10 @@ async def create_tender(
             },
         )
         new_tender_id = result.scalar()
+        # Initial-review workflow (Ekow / Marvellous) and the new-tender emails,
+        # in the same transaction so a tender never exists off the workflow.
+        await on_tender_entered(db, org_id=org_id, tender_id=str(new_tender_id),
+                                actor=user.get("user_id") or user.get("sub"), origin="manual_entry")
         await db.commit()
     except (DataError, IntegrityError) as exc:
         await db.rollback()
@@ -3402,16 +3406,7 @@ async def create_tender(
         db, org_id=org_id, entity_type="tender", entity_id=new_tender_id, created_by=user.get("sub"),
     )
 
-    # Initial-review workflow (Ekow / Marvellous) and the new-tender emails.
-    # The tender is already saved: a problem here is logged, not a failed create.
-    try:
-        await on_tender_entered(db, org_id=org_id, tender_id=str(new_tender_id),
-                                actor=user.get("user_id") or user.get("sub"), origin="manual_entry")
-        await db.commit()
-        background_tasks.add_task(tender_after_commit, org_id, [str(new_tender_id)], post_import_hooks=False)
-    except Exception:  # noqa: BLE001
-        await db.rollback()
-        logger.exception("tender_workflow.start_failed", tender_id=str(new_tender_id))
+    background_tasks.add_task(tender_after_commit, org_id, [str(new_tender_id)], post_import_hooks=False)
 
     return {
         "success": True,

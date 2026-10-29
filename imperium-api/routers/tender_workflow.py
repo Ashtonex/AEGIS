@@ -487,10 +487,15 @@ async def update_settings(payload: SettingsUpdate, user: dict = Depends(require_
     requeued = 0
     if {"notify_user_ids", "notify_extra_emails"} & set(values):
         requeued = await notify.requeue_unresolved(db, org_id)
+    # Tenders that arrived while nobody was configured to review them.
+    resumed = await workflow.resume_captured(db, org_id, actor=_uid(user)) if values.get("review_user_ids") else 0
     await db.commit()
     if requeued:
         await notify.deliver_pending(db, org_id=org_id)
-    return _ok(await _settings_view(db, org_id), "Tender automation settings saved.")
+    message = "Tender automation settings saved."
+    if resumed:
+        message += f" {resumed} tender{'s' if resumed != 1 else ''} waiting in Captured moved to initial review."
+    return _ok(await _settings_view(db, org_id), message)
 
 
 @router.post("/admin/deliveries/{delivery_id}/retry")
