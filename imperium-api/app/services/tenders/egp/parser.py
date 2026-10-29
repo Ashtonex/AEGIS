@@ -18,6 +18,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
@@ -236,6 +237,12 @@ DETAIL_LABELS = {
     "documents": "documents",
     "schedule of activity": "schedule_of_activity",
     "shortlisted suppliers": "shortlisted_suppliers",
+    # Shown only on notices that set them (hidden labels are skipped).
+    "bid security amount(domestic)": "bid_security_amount",
+    "bid security amount (domestic)": "bid_security_amount",
+    "establishment amount(domestic)": "bid_bond_establishment_fee",
+    "establishment amount (domestic)": "bid_bond_establishment_fee",
+    "spoc fee": "spoc_fee",
 }
 DATE_FIELDS = {"published_at", "closing_at", "last_updated_at", "date_created"}
 LINK_FIELDS = {"documents", "schedule_of_activity", "shortlisted_suppliers"}
@@ -243,10 +250,10 @@ LINK_FIELDS = {"documents", "schedule_of_activity", "shortlisted_suppliers"}
 # Fields the public page does not publish. They stay null and become
 # questions unless an official document supplies them.
 NOT_ON_PUBLIC_PAGE = {
-    "site_visit": "Mandatory site visit / pre-bid meeting: not shown on the public notice (the activity schedule needs an e-GP login).",
-    "clarification_deadline": "Clarification deadline: not shown on the public notice.",
-    "bid_security": "Bid security requirement: not shown on the public notice - check the bidding documents.",
-    "required_bid_documents": "Required bid documents: only in the bidding documents (e-GP login required).",
+    "site_visit": "Site visit / pre-bid meeting: read from the e-GP activity schedule when documents are collected - the bidding documents can add a compulsory site visit the schedule does not show.",
+    "clarification_deadline": "Clarification deadline: read from the e-GP activity schedule when documents are collected.",
+    "bid_security": "Bid security form and validity: only in the bidding documents (the notice shows an amount at most).",
+    "required_bid_documents": "Required bid documents: only in the bidding documents.",
     "estimated_value": "Estimated value / budget: not published on the notice.",
     "official_contact": "Official contact details: not published on the public notice.",
 }
@@ -489,3 +496,112 @@ def content_hash(fields: dict[str, dict]) -> str:
     stable = {k: comparable(k, v) if k in DATE_FIELDS else (v or {}).get("value") for k, v in fields.items() if k not in VOLATILE_FIELDS}
     payload = json.dumps(stable, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+# ----------------------------------------------------------------------------
+# Popups the notice page loads for every visitor (its "Documents: Preview" and
+# "Schedule of activity: View all activity" buttons). Served without a login
+# when requested the way the page requests them (XMLHttpRequest).
+# ----------------------------------------------------------------------------
+
+DOCUMENT_DOWNLOAD_PATH = "/privateUploads/downloads/"
+
+
+@dataclass
+class OfficialDocument:
+    key: str            # the portal's document id - stable across reads
+    name: str
+    url: str
+    published_raw: Optional[str]
+    published_at: Optional[str]
+
+
+def parse_document_list(html: str, url: str) -> tuple[list[OfficialDocument], bool]:
+    """Returns (documents, structure_found). Only links to the portal's own
+    download endpoint count; anything else in the popup is ignored."""
+    soup = BeautifulSoup(html, "html.parser")
+    structure_found = "document name" in clean(soup.get_text(" ")).lower()
+    documents: list[OfficialDocument] = []
+    seen: set[str] = set()
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        absolute = _absolute(href) if href.startswith("/") else href
+        parts = urlsplit(absolute)
+        if parts.scheme != "https" or parts.hostname != "egp.praz.org.zw" or parts.path != DOCUMENT_DOWNLOAD_PATH:
+            continue
+        key = (parse_qs(parts.query).get("id") or [""])[0]
+        if not key.isdigit() or key in seen:
+            continue
+        seen.add(key)
+        name = clean(link.get_text()) or f"document-{key}"
+        row = link.find_parent("tr")
+        cells = [clean(td.get_text(" ")) for td in row.find_all("td")] if row else []
+        raw_date = cells[-1] if len(cells) >= 3 else None
+        parsed = parse_portal_datetime(raw_date)
+        documents.append(OfficialDocument(key=key, name=name[:255], url=absolute, published_raw=raw_date,
+                                          published_at=parsed.at.isoformat() if parsed and parsed.at else None))
+    return documents, structure_found
+
+
+SCHEDULE_LABELS = {
+    "pre-bid meeting": "pre_bid_mode",
+    "pre-bid venue": "pre_bid_venue",
+    "pre-bid meeting start date and time": "pre_bid_start",
+    "pre-bid meeting end date and time": "pre_bid_end",
+    "tender published date": "published_at",
+    "request for clarification": "clarification_deadline",
+    "bid addendum issuance last date and time": "addendum_last",
+    "bid submission deadline date and time": "submission_deadline",
+    "bid opening start date and time": "bid_opening",
+}
+SCHEDULE_DATE_KEYS = {"pre_bid_start", "pre_bid_end", "published_at", "clarification_deadline", "addendum_last",
+                      "submission_deadline", "bid_opening"}
+
+
+def parse_schedule(html: str, url: str) -> tuple[dict[str, dict], bool]:
+    """The 'Schedule of activity' popup as evidence-carrying fields. A label
+    with nothing after it (e.g. an empty venue) yields no field."""
+    soup = BeautifulSoup(html, "html.parser")
+    lines = [clean(line) for line in soup.get_text("\n").split("\n")]
+    lines = [line for line in lines if line and line != "×"]
+    structure_found = any(line.lower().startswith("schedule of activity") for line in lines)
+    fields: dict[str, dict] = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        label, value = None, None
+        if line.endswith(":"):
+            label = line[:-1].strip()
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            if nxt and not nxt.endswith(":"):
+                value, i = nxt, i + 1
+        elif ":" in line:
+            head, _, tail = line.partition(":")
+            if head.strip().lower() in SCHEDULE_LABELS:
+                label, value = head.strip(), tail.strip()
+        i += 1
+        key = SCHEDULE_LABELS.get((label or "").lower())
+        if not key or not value:
+            continue
+        excerpt = f"{label}: {value}"
+        if key in SCHEDULE_DATE_KEYS:
+            parsed = parse_portal_datetime(value)
+            typed = {"at": parsed.at.isoformat() if parsed and parsed.at else None,
+                     "date": parsed.day.isoformat() if parsed and parsed.day else None,
+                     "time_specified": bool(parsed and parsed.time_specified)}
+            fields[key] = evidence(typed, raw=value, url=url, section="Schedule of activity", excerpt=excerpt,
+                                   confidence="high" if parsed and parsed.at else "low")
+        else:
+            fields[key] = evidence(value, raw=value, url=url, section="Schedule of activity", excerpt=excerpt)
+    return fields, structure_found
+
+
+def parse_amount(raw: Optional[str]) -> Optional[float]:
+    """'500', '1,500.00', 'USD 500' -> 500.0; anything else -> None."""
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", clean(raw).replace("\xa0", " "))
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None

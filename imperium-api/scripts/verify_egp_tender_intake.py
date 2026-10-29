@@ -27,7 +27,7 @@ if (urlsplit(os.environ.get("DATABASE_URL", "")).hostname or "") not in ("127.0.
     sys.exit("Refusing to run: DATABASE_URL must point at an isolated local database.")
 
 import httpx  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
+from fastapi import BackgroundTasks, HTTPException  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from _rollback_harness import FAILURES, OUTBOUND_CALLS, block_outbound, check  # noqa: E402
@@ -125,6 +125,12 @@ async def main() -> None:
     with block_outbound():
         async with AsyncSessionLocal() as db:
             org_id = str(await scalar(db, "SELECT id FROM core.organizations LIMIT 1"))
+            # This script checks the 275 intake on its own (its decision /
+            # documents tasks). With the 276 review workflow on, review tasks
+            # replace those - covered by verify_tender_intake_workflow.py.
+            await db.execute(text("""INSERT INTO crm.tender_automation_settings (organization_id, workflow_enabled, notify_enabled)
+                                     VALUES (:org, false, false) ON CONFLICT (organization_id)
+                                     DO UPDATE SET workflow_enabled = false, notify_enabled = false"""), {"org": org_id})
             for table in ("tender_source_changes", "tender_source_snapshots", "tender_candidate_documents", "tender_candidates", "tender_discovery_runs", "tender_sources"):
                 await db.execute(text(f"DELETE FROM crm.{table}"))  # nosec B608 - isolated test DB reset
             for table in ("core.document_links", "core.documents", "core.file_attachments", "crm.tender_requirements"):
@@ -216,7 +222,7 @@ async def main() -> None:
             print("\n== 7/8/10. Import -> persisted tender in the existing pipeline")
             cand = staged["900001"]
             review_day = (date.today() + timedelta(days=3)).isoformat()
-            result = await td.import_selected(td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])], responsible_user_id=u["owner"]["user_id"],
+            result = await td.import_selected(background=BackgroundTasks(), payload=td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])], responsible_user_id=u["owner"]["user_id"],
                                                                internal_review_date=review_day), user=u["manager"], db=db)
             first = result["data"][0]
             check(first["status"] == "imported" and first["tender_url"] == f"/dashboard/crm/tenders/{first['tender_id']}", f"import result {first['status']} with saved-record link")
@@ -248,29 +254,29 @@ async def main() -> None:
             print("\n== 9. Reimport and retry create no duplicates")
             counts = lambda: scalar(db, "SELECT count(*) FROM crm.tenders") , lambda: scalar(db, "SELECT count(*) FROM crm.tasks WHERE deduplication_key LIKE 'EGP_INTAKE:%'")  # noqa: E731
             t0, k0 = await counts[0](), await counts[1]()
-            again = await td.import_selected(td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])]), user=u["manager"], db=db)
+            again = await td.import_selected(background=BackgroundTasks(), payload=td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])]), user=u["manager"], db=db)
             check(again["data"][0]["status"] == "already_imported", "re-import -> already_imported")
             await db.execute(text("UPDATE crm.tender_candidates SET review_status = 'new', tender_id = NULL WHERE id = :id"), {"id": cand["id"]})
             await db.commit()
-            retry = await td.import_selected(td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])]), user=u["manager"], db=db)
+            retry = await td.import_selected(background=BackgroundTasks(), payload=td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])]), user=u["manager"], db=db)
             check(retry["data"][0]["status"] == "linked_existing" and retry["data"][0]["tender_id"] == tid, "retry after a lost response links to the same tender")
             check(await counts[0]() == t0 and await counts[1]() == k0, "no extra tenders or tasks after reimport/retry")
             dup_reqs = await scalar(db, "SELECT count(*) - count(DISTINCT dedupe_key) FROM crm.tender_requirements WHERE tender_id = :id AND dedupe_key IS NOT NULL", id=tid)
             check(dup_reqs == 0, "no duplicate checklist rows")
 
             print("\n== 9b. Uncertain match is flagged, not silently merged")
-            manual = await crm_router.create_tender(crm_router.TenderCreate(tender_name=BULAWAYO_ROADS.title, stage="Tender Identified"), user=u["manager"], db=db)
+            manual = await crm_router.create_tender(crm_router.TenderCreate(tender_name=BULAWAYO_ROADS.title, stage="Tender Identified"), BackgroundTasks(), user=u["manager"], db=db)
             manual_id = manual["data"]["id"]
             bcand = (await rows(db, "SELECT id FROM crm.tender_candidates WHERE source_notice_id = '900004'"))[0]["id"]
-            flagged = await td.import_selected(td.ImportRequest(items=[td.ImportItem(candidate_id=bcand)]), user=u["manager"], db=db)
+            flagged = await td.import_selected(background=BackgroundTasks(), payload=td.ImportRequest(items=[td.ImportItem(candidate_id=bcand)]), user=u["manager"], db=db)
             check(flagged["data"][0]["status"] == "needs_dedupe_review" and flagged["data"][0]["possible_duplicates"][0]["id"] == str(manual_id),
                   "same title as a manual tender -> needs_dedupe_review")
-            linked_res = await td.import_selected(td.ImportRequest(items=[td.ImportItem(candidate_id=bcand, link_to_tender_id=manual_id)]), user=u["manager"], db=db)
+            linked_res = await td.import_selected(background=BackgroundTasks(), payload=td.ImportRequest(items=[td.ImportItem(candidate_id=bcand, link_to_tender_id=manual_id)]), user=u["manager"], db=db)
             check(linked_res["data"][0]["status"] == "linked_existing" and linked_res["data"][0]["tender_id"] == str(manual_id), "reviewer links it to the manual tender")
             check(await scalar(db, "SELECT source_notice_id FROM crm.tenders WHERE id = :id", id=manual_id) == "900004", "manual tender now carries the e-GP source")
 
             print("\n== 11/12. Recheck preserves user edits; addenda produce change history")
-            await td.import_selected(td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])]), user=u["manager"], db=db)
+            await td.import_selected(background=BackgroundTasks(), payload=td.ImportRequest(items=[td.ImportItem(candidate_id=cand["id"])]), user=u["manager"], db=db)
             await db.execute(text("UPDATE crm.tenders SET bid_amount = 12345, assigned_to_user_id = :a, stage = 'Bid Prep', region = 'Edited by SNC' WHERE id = :id"),
                              {"a": u["admin"]["user_id"], "id": tid})
             await db.commit()
@@ -354,6 +360,9 @@ async def main() -> None:
             check(leaked == 0, "portal cookies/CSRF tokens never persisted")
             check(all(c[0] in ("web_push", "email_escalation") for c in OUTBOUND_CALLS) and not any(c[0] == "email" for c in OUTBOUND_CALLS),
                   f"no email sent ({len(OUTBOUND_CALLS)} stubbed push call(s))")
+            await db.execute(text("UPDATE crm.tender_automation_settings SET workflow_enabled = true, notify_enabled = true WHERE organization_id = :org"),
+                             {"org": org_id})
+            await db.commit()
 
     print("\nRESULT:", "ALL CHECKS PASSED" if not FAILURES else f"{len(FAILURES)} FAILURE(S):")
     for failure in FAILURES:

@@ -40,9 +40,12 @@ import {
   Plus,
   RefreshCw,
   Upload,
+  MapPin,
+  ClipboardCheck,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { DealDocumentsPanel } from "@/components/crm/DealDocumentsPanel";
+import { TenderReviewPanel } from "@/components/crm/tender-workflow/TenderReviewPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 import { supabase } from "@/lib/supabase";
@@ -52,6 +55,9 @@ import {
   markCrmOpportunityWon,
   markCrmOpportunityLost,
   updateCrmTender,
+  awardCrmTender,
+  closeoutCrmTender,
+  deleteCrmTender,
   createCrmActivity,
   getCrmActivities,
   createCrmOpportunityQuotation,
@@ -137,6 +143,65 @@ export interface TenderRequirementItem {
   notes?: string | null;
 }
 
+// ISO timestamp -> value for an <input type="datetime-local"> in the viewer's timezone.
+function toLocalDateTimeInput(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// One next step per line; the tender award/close-out endpoints accept 1-12.
+function parseNextSteps(raw: string): string[] {
+  return raw.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 12);
+}
+
+const TENDER_OPEN_STAGES = ["Tender Identified", "Bid Prep", "Submitted", "Adjudication"];
+const OPPORTUNITY_STAGES: { value: string; label: string }[] = [
+  { value: "Qualification", label: "Qualification" },
+  { value: "Site Visit", label: "Site Visit" },
+  { value: "Quotation", label: "Proposal / Quotation" },
+  { value: "Negotiation", label: "Negotiation" },
+  { value: "Contract", label: "Contract (Won)" },
+  { value: "Lost", label: "Lost" },
+];
+
+const inputCls =
+  "h-10 w-full rounded-md border border-white/10 bg-black/40 px-3 text-sm text-paper [color-scheme:dark] placeholder:text-slate transition-colors focus:border-signal/60 focus:outline-none focus:ring-2 focus:ring-signal/15 disabled:cursor-not-allowed disabled:opacity-50";
+
+function Field({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="block text-[11px] font-medium uppercase tracking-wider text-slate-light">{label}</span>
+      {children}
+      {hint && <span className="block text-[11px] text-slate">{hint}</span>}
+    </label>
+  );
+}
+
+function Panel({
+  title,
+  aside,
+  children,
+  className = "",
+}: {
+  title: string;
+  aside?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`rounded-lg border border-white/[0.07] bg-white/[0.02] ${className}`}>
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-paper">{title}</h3>
+        {aside}
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
 export function CommercialWorkspaceModal({
   isOpen,
   onClose,
@@ -146,9 +211,11 @@ export function CommercialWorkspaceModal({
 }: CommercialWorkspaceModalProps) {
   const isTender = kind === "tender";
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  // Tenders open on the intake review (documents, site visit, bid bond,
+  // review -> QS workflow); opportunities on the commercial overview.
   const [activeTab, setActiveTab] = useState<
-    "overview" | "boq" | "documents" | "compliance" | "assignment" | "activity"
-  >("overview");
+    "review" | "overview" | "boq" | "documents" | "compliance" | "assignment" | "activity"
+  >(isTender ? "review" : "overview");
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
@@ -160,6 +227,10 @@ export function CommercialWorkspaceModal({
   const [nextActivityDate, setNextActivityDate] = useState<string>("");
   const [stage, setStage] = useState<string>("");
   const [stageNote, setStageNote] = useState<string>("");
+  // Tender submission deadline, as a datetime-local value
+  const [deadlineLocal, setDeadlineLocal] = useState<string>("");
+  // Snapshot of the form as last loaded/saved, for the unsaved-changes indicator
+  const [baseline, setBaseline] = useState<string>("");
 
   // BANT Qualification checklist (for Opportunities)
   const [bantBudget, setBantBudget] = useState(false);
@@ -179,6 +250,8 @@ export function CommercialWorkspaceModal({
   const [isWinModalOpen, setIsWinModalOpen] = useState(false);
   const [isLostModalOpen, setIsLostModalOpen] = useState(false);
   const [winLossNotes, setWinLossNotes] = useState("");
+  const [tenderNextSteps, setTenderNextSteps] = useState("");
+  const [winningContractor, setWinningContractor] = useState("");
   const [selectedWinReasonId, setSelectedWinReasonId] = useState("");
   const [selectedLossReasonId, setSelectedLossReasonId] = useState("");
   const [selectedWinDepartmentId, setSelectedWinDepartmentId] = useState("");
@@ -208,19 +281,52 @@ export function CommercialWorkspaceModal({
   const [previewDocUrl, setPreviewDocUrl] = useState<string | null>(null);
   const [previewDocName, setPreviewDocName] = useState<string | null>(null);
 
+  // Callers build `entity` inline, so key the form reset on the saved values rather
+  // than object identity - otherwise any parent re-render wipes what the user typed.
+  const entityKey = entity
+    ? JSON.stringify([
+        entity.id,
+        entity.deal_value,
+        entity.budget,
+        entity.probability,
+        entity.risk_level,
+        entity.expected_close_date,
+        entity.next_activity_due_at,
+        entity.stage,
+        entity.submission_deadline,
+      ])
+    : "";
+
   // Initialize form state from entity
   useEffect(() => {
     if (entity) {
-      setDealValue(Number(entity.deal_value || entity.budget || 0));
-      setProbability(Number(entity.probability || 50));
-      setRiskLevel(entity.risk_level || "Medium");
-      setExpectedCloseDate(entity.expected_close_date ? entity.expected_close_date.slice(0, 10) : "");
-      setNextActivityDate(entity.next_activity_due_at ? entity.next_activity_due_at.slice(0, 10) : "");
-      setStage(entity.stage || (isTender ? "Tender Identified" : "Qualification"));
+      const initial = {
+        dealValue: Number(entity.deal_value || entity.budget || 0),
+        probability: Number(entity.probability || 50),
+        riskLevel: entity.risk_level || "Medium",
+        expectedCloseDate: entity.expected_close_date ? entity.expected_close_date.slice(0, 10) : "",
+        nextActivityDate: entity.next_activity_due_at ? entity.next_activity_due_at.slice(0, 10) : "",
+        stage: entity.stage || (isTender ? "Tender Identified" : "Qualification"),
+        deadlineLocal: toLocalDateTimeInput(entity.submission_deadline),
+      };
+      setDealValue(initial.dealValue);
+      setProbability(initial.probability);
+      setRiskLevel(initial.riskLevel);
+      setExpectedCloseDate(initial.expectedCloseDate);
+      setNextActivityDate(initial.nextActivityDate);
+      setStage(initial.stage);
+      setDeadlineLocal(initial.deadlineLocal);
       setStageNote("");
-      setFeedback(null);
+      setBaseline(JSON.stringify(initial));
     }
-  }, [entity, isTender]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entityKey, isTender]);
+
+  // A refreshed entity (after a save) keeps the feedback; switching records clears it.
+  useEffect(() => {
+    setFeedback(null);
+    setActiveTab(isTender ? "review" : "overview");
+  }, [entity?.id, isTender]);
 
   // Load activities
   const loadActivities = useCallback(async () => {
@@ -376,8 +482,25 @@ export function CommercialWorkspaceModal({
     return { text: `${days}d remaining`, urgency: "normal" };
   })();
 
+  const formSnapshot = JSON.stringify({
+    dealValue,
+    probability,
+    riskLevel,
+    expectedCloseDate,
+    nextActivityDate,
+    stage,
+    deadlineLocal,
+  });
+  const savedForm: { stage?: string; deadlineLocal?: string } = baseline ? JSON.parse(baseline) : {};
+  const stageChanged = !!savedForm.stage && stage !== savedForm.stage;
+  const isDirty = formSnapshot !== baseline || stageNote.trim() !== "";
+
   // Save commercial overview updates
   const handleSaveOverview = async () => {
+    if (stageChanged && !stageNote.trim()) {
+      setFeedback({ type: "error", message: "Add a stage change note before moving this record to a new stage." });
+      return;
+    }
     setSaving(true);
     setFeedback(null);
     try {
@@ -386,6 +509,9 @@ export function CommercialWorkspaceModal({
           bid_amount: dealValue,
           stage,
           ...(stageNote.trim() ? { stage_note: stageNote.trim() } : {}),
+          ...(deadlineLocal !== savedForm.deadlineLocal
+            ? { submission_deadline: deadlineLocal ? new Date(deadlineLocal).toISOString() : null }
+            : {}),
         };
         await updateCrmTender(entity.id, payload);
       } else {
@@ -401,8 +527,9 @@ export function CommercialWorkspaceModal({
         await updateCrmOpportunity(entity.id, payload);
       }
 
-      setFeedback({ type: "success", message: "Commercial details saved successfully." });
+      setFeedback({ type: "success", message: "Changes saved." });
       setStageNote("");
+      setBaseline(formSnapshot);
       if (onEntityUpdated) {
         onEntityUpdated({
           ...entity,
@@ -413,6 +540,9 @@ export function CommercialWorkspaceModal({
           stage,
           expected_close_date: expectedCloseDate,
           next_activity_due_at: nextActivityDate,
+          ...(isTender
+            ? { submission_deadline: deadlineLocal ? new Date(deadlineLocal).toISOString() : undefined }
+            : {}),
         });
       }
     } catch (err: any) {
@@ -475,7 +605,61 @@ export function CommercialWorkspaceModal({
   };
 
   // Confirm Deal Win
+  const openOutcomeDialog = (outcome: "won" | "lost") => {
+    setFeedback(null);
+    setWinLossNotes("");
+    setWinningContractor("");
+    setTenderNextSteps(
+      outcome === "lost" && isTender
+        ? "Find out who won the tender\nApproach the winning contractor for subcontract or supply work\nRecord lessons learned and update the next bid strategy"
+        : ""
+    );
+    if (outcome === "won") setIsWinModalOpen(true);
+    else setIsLostModalOpen(true);
+  };
+
   const handleConfirmWin = async () => {
+    if (isTender) {
+      const nextSteps = parseNextSteps(tenderNextSteps);
+      if (winLossNotes.trim().length < 3 || nextSteps.length === 0) {
+        setFeedback({ type: "error", message: "Record why this tender was won and at least one next step." });
+        return;
+      }
+      setSaving(true);
+      setFeedback(null);
+      try {
+        const result = await awardCrmTender(entity.id, {
+          create_project: true,
+          department_id: selectedWinDepartmentId || undefined,
+          originating_department_id: selectedWinOriginatingDepartmentId || undefined,
+          closeout_reason: winLossNotes.trim(),
+          next_steps: nextSteps,
+        });
+        setIsWinModalOpen(false);
+        setStage("Awarded");
+        const budgetPendingReason = result?.data?.budget_pending_reason;
+        setFeedback({
+          type: "success",
+          message: budgetPendingReason
+            ? `Tender awarded and project created. Budget not yet seeded: ${budgetPendingReason}`
+            : "Tender awarded and project created.",
+        });
+        onEntityUpdated?.({ ...entity, stage: "Awarded" });
+      } catch (e: any) {
+        setFeedback({
+          type: "error",
+          message: describeActionError(
+            e,
+            "You don't have permission to award this tender - awarding creates a real project commitment, so it needs sign-off from a manager or exec.",
+            "Tender was not awarded. Check the CRM service connection and retry."
+          ),
+        });
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     setSaving(true);
     setFeedback(null);
     try {
@@ -508,6 +692,41 @@ export function CommercialWorkspaceModal({
 
   // Confirm Deal Lost
   const handleConfirmLost = async () => {
+    if (isTender) {
+      const nextSteps = parseNextSteps(tenderNextSteps);
+      if (winLossNotes.trim().length < 3 || nextSteps.length === 0) {
+        setFeedback({ type: "error", message: "Record why this tender was lost and at least one next step." });
+        return;
+      }
+      setSaving(true);
+      setFeedback(null);
+      try {
+        const res = await closeoutCrmTender(entity.id, {
+          status: "lost",
+          reason: winLossNotes.trim(),
+          next_steps: nextSteps,
+          winning_contractor: winningContractor.trim() || undefined,
+        });
+        if (!res.success) throw new Error(res.message || "Tender close-out did not save.");
+        setIsLostModalOpen(false);
+        setStage("Lost");
+        setFeedback({ type: "success", message: "Tender closed out as lost. Follow-up steps were recorded." });
+        onEntityUpdated?.({ ...entity, stage: "Lost" });
+      } catch (e: any) {
+        setFeedback({
+          type: "error",
+          message: describeActionError(
+            e,
+            "You don't have permission to close out this tender.",
+            e instanceof ApiError ? e.message : "Tender close-out did not save. Check the CRM service connection and retry."
+          ),
+        });
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     setSaving(true);
     setFeedback(null);
     try {
@@ -530,6 +749,22 @@ export function CommercialWorkspaceModal({
       }
     } catch (e: any) {
       setFeedback({ type: "error", message: e?.message || "Failed to mark deal as lost." });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteRecord = async () => {
+    const noun = isTender ? "tender" : "deal";
+    if (!window.confirm(`Delete the ${noun} "${entity.name}"? This cannot be undone.`)) return;
+    setSaving(true);
+    try {
+      if (isTender) await deleteCrmTender(entity.id);
+      else await deleteCrmOpportunity(entity.id);
+      onClose();
+      onEntityUpdated?.({ ...entity, stage: "closed_lost" });
+    } catch (e: any) {
+      setFeedback({ type: "error", message: e?.message || `Failed to delete ${noun}.` });
     } finally {
       setSaving(false);
     }
@@ -718,9 +953,96 @@ export function CommercialWorkspaceModal({
   };
 
 
+  const formatDate = (value?: string | null, withTime = false) => {
+    if (!value) return null;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return withTime
+      ? d.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
+      : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  };
+
+  const clientName = entity.organization_name || entity.client_name;
+  // The tenders list passes the tender name as the client when no issuing authority is linked.
+  const distinctClient = clientName && clientName !== entity.name ? clientName : null;
+
+  const stageTone = isWon
+    ? { pill: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300", dot: "bg-emerald-400" }
+    : isLost
+    ? { pill: "border-red-500/30 bg-red-500/10 text-red-300", dot: "bg-red-400" }
+    : { pill: "border-amber-500/30 bg-amber-500/10 text-amber-200", dot: "bg-amber-400" };
+
+  const deadlineTone =
+    deadlineCountdown?.urgency === "critical"
+      ? "text-red-400"
+      : deadlineCountdown?.urgency === "warning"
+      ? "text-amber-300"
+      : deadlineCountdown?.urgency === "submitted"
+      ? "text-emerald-300"
+      : "text-slate-light";
+
+  const metrics: { label: string; value: React.ReactNode; sub?: React.ReactNode; accent?: boolean }[] = isTender
+    ? [
+        { label: "Bid amount", value: formatCurrency(dealValue), accent: true },
+        {
+          label: "Submission deadline",
+          value: formatDate(entity.submission_deadline, true) || "Not set",
+          sub: deadlineCountdown && <span className={deadlineTone}>{deadlineCountdown.text}</span>,
+        },
+        { label: "Quotation", value: entity.quote_status || (entity.quote_id ? "Linked" : "None yet") },
+        { label: "Project", value: entity.project_name || (entity.project_id ? "Linked" : "Not handed over") },
+      ]
+    : [
+        { label: "Contract value", value: formatCurrency(dealValue), accent: true },
+        { label: "Win probability", value: `${probability}%` },
+        ...(entity.expected_margin != null ? [{ label: "Expected margin", value: `${entity.expected_margin}%` }] : []),
+        { label: "Quotation", value: entity.quote_status || (entity.quote_id ? "Linked" : "None yet") },
+        { label: "Project", value: entity.project_name || (entity.project_id ? "Linked" : "Not handed over") },
+        { label: "Next action", value: formatDate(entity.next_activity_due_at) || "Not set" },
+      ];
+
+  const tabs: { id: typeof activeTab; label: string; icon: React.ElementType; count?: number }[] = [
+    ...(isTender ? [{ id: "review" as const, label: "Review", icon: ClipboardCheck }] : []),
+    { id: "overview", label: "Overview", icon: Layers },
+    { id: "boq", label: "BOQ & Quotes", icon: FileSpreadsheet },
+    { id: "documents", label: "Files", icon: FileText, count: entityDocs.length },
+    { id: "compliance", label: isTender ? "Compliance" : "Readiness", icon: ShieldCheck, count: isTender ? requirements.length : undefined },
+    { id: "assignment", label: "Team", icon: Users },
+    { id: "activity", label: "Activity", icon: Activity, count: activityTimeline.length },
+  ];
+
+  const stageOptions: { value: string; label: string }[] = isTender
+    ? (TENDER_OPEN_STAGES.includes(stage) ? TENDER_OPEN_STAGES : [...TENDER_OPEN_STAGES, stage]).map((s) => ({ value: s, label: s }))
+    : OPPORTUNITY_STAGES.some((s) => s.value === stage)
+    ? OPPORTUNITY_STAGES
+    : [...OPPORTUNITY_STAGES, { value: stage, label: stage }];
+
+  const detailRows: { label: string; value: React.ReactNode }[] = [
+    ...(isTender ? [{ label: "Bid number", value: entity.bid_number || "—" }] : []),
+    { label: isTender ? "Issuing authority" : "Client", value: distinctClient || "—" },
+    { label: "Region", value: entity.region || "—" },
+    { label: "Owner", value: entity.sales_owner_name || "Unassigned" },
+    ...(isTender
+      ? [
+          {
+            label: entity.site_visit_mandatory ? "Site visit (mandatory)" : "Site visit",
+            value: formatDate(entity.site_visit_at) || "None scheduled",
+          },
+          {
+            label: "Bid bond",
+            value: entity.bid_bond_required
+              ? entity.bid_bond_amount
+                ? formatCurrency(entity.bid_bond_amount)
+                : "Required"
+              : "Not required",
+          },
+        ]
+      : []),
+  ];
+
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-stretch justify-center bg-black/85 backdrop-blur-md p-2 sm:p-4 md:p-6"
+      className="fixed inset-0 z-[70] flex items-stretch justify-center bg-black/80 backdrop-blur-sm p-2 sm:items-center sm:p-6"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -729,219 +1051,160 @@ export function CommercialWorkspaceModal({
         role="dialog"
         aria-modal="true"
         aria-label={entity.name}
-        className="relative flex h-full w-full max-w-6xl flex-col overflow-hidden border border-white/10 bg-[#0C0C0C] shadow-2xl outline-none sm:h-[92vh] sm:rounded-lg"
+        className="relative flex h-full w-full max-w-6xl flex-col overflow-hidden border border-white/10 bg-[#0C0C0C] shadow-2xl outline-none sm:h-[90vh] sm:rounded-xl"
       >
         {/* ======================================================================
-            1. TOP HEADER & TELEMETRY CONTROLS
+            1. HEADER: identity, key figures, tabs
         ====================================================================== */}
-        <header className="shrink-0 border-b border-white/10 bg-[#111111] px-5 py-3">
-          <div className="flex items-center justify-between gap-4">
+        <header className="shrink-0 border-b border-white/10 bg-[#111111]">
+          <div className="flex items-start justify-between gap-4 px-6 pt-5">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-sm border border-signal/40 bg-signal/10 text-signal">
-                  {isTender ? "TENDER & BID CONSOLE" : "OPPORTUNITY WORKSPACE"}
+              <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-slate-light">
+                <span className="text-signal">{isTender ? "Tender" : "Opportunity"}</span>
+                {isTender && entity.bid_number && (
+                  <>
+                    <span className="text-white/20">/</span>
+                    <span className="font-mono normal-case tracking-normal">{entity.bid_number}</span>
+                  </>
+                )}
+              </div>
+              <h1 className="mt-1 line-clamp-2 font-display text-xl font-bold leading-tight text-paper sm:text-2xl">
+                {entity.name}
+              </h1>
+              <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-slate-light">
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-medium ${stageTone.pill}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${stageTone.dot}`} />
+                  {stage}
                 </span>
-                <span
-                  className={`font-mono text-[9px] font-semibold uppercase px-2 py-0.5 rounded-sm border ${
-                    isWon
-                      ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-300"
-                      : isLost
-                      ? "border-red-500/40 bg-red-950/40 text-red-300"
-                      : "border-amber-500/40 bg-amber-950/40 text-amber-300"
-                  }`}
-                >
-                  Stage: {stage}
-                </span>
-                <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded-sm border border-white/10 text-slate-light">
-                  Risk: {riskLevel}
-                </span>
+                {!isTender && (
+                  <span className="rounded-full border border-white/10 px-2.5 py-0.5">{riskLevel} risk</span>
+                )}
                 {entity.is_stale && (
-                  <span className="font-mono text-[8px] uppercase text-amber-300 border border-amber-500/30 px-1.5 py-0.5 bg-amber-950/30">
-                    Stale Deal
+                  <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-amber-300">Stale</span>
+                )}
+                {distinctClient && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Landmark className="h-3.5 w-3.5 text-slate" />
+                    {distinctClient}
+                  </span>
+                )}
+                {entity.region && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <MapPin className="h-3.5 w-3.5 text-slate" />
+                    {entity.region}
+                  </span>
+                )}
+                {entity.sales_owner_name && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <User className="h-3.5 w-3.5 text-slate" />
+                    {entity.sales_owner_name}
                   </span>
                 )}
               </div>
-              <h1 className="mt-1 font-display text-lg font-bold text-paper truncate max-w-2xl sm:text-xl">
-                {entity.name}
-              </h1>
-              <p className="mt-0.5 text-xs text-slate-light truncate flex items-center gap-2">
-                <span>
-                  Client: <strong className="text-paper font-semibold">{entity.organization_name || entity.client_name || "Unassigned Client"}</strong>
-                </span>
-                {entity.region && <span>· Region: {entity.region}</span>}
-                {entity.sales_owner_name && <span>· Owner: {entity.sales_owner_name}</span>}
-              </p>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex shrink-0 items-center gap-2">
               <Link
                 href={canonicalUrl}
                 target="_blank"
-                className="hidden sm:inline-flex items-center gap-1.5 border border-white/10 bg-white/5 px-2.5 py-1.5 font-mono text-xs text-slate-light hover:text-paper hover:bg-white/10 transition-colors rounded-sm"
+                className="hidden h-9 items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 text-xs font-medium text-slate-light transition-colors hover:bg-white/10 hover:text-paper sm:inline-flex"
                 title="Open in dedicated full page"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
-                <span>Full Page</span>
+                <span>Full page</span>
               </Link>
               <button
                 type="button"
                 onClick={onClose}
-                className="flex items-center justify-center h-8 w-8 rounded-full border border-white/10 bg-white/5 text-slate-light hover:text-paper hover:bg-white/15 transition-colors"
-                aria-label="Close modal"
+                className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-light transition-colors hover:bg-white/10 hover:text-paper"
+                aria-label="Close"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
           </div>
 
-          {/* ======================================================================
-              2. FINANCIAL & TIMING METRIC STRIP
-          ====================================================================== */}
-          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6 border-t border-white/5 pt-2.5">
-            <div className="border border-white/5 bg-black/40 p-2 rounded-sm">
-              <span className="font-mono text-[8px] uppercase tracking-wider text-slate-light block">
-                {isTender ? "Bid Amount" : "Contract Value"}
-              </span>
-              <span className="font-mono text-sm font-bold text-signal">
-                {formatCurrency(dealValue)}
-              </span>
-            </div>
-            <div className="border border-white/5 bg-black/40 p-2 rounded-sm">
-              <span className="font-mono text-[8px] uppercase tracking-wider text-slate-light block">Execution Cost</span>
-              <span className="font-mono text-sm font-semibold text-paper">
-                {entity.quote_amount ? formatCurrency(entity.quote_amount) : formatCurrency(dealValue * 0.78)}
-              </span>
-            </div>
-            <div className="border border-white/5 bg-black/40 p-2 rounded-sm">
-              <span className="font-mono text-[8px] uppercase tracking-wider text-slate-light block">Expected Margin</span>
-              <span className="font-mono text-sm font-semibold text-emerald-400">
-                {entity.expected_margin || 18.5}%
-              </span>
-            </div>
-            <div className="border border-white/5 bg-black/40 p-2 rounded-sm">
-              <span className="font-mono text-[8px] uppercase tracking-wider text-slate-light block">Quotation State</span>
-              <span className="font-mono text-xs font-semibold text-paper truncate block mt-0.5">
-                {entity.quote_status || (entity.quote_id ? "Linked" : "No Quote")}
-              </span>
-            </div>
-            <div className="border border-white/5 bg-black/40 p-2 rounded-sm">
-              <span className="font-mono text-[8px] uppercase tracking-wider text-slate-light block">Project Handoff</span>
-              <span className="font-mono text-xs font-semibold text-paper truncate block mt-0.5">
-                {entity.project_name || (entity.project_id ? "Linked" : "Pending")}
-              </span>
-            </div>
-            <div className="border border-white/5 bg-black/40 p-2 rounded-sm">
-              <span className="font-mono text-[8px] uppercase tracking-wider text-slate-light block">
-                {isTender ? "Bid Submission" : "Next Milestone"}
-              </span>
-              <span className={`font-mono text-xs font-semibold truncate block mt-0.5 ${
-                deadlineCountdown?.urgency === "critical" ? "text-red-400 animate-pulse font-bold" : "text-amber-300"
-              }`}>
-                {isTender
-                  ? deadlineCountdown?.text || "Not Scheduled"
-                  : entity.next_activity_due_at ? new Date(entity.next_activity_due_at).toLocaleDateString() : "Set Date"}
-              </span>
-            </div>
+          {/* Key figures */}
+          <div className="mx-6 mt-5 overflow-hidden rounded-lg border border-white/[0.07] bg-black/30">
+            <dl
+              className={`grid grid-cols-2 divide-white/[0.07] max-lg:gap-px max-lg:bg-white/[0.07] lg:divide-x ${
+                metrics.length === 4 ? "lg:grid-cols-4" : metrics.length === 5 ? "lg:grid-cols-5" : "lg:grid-cols-6"
+              }`}
+            >
+              {metrics.map((m) => (
+                <div key={m.label} className="min-w-0 bg-[#0E0E0E] px-4 py-3 lg:bg-transparent">
+                  <dt className="text-[11px] font-medium uppercase tracking-wider text-slate-light">{m.label}</dt>
+                  <dd
+                    className={`mt-1 truncate tabular-nums ${
+                      m.accent ? "text-lg font-bold text-signal" : "text-sm font-semibold text-paper"
+                    }`}
+                  >
+                    {m.value}
+                  </dd>
+                  {m.sub && <dd className="mt-0.5 truncate text-[11px] font-medium">{m.sub}</dd>}
+                </div>
+              ))}
+            </dl>
           </div>
 
-          {/* Tender Site Visit Banner (if mandatory or scheduled) */}
-          {isTender && siteVisitCountdown && (
-            <div className="mt-2 flex items-center justify-between bg-[#161616] border border-[#D4AF37]/30 px-3 py-1.5 rounded-sm text-xs font-mono">
-              <div className="flex items-center gap-2 text-slate-light">
-                <Calendar className="w-3.5 h-3.5 text-signal" />
-                <span>{entity.site_visit_mandatory ? "Mandatory Site Visit:" : "Site Inspection:"}</span>
-                <span className="text-paper font-semibold">
-                  {entity.site_visit_at ? new Date(entity.site_visit_at).toLocaleString() : ""}
-                </span>
-              </div>
-              <span className={`font-bold uppercase tracking-wider ${
-                siteVisitCountdown.urgency === "critical" ? "text-red-400 animate-pulse" : "text-signal"
-              }`}>
-                {siteVisitCountdown.text}
+          {isTender && siteVisitCountdown && siteVisitCountdown.urgency !== "normal" && (
+            <div
+              className={`mx-6 mt-3 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs ${
+                siteVisitCountdown.urgency === "critical"
+                  ? "border-red-500/30 bg-red-500/10 text-red-200"
+                  : "border-amber-500/30 bg-amber-500/10 text-amber-200"
+              }`}
+            >
+              <span className="inline-flex items-center gap-2">
+                <Calendar className="h-3.5 w-3.5" />
+                {entity.site_visit_mandatory ? "Mandatory site visit" : "Site visit"}: {formatDate(entity.site_visit_at, true)}
               </span>
+              <span className="font-semibold">{siteVisitCountdown.text}</span>
             </div>
           )}
 
-          {/* ======================================================================
-              3. TABS NAVIGATION BAR
-          ====================================================================== */}
-          <nav className="mt-3 flex items-center gap-1 border-t border-white/5 pt-2 overflow-x-auto custom-scrollbar">
-            <button
-              onClick={() => setActiveTab("overview")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs font-medium uppercase tracking-wider transition-colors rounded-sm ${
-                activeTab === "overview"
-                  ? "bg-signal text-ink font-semibold"
-                  : "text-slate-light hover:text-paper hover:bg-white/5"
-              }`}
-            >
-              <DollarSign className="h-3.5 w-3.5" />
-              <span>Overview &amp; Deal</span>
-            </button>
-            <button
-              onClick={() => setActiveTab("boq")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs font-medium uppercase tracking-wider transition-colors rounded-sm ${
-                activeTab === "boq"
-                  ? "bg-signal text-ink font-semibold"
-                  : "text-slate-light hover:text-paper hover:bg-white/5"
-              }`}
-            >
-              <FileSpreadsheet className="h-3.5 w-3.5" />
-              <span>BOQ &amp; Quotations</span>
-            </button>
-            <button
-              onClick={() => setActiveTab("documents")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs font-medium uppercase tracking-wider transition-colors rounded-sm ${
-                activeTab === "documents"
-                  ? "bg-signal text-ink font-semibold"
-                  : "text-slate-light hover:text-paper hover:bg-white/5"
-              }`}
-            >
-              <FileText className="h-3.5 w-3.5" />
-              <span>Files &amp; Attachments ({entityDocs.length})</span>
-            </button>
-            <button
-              onClick={() => setActiveTab("compliance")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs font-medium uppercase tracking-wider transition-colors rounded-sm ${
-                activeTab === "compliance"
-                  ? "bg-signal text-ink font-semibold"
-                  : "text-slate-light hover:text-paper hover:bg-white/5"
-              }`}
-            >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              <span>{isTender ? `Compliance Deck (${requirements.length})` : "Readiness Gates"}</span>
-            </button>
-            <button
-              onClick={() => setActiveTab("assignment")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs font-medium uppercase tracking-wider transition-colors rounded-sm ${
-                activeTab === "assignment"
-                  ? "bg-signal text-ink font-semibold"
-                  : "text-slate-light hover:text-paper hover:bg-white/5"
-              }`}
-            >
-              <Users className="h-3.5 w-3.5" />
-              <span>Team &amp; Assignment</span>
-            </button>
-            <button
-              onClick={() => setActiveTab("activity")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs font-medium uppercase tracking-wider transition-colors rounded-sm ${
-                activeTab === "activity"
-                  ? "bg-signal text-ink font-semibold"
-                  : "text-slate-light hover:text-paper hover:bg-white/5"
-              }`}
-            >
-              <Activity className="h-3.5 w-3.5" />
-              <span>Activity &amp; Touchpoints</span>
-            </button>
+          {/* Tabs */}
+          <nav className="mt-4 flex gap-1 overflow-x-auto px-4 [scrollbar-width:none]" role="tablist">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`relative inline-flex shrink-0 items-center gap-2 whitespace-nowrap px-3 pb-3 pt-2 text-sm font-medium transition-colors ${
+                    active ? "text-paper" : "text-slate-light hover:text-paper"
+                  }`}
+                >
+                  <Icon className={`h-4 w-4 ${active ? "text-signal" : ""}`} />
+                  {tab.label}
+                  {tab.count !== undefined && tab.count > 0 && (
+                    <span
+                      className={`rounded-full px-1.5 py-px text-[10px] font-semibold tabular-nums ${
+                        active ? "bg-signal/20 text-signal" : "bg-white/10 text-slate-light"
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
+                  {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-signal" />}
+                </button>
+              );
+            })}
           </nav>
         </header>
 
         {/* FEEDBACK BANNER */}
         {feedback && (
           <div
-            className={`px-5 py-2.5 text-xs font-mono flex items-center justify-between border-b ${
+            role="status"
+            className={`flex shrink-0 items-center justify-between gap-3 border-b px-6 py-2.5 text-sm ${
               feedback.type === "success"
-                ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-300"
-                : "border-red-500/40 bg-red-950/40 text-red-300"
+                ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+                : "border-red-500/20 bg-red-500/10 text-red-200"
             }`}
           >
             <div className="flex items-center gap-2">
@@ -953,301 +1216,291 @@ export function CommercialWorkspaceModal({
               <span>{feedback.message}</span>
             </div>
             <button
+              type="button"
               onClick={() => setFeedback(null)}
-              className="text-slate-light hover:text-paper text-[10px] uppercase font-mono tracking-wider"
+              className="rounded p-1 text-current opacity-70 hover:opacity-100"
+              aria-label="Dismiss"
             >
-              Dismiss
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
         )}
 
         {/* ======================================================================
-            4. SCROLLABLE TAB BODY
+            2. SCROLLABLE TAB BODY
         ====================================================================== */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar bg-[#0A0A0A]">
+        <div className="custom-scrollbar flex-1 overflow-y-auto bg-[#0A0A0A] px-6 py-6">
+          {/* TENDERS: INTAKE REVIEW -> QS WORKFLOW */}
+          {activeTab === "review" && isTender && (
+            <TenderReviewPanel tenderId={entity.id} onChanged={() => onEntityUpdated?.(entity)} />
+          )}
+
           {/* TAB 1: COMMERCIAL OVERVIEW */}
           {activeTab === "overview" && (
-            <div className="space-y-6 max-w-4xl">
-              {/* Client & Organization Summary Card */}
-              <section className="bg-white/[0.02] border border-white/5 p-4 rounded-sm flex items-center justify-between flex-wrap gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-signal/10 border border-signal/30 flex items-center justify-center text-signal">
-                    <Landmark className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-sans font-bold text-sm text-paper">
-                      {entity.organization_name || entity.client_name || "Unassigned Account"}
-                    </h3>
-                    <p className="font-mono text-xs text-slate-light">
-                      Account Profile · {isTender ? "Issuing Authority / Client" : "Prospect Entity"}
-                    </p>
-                  </div>
-                </div>
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+              <div className="min-w-0 space-y-5">
+                <Panel title="Commercial terms">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field label={isTender ? "Bid amount" : "Contract value"}>
+                      <div className="relative">
+                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate">$</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={dealValue}
+                          onChange={(e) => setDealValue(parseFloat(e.target.value) || 0)}
+                          disabled={isLocked}
+                          className={`${inputCls} pl-7 tabular-nums`}
+                        />
+                      </div>
+                    </Field>
 
-                <div className="flex items-center gap-2">
-                  {entity.client_org_id && (
-                    <Link
-                      href={`/dashboard/crm/organizations/${entity.client_org_id}`}
-                      target="_blank"
-                      className="px-3 py-1.5 border border-white/10 bg-white/5 hover:bg-white/10 text-paper font-mono text-xs rounded-sm inline-flex items-center gap-1.5"
+                    <Field
+                      label="Pipeline stage"
+                      hint={isTender && !isLocked ? "Award or close out from the Outcome panel." : undefined}
                     >
-                      <ExternalLink className="w-3.5 h-3.5 text-signal" />
-                      <span>Customer 360</span>
-                    </Link>
-                  )}
-                  {!isTender && (
-                    <button
-                      type="button"
-                      onClick={handleCheckDuplicates}
-                      disabled={checkingDups}
-                      className="px-3 py-1.5 border border-white/10 bg-white/5 hover:bg-white/10 text-slate-light hover:text-paper font-mono text-xs rounded-sm inline-flex items-center gap-1.5"
-                    >
-                      <Copy className="w-3.5 h-3.5 text-amber-300" />
-                      <span>{checkingDups ? "Scanning..." : "Check Duplicates"}</span>
-                    </button>
-                  )}
-                </div>
-              </section>
+                      <select
+                        value={stage}
+                        onChange={(e) => setStage(e.target.value)}
+                        disabled={isLocked}
+                        className={inputCls}
+                      >
+                        {stageOptions.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
 
-              {/* Main Commercial Input Fields */}
-              <section className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <label className="font-mono text-[10px] uppercase tracking-wider text-slate-light block">
-                    {isTender ? "Tender Bid Amount ($)" : "Agreed Contract / Selling Price ($)"}
-                  </label>
-                  <input
-                    type="number"
-                    value={dealValue}
-                    onChange={(e) => setDealValue(parseFloat(e.target.value) || 0)}
-                    disabled={isLocked}
-                    className="w-full border border-white/10 bg-black/60 px-3 py-2 font-mono text-sm text-paper focus:border-signal focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="font-mono text-[10px] uppercase tracking-wider text-slate-light block">
-                    Pipeline Stage
-                  </label>
-                  <select
-                    value={stage}
-                    onChange={(e) => setStage(e.target.value)}
-                    disabled={isLocked}
-                    className="w-full border border-white/10 bg-black/60 px-3 py-2 font-mono text-sm text-paper focus:border-signal focus:outline-none"
-                  >
-                    {isTender ? (
+                    {!isTender && (
                       <>
-                        <option value="Tender Identified">Tender Identified</option>
-                        <option value="Bid Prep">Bid Prep</option>
-                        <option value="Submitted">Submitted</option>
-                        <option value="Adjudication">Adjudication</option>
-                        <option value="Awarded">Awarded</option>
-                        <option value="Lost">Lost</option>
-                      </>
-                    ) : (
-                      <>
-                        <option value="Qualification">Qualification</option>
-                        <option value="Site Visit">Site Visit</option>
-                        <option value="Quotation">Proposal / Quotation</option>
-                        <option value="Negotiation">Negotiation</option>
-                        <option value="Contract">Contract (Won)</option>
-                        <option value="Lost">Lost</option>
+                        <Field label="Win probability">
+                          <div className="relative">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={probability}
+                              onChange={(e) => setProbability(Math.min(100, Math.max(0, parseInt(e.target.value) || 0)))}
+                              disabled={isLocked}
+                              className={`${inputCls} pr-8 tabular-nums`}
+                            />
+                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate">%</span>
+                          </div>
+                        </Field>
+                        <Field label="Risk rating">
+                          <select value={riskLevel} onChange={(e) => setRiskLevel(e.target.value)} className={inputCls}>
+                            <option value="Low">Low risk</option>
+                            <option value="Medium">Medium risk</option>
+                            <option value="High">High risk</option>
+                          </select>
+                        </Field>
                       </>
                     )}
-                  </select>
-                </div>
+                  </div>
+                </Panel>
 
-                <div className="space-y-1">
-                  <label className="font-mono text-[10px] uppercase tracking-wider text-slate-light block">
-                    Win Probability (%)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={probability}
-                    onChange={(e) => setProbability(parseInt(e.target.value) || 0)}
-                    disabled={isLocked}
-                    className="w-full border border-white/10 bg-black/60 px-3 py-2 font-mono text-sm text-paper focus:border-signal focus:outline-none"
-                  />
-                </div>
+                <Panel title="Dates">
+                  {isTender ? (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field
+                        label="Submission deadline"
+                        hint={deadlineCountdown ? <span className={deadlineTone}>{deadlineCountdown.text}</span> : undefined}
+                      >
+                        <input
+                          type="datetime-local"
+                          value={deadlineLocal}
+                          onChange={(e) => setDeadlineLocal(e.target.value)}
+                          disabled={isLocked}
+                          className={inputCls}
+                        />
+                      </Field>
+                      <Field label={entity.site_visit_mandatory ? "Site visit (mandatory)" : "Site visit"}>
+                        <div className={`${inputCls} flex items-center text-slate-light`}>
+                          {formatDate(entity.site_visit_at, true) || "None scheduled"}
+                        </div>
+                      </Field>
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field label="Expected close date">
+                        <input
+                          type="date"
+                          value={expectedCloseDate}
+                          onChange={(e) => setExpectedCloseDate(e.target.value)}
+                          className={inputCls}
+                        />
+                      </Field>
+                      <Field label="Next action due">
+                        <input
+                          type="date"
+                          value={nextActivityDate}
+                          onChange={(e) => setNextActivityDate(e.target.value)}
+                          className={inputCls}
+                        />
+                      </Field>
+                    </div>
+                  )}
+                </Panel>
 
-                <div className="space-y-1">
-                  <label className="font-mono text-[10px] uppercase tracking-wider text-slate-light block">
-                    Commercial Risk Rating
-                  </label>
-                  <select
-                    value={riskLevel}
-                    onChange={(e) => setRiskLevel(e.target.value)}
-                    className="w-full border border-white/10 bg-black/60 px-3 py-2 font-mono text-sm text-paper focus:border-signal focus:outline-none"
-                  >
-                    <option value="Low">Low Risk</option>
-                    <option value="Medium">Medium Risk</option>
-                    <option value="High">High Risk</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="font-mono text-[10px] uppercase tracking-wider text-slate-light block">
-                    {isTender ? "Submission Deadline Date" : "Expected Close Date"}
-                  </label>
-                  <input
-                    type="date"
-                    value={expectedCloseDate}
-                    onChange={(e) => setExpectedCloseDate(e.target.value)}
-                    className="w-full border border-white/10 bg-black/60 px-3 py-2 font-mono text-sm text-paper focus:border-signal focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="font-mono text-[10px] uppercase tracking-wider text-slate-light block">
-                    Next Required Action Deadline
-                  </label>
-                  <input
-                    type="date"
-                    value={nextActivityDate}
-                    onChange={(e) => setNextActivityDate(e.target.value)}
-                    className="w-full border border-white/10 bg-black/60 px-3 py-2 font-mono text-sm text-paper focus:border-signal focus:outline-none"
-                  />
-                </div>
-
-                {/* Stage-Move Note Input */}
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="font-mono text-[10px] uppercase tracking-wider text-slate-light block">
-                    Stage Progression Note (Required for Audit Trail)
-                  </label>
-                  <input
-                    type="text"
+                <Panel
+                  title="Stage change note"
+                  aside={
+                    stageChanged ? (
+                      <span className="text-[11px] font-medium text-amber-300">Required: stage changed</span>
+                    ) : (
+                      <span className="text-[11px] text-slate">Optional</span>
+                    )
+                  }
+                >
+                  <textarea
+                    rows={3}
                     value={stageNote}
                     onChange={(e) => setStageNote(e.target.value)}
-                    placeholder="Provide rationale for pipeline milestone change or current negotiation status..."
-                    className="w-full border border-white/10 bg-black/60 px-3 py-2 font-mono text-xs text-paper focus:border-signal focus:outline-none placeholder:text-slate"
+                    placeholder="Why is this moving stage, or where does the negotiation stand? Saved to the audit trail."
+                    className={`${inputCls} h-auto resize-y py-2.5 leading-relaxed ${
+                      stageChanged && !stageNote.trim() ? "border-amber-500/50" : ""
+                    }`}
                   />
-                </div>
-              </section>
+                </Panel>
 
-              {/* BANT Qualification Deck (Opportunities Only) */}
-              {!isTender && (
-                <section className="border border-white/5 bg-white/[0.01] p-4 rounded-sm space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-[10px] uppercase tracking-wider text-signal font-bold">
-                      BANT Qualification Deck
-                    </span>
-                    <span className="font-mono text-[9px] text-slate-light">
-                      {[bantBudget, bantAuthority, bantNeed, bantTimeline].filter(Boolean).length}/4 Verified
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
-                    <label className={`flex items-center gap-2 p-2.5 border rounded-sm cursor-pointer transition-colors ${
-                      bantBudget ? "border-signal/50 bg-signal/10 text-signal" : "border-white/5 bg-black/40 text-slate-light"
-                    }`}>
-                      <input
-                        type="checkbox"
-                        checked={bantBudget}
-                        onChange={(e) => setBantBudget(e.target.checked)}
-                        className="rounded"
-                      />
-                      <span>Budget Confirmed</span>
-                    </label>
-                    <label className={`flex items-center gap-2 p-2.5 border rounded-sm cursor-pointer transition-colors ${
-                      bantAuthority ? "border-signal/50 bg-signal/10 text-signal" : "border-white/5 bg-black/40 text-slate-light"
-                    }`}>
-                      <input
-                        type="checkbox"
-                        checked={bantAuthority}
-                        onChange={(e) => setBantAuthority(e.target.checked)}
-                        className="rounded"
-                      />
-                      <span>Authority Identified</span>
-                    </label>
-                    <label className={`flex items-center gap-2 p-2.5 border rounded-sm cursor-pointer transition-colors ${
-                      bantNeed ? "border-signal/50 bg-signal/10 text-signal" : "border-white/5 bg-black/40 text-slate-light"
-                    }`}>
-                      <input
-                        type="checkbox"
-                        checked={bantNeed}
-                        onChange={(e) => setBantNeed(e.target.checked)}
-                        className="rounded"
-                      />
-                      <span>Need Established</span>
-                    </label>
-                    <label className={`flex items-center gap-2 p-2.5 border rounded-sm cursor-pointer transition-colors ${
-                      bantTimeline ? "border-signal/50 bg-signal/10 text-signal" : "border-white/5 bg-black/40 text-slate-light"
-                    }`}>
-                      <input
-                        type="checkbox"
-                        checked={bantTimeline}
-                        onChange={(e) => setBantTimeline(e.target.checked)}
-                        className="rounded"
-                      />
-                      <span>Timeline Defined</span>
-                    </label>
-                  </div>
-                </section>
-              )}
-
-              {/* Action Buttons */}
-              <section className="flex flex-wrap items-center justify-between gap-3 border-t border-white/5 pt-4">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={handleSaveOverview}
-                    disabled={saving}
-                    className="inline-flex items-center gap-1.5 bg-signal px-4 py-2 font-mono text-xs font-semibold uppercase tracking-wider text-ink hover:bg-signal/90 transition-colors disabled:opacity-50"
+                {/* BANT Qualification (Opportunities Only) */}
+                {!isTender && (
+                  <Panel
+                    title="BANT qualification"
+                    aside={
+                      <span className="text-[11px] tabular-nums text-slate-light">
+                        {[bantBudget, bantAuthority, bantNeed, bantTimeline].filter(Boolean).length}/4 verified
+                      </span>
+                    }
                   >
-                    {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                    <span>Save Changes</span>
-                  </button>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {(
+                        [
+                          ["Budget confirmed", bantBudget, setBantBudget],
+                          ["Authority identified", bantAuthority, setBantAuthority],
+                          ["Need established", bantNeed, setBantNeed],
+                          ["Timeline defined", bantTimeline, setBantTimeline],
+                        ] as const
+                      ).map(([label, checked, setChecked]) => (
+                        <label
+                          key={label}
+                          className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2.5 text-xs transition-colors ${
+                            checked
+                              ? "border-signal/40 bg-signal/10 text-signal"
+                              : "border-white/10 bg-black/30 text-slate-light hover:text-paper"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => setChecked(e.target.checked)}
+                            className="accent-[#C8960C]"
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </Panel>
+                )}
+              </div>
 
-                  <button
-                    type="button"
-                    onClick={handleCreateQuotation}
-                    disabled={saving}
-                    className="inline-flex items-center gap-1.5 border border-white/10 bg-white/5 px-3 py-2 font-mono text-xs text-paper hover:bg-white/10 transition-colors"
-                  >
-                    <FileSpreadsheet className="h-3.5 w-3.5 text-signal" />
-                    <span>{entity.quote_id ? "Sync Quotation" : "Create Quote"}</span>
-                  </button>
-                </div>
+              {/* Sidebar */}
+              <aside className="space-y-5">
+                <Panel title="Details">
+                  <dl className="space-y-2.5 text-sm">
+                    {detailRows.map((row) => (
+                      <div key={row.label} className="flex items-baseline justify-between gap-3">
+                        <dt className="shrink-0 text-xs text-slate-light">{row.label}</dt>
+                        <dd className="min-w-0 break-words text-right font-medium text-paper">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {(entity.client_org_id || !isTender) && (
+                    <div className="mt-4 grid gap-2 border-t border-white/[0.06] pt-4">
+                      {entity.client_org_id && (
+                        <Link
+                          href={`/dashboard/crm/organizations/${entity.client_org_id}`}
+                          target="_blank"
+                          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 text-xs font-medium text-paper transition-colors hover:bg-white/10"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5 text-signal" />
+                          Customer 360
+                        </Link>
+                      )}
+                      {!isTender && (
+                        <button
+                          type="button"
+                          onClick={handleCheckDuplicates}
+                          disabled={checkingDups}
+                          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 text-xs font-medium text-slate-light transition-colors hover:bg-white/10 hover:text-paper disabled:opacity-50"
+                        >
+                          <Copy className="h-3.5 w-3.5 text-amber-300" />
+                          {checkingDups ? "Scanning..." : "Check duplicates"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </Panel>
 
-                {!isLocked && (
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => setIsWinModalOpen(true)}
-                      className="inline-flex items-center gap-1.5 border border-emerald-500/50 bg-emerald-950/40 px-3.5 py-2 font-mono text-xs font-semibold uppercase tracking-wider text-emerald-300 hover:bg-emerald-900/50 transition-colors"
+                <Panel title="Outcome">
+                  {isLocked ? (
+                    <div
+                      className={`flex items-start gap-2.5 rounded-md border p-3 text-sm ${
+                        isWon
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                          : "border-red-500/30 bg-red-500/10 text-red-200"
+                      }`}
                     >
-                      <Award className="h-3.5 w-3.5" />
-                      <span>{isTender ? "Award Tender" : "Mark Deal Won"}</span>
-                    </button>
+                      {isWon ? <Award className="mt-0.5 h-4 w-4 shrink-0" /> : <Ban className="mt-0.5 h-4 w-4 shrink-0" />}
+                      <span>
+                        {isWon
+                          ? isTender
+                            ? "Awarded. Commercial terms are locked."
+                            : "Won. Commercial terms are locked."
+                          : "Closed as lost. Commercial terms are locked."}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="mb-3 text-xs leading-relaxed text-slate-light">
+                        {isTender
+                          ? "Award to create the execution project, or close out with the reason and follow-ups."
+                          : "Mark won to start the project handover, or lost with a reason."}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => openOutcomeDialog("won")}
+                        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-emerald-600 text-sm font-semibold text-white transition-colors hover:bg-emerald-500"
+                      >
+                        <Award className="h-4 w-4" />
+                        {isTender ? "Award tender" : "Mark deal won"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openOutcomeDialog("lost")}
+                        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-red-500/40 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/10"
+                      >
+                        <Ban className="h-4 w-4" />
+                        {isTender ? "Close out as lost" : "Mark lost"}
+                      </button>
+                    </div>
+                  )}
+                  <div className="mt-4 border-t border-white/[0.06] pt-3">
                     <button
                       type="button"
-                      onClick={() => setIsLostModalOpen(true)}
-                      className="inline-flex items-center gap-1.5 border border-red-500/50 bg-red-950/40 px-3.5 py-2 font-mono text-xs font-semibold uppercase tracking-wider text-red-300 hover:bg-red-900/50 transition-colors"
-                    >
-                      <Ban className="h-3.5 w-3.5" />
-                      <span>Mark Lost</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!confirm(`Are you sure you want to delete "${entity.name}"? This cannot be undone.`)) return;
-                        try {
-                          await deleteCrmOpportunity(entity.id);
-                          onClose();
-                          if (onEntityUpdated) onEntityUpdated({ ...entity, stage: "closed_lost" });
-                        } catch (err) {
-                          alert("Failed to delete deal.");
-                        }
-                      }}
-                      className="inline-flex items-center gap-1.5 border border-red-500/30 bg-red-950/20 px-3 py-2 font-mono text-xs text-red-400 hover:bg-red-500/20 hover:border-red-500 transition-colors"
-                      title="Permanently delete deal"
+                      onClick={handleDeleteRecord}
+                      disabled={saving}
+                      className="inline-flex items-center gap-1.5 text-xs text-slate transition-colors hover:text-red-400 disabled:opacity-50"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
-                      <span>Delete Deal</span>
+                      Delete {isTender ? "tender" : "deal"}
                     </button>
                   </div>
-                )}
-              </section>
+                </Panel>
+              </aside>
             </div>
           )}
 
@@ -1421,7 +1674,7 @@ export function CommercialWorkspaceModal({
 
           {/* TAB 4: COMPLIANCE & REQUIREMENTS (TENDERS) / READINESS (OPPORTUNITIES) */}
           {activeTab === "compliance" && (
-            <div className="space-y-6 max-w-4xl">
+            <div className="space-y-6">
               {isTender ? (
                 <>
                   {/* Compliance Summary Metric Cards */}
@@ -1616,7 +1869,7 @@ export function CommercialWorkspaceModal({
 
           {/* TAB 5: TEAM & ASSIGNMENT */}
           {activeTab === "assignment" && (
-            <div className="space-y-6 max-w-2xl">
+            <div className="space-y-6 max-w-3xl">
               <div className="border-b border-white/5 pb-3">
                 <h3 className="font-sans text-sm font-bold uppercase tracking-wider text-paper">
                   Account Ownership &amp; Pursuit Team
@@ -1638,7 +1891,7 @@ export function CommercialWorkspaceModal({
 
           {/* TAB 6: ACTIVITY TIMELINE & TOUCHPOINTS */}
           {activeTab === "activity" && (
-            <div className="space-y-6 max-w-4xl">
+            <div className="space-y-6">
               {/* Quick Touchpoint Bar */}
               <section className="border border-white/10 bg-[#111111] p-4 rounded-sm space-y-3">
                 <div className="flex items-center justify-between flex-wrap gap-2">
@@ -1791,81 +2044,147 @@ export function CommercialWorkspaceModal({
         </div>
 
         {/* ======================================================================
-            5. WIN CONFIRMATION MODAL
+            3. OVERVIEW FOOTER (save bar)
+        ====================================================================== */}
+        {activeTab === "overview" && (
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-white/10 bg-[#111111] px-6 py-3">
+            <span className="inline-flex items-center gap-2 text-xs text-slate-light">
+              {isDirty ? (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  Unsaved changes
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                  All changes saved
+                </>
+              )}
+            </span>
+            <div className="flex items-center gap-2">
+              {!isTender && (
+                <button
+                  type="button"
+                  onClick={handleCreateQuotation}
+                  disabled={saving}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3.5 text-sm font-medium text-paper transition-colors hover:bg-white/10 disabled:opacity-50"
+                >
+                  <FileSpreadsheet className="h-4 w-4 text-signal" />
+                  {entity.quote_id ? "Sync quotation" : "Create quote"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleSaveOverview}
+                disabled={saving || !isDirty}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md bg-signal px-4 text-sm font-semibold text-ink transition-colors hover:bg-signal/90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                Save changes
+              </button>
+            </div>
+          </footer>
+        )}
+
+        {/* ======================================================================
+            4. WIN / AWARD CONFIRMATION
         ====================================================================== */}
         {isWinModalOpen && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4">
-            <div className="border border-emerald-500/40 bg-[#111111] p-5 max-w-md w-full rounded-sm space-y-4">
-              <h3 className="font-display text-base font-bold text-emerald-300 uppercase">
-                {isTender ? "Award Tender & Release Project" : "Confirm Mark Deal as Won"}
-              </h3>
-              <p className="text-xs text-slate-light">
-                Marking this deal as won advances the stage, locks contract margin, and initiates project deployment structures.
-              </p>
-
-              {winReasonOptions.length > 0 && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-lg overflow-hidden rounded-xl border border-white/10 bg-[#111111] shadow-2xl">
+              <div className="flex items-start gap-3 border-b border-white/[0.07] px-5 py-4">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300">
+                  <Award className="h-4 w-4" />
+                </span>
                 <div>
-                  <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Win Category</label>
-                  <select
-                    value={selectedWinReasonId}
-                    onChange={(e) => setSelectedWinReasonId(e.target.value)}
-                    className="w-full bg-black border border-white/10 rounded-sm p-2 text-xs text-paper outline-none"
-                  >
-                    <option value="">Custom (use notes below)</option>
-                    {winReasonOptions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-                  </select>
+                  <h3 className="text-base font-semibold text-paper">{isTender ? "Award tender" : "Mark deal as won"}</h3>
+                  <p className="mt-0.5 text-xs leading-relaxed text-slate-light">
+                    {isTender
+                      ? "Creates the execution project and records why the bid won and what happens next."
+                      : "Advances the stage, locks the contract margin and starts the project handover."}
+                  </p>
                 </div>
-              )}
+              </div>
 
-              {departments.length > 0 && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Delivered by</label>
-                    <select
-                      value={selectedWinDepartmentId}
-                      onChange={(e) => setSelectedWinDepartmentId(e.target.value)}
-                      className="w-full bg-black border border-white/10 rounded-sm p-2 text-xs text-paper outline-none"
-                    >
-                      <option value="">Unassigned</option>
-                      {departments.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              <div className="space-y-4 p-5">
+                {!isTender && winReasonOptions.length > 0 && (
+                  <Field label="Win category">
+                    <select value={selectedWinReasonId} onChange={(e) => setSelectedWinReasonId(e.target.value)} className={inputCls}>
+                      <option value="">Custom (use notes below)</option>
+                      {winReasonOptions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
                     </select>
-                  </div>
-                  <div>
-                    <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Sourced by</label>
-                    <select
-                      value={selectedWinOriginatingDepartmentId}
-                      onChange={(e) => setSelectedWinOriginatingDepartmentId(e.target.value)}
-                      className="w-full bg-black border border-white/10 rounded-sm p-2 text-xs text-paper outline-none"
-                    >
-                      <option value="">Unassigned</option>
-                      {departments.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                    </select>
-                  </div>
-                </div>
-              )}
+                  </Field>
+                )}
 
-              <textarea
-                rows={3}
-                value={winLossNotes}
-                onChange={(e) => setWinLossNotes(e.target.value)}
-                placeholder="Details regarding execution kick-off, site inspection dates, and contract terms..."
-                className="w-full border border-white/10 bg-black/60 p-2 font-mono text-xs text-paper focus:border-emerald-500 focus:outline-none"
-              />
-              <div className="flex justify-end gap-2">
+                {departments.length > 0 && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Delivered by">
+                      <select value={selectedWinDepartmentId} onChange={(e) => setSelectedWinDepartmentId(e.target.value)} className={inputCls}>
+                        <option value="">Unassigned</option>
+                        {departments.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Sourced by">
+                      <select
+                        value={selectedWinOriginatingDepartmentId}
+                        onChange={(e) => setSelectedWinOriginatingDepartmentId(e.target.value)}
+                        className={inputCls}
+                      >
+                        <option value="">Unassigned</option>
+                        {departments.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                )}
+
+                <Field label={isTender ? "Why we won (required)" : "Notes"}>
+                  <textarea
+                    rows={3}
+                    value={winLossNotes}
+                    onChange={(e) => setWinLossNotes(e.target.value)}
+                    placeholder={
+                      isTender
+                        ? "e.g. Lowest compliant bid, strong technical score"
+                        : "Execution kick-off, site inspection dates, contract terms..."
+                    }
+                    className={`${inputCls} h-auto resize-y py-2.5`}
+                  />
+                </Field>
+
+                {isTender && (
+                  <Field label="Next steps (one per line, required)">
+                    <textarea
+                      rows={3}
+                      value={tenderNextSteps}
+                      onChange={(e) => setTenderNextSteps(e.target.value)}
+                      placeholder={"Collect award letter\nRequest bid bond release\nSchedule kick-off meeting"}
+                      className={`${inputCls} h-auto resize-y py-2.5`}
+                    />
+                  </Field>
+                )}
+
+                {feedback?.type === "error" && <p className="text-xs text-red-300">{feedback.message}</p>}
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-white/[0.07] bg-black/20 px-5 py-3">
                 <button
                   type="button"
                   onClick={() => setIsWinModalOpen(false)}
-                  className="px-3 py-1.5 border border-white/10 font-mono text-xs text-slate-light hover:text-paper"
+                  className="h-9 rounded-md border border-white/10 px-3.5 text-sm text-slate-light transition-colors hover:text-paper"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmWin}
-                  disabled={saving}
-                  className="px-3 py-1.5 bg-emerald-500 font-mono text-xs font-semibold uppercase text-ink hover:bg-emerald-400"
+                  disabled={
+                    saving ||
+                    (isTender && (winLossNotes.trim().length < 3 || parseNextSteps(tenderNextSteps).length === 0))
+                  }
+                  className="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {saving ? "Confirming..." : "Confirm Win"}
+                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isTender ? "Award & create project" : "Confirm win"}
                 </button>
               </div>
             </div>
@@ -1873,54 +2192,93 @@ export function CommercialWorkspaceModal({
         )}
 
         {/* ======================================================================
-            6. LOSS CONFIRMATION MODAL
+            5. LOSS / CLOSE-OUT CONFIRMATION
         ====================================================================== */}
         {isLostModalOpen && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4">
-            <div className="border border-red-500/40 bg-[#111111] p-5 max-w-md w-full rounded-sm space-y-4">
-              <h3 className="font-display text-base font-bold text-red-300 uppercase">
-                Confirm Mark Deal as Lost
-              </h3>
-              <p className="text-xs text-slate-light">
-                Please specify the reason for the loss to optimize ML pipeline forecasting and post-mortem analysis.
-              </p>
-
-              {lossReasonOptions.length > 0 && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-lg overflow-hidden rounded-xl border border-white/10 bg-[#111111] shadow-2xl">
+              <div className="flex items-start gap-3 border-b border-white/[0.07] px-5 py-4">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-300">
+                  <Ban className="h-4 w-4" />
+                </span>
                 <div>
-                  <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Loss Category</label>
-                  <select
-                    value={selectedLossReasonId}
-                    onChange={(e) => setSelectedLossReasonId(e.target.value)}
-                    className="w-full bg-black border border-white/10 rounded-sm p-2 text-xs text-paper outline-none"
-                  >
-                    <option value="">Custom (use notes below)</option>
-                    {lossReasonOptions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-                  </select>
+                  <h3 className="text-base font-semibold text-paper">
+                    {isTender ? "Close out tender as lost" : "Mark deal as lost"}
+                  </h3>
+                  <p className="mt-0.5 text-xs leading-relaxed text-slate-light">
+                    {isTender
+                      ? "Records the reason and creates follow-up tasks so the loss still feeds the next bid."
+                      : "Record the reason for the loss so forecasting and post-mortems stay accurate."}
+                  </p>
                 </div>
-              )}
+              </div>
 
-              <input
-                type="text"
-                value={winLossNotes}
-                onChange={(e) => setWinLossNotes(e.target.value)}
-                placeholder="e.g. Price undercut by competitor, scope misalignment, project shelved"
-                className="w-full border border-white/10 bg-black/60 p-2 font-mono text-xs text-paper focus:border-red-500 focus:outline-none"
-              />
-              <div className="flex justify-end gap-2">
+              <div className="space-y-4 p-5">
+                {!isTender && lossReasonOptions.length > 0 && (
+                  <Field label="Loss category">
+                    <select value={selectedLossReasonId} onChange={(e) => setSelectedLossReasonId(e.target.value)} className={inputCls}>
+                      <option value="">Custom (use notes below)</option>
+                      {lossReasonOptions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                    </select>
+                  </Field>
+                )}
+
+                <Field label={isTender ? "Why we lost (required)" : "Reason"}>
+                  <textarea
+                    rows={2}
+                    value={winLossNotes}
+                    onChange={(e) => setWinLossNotes(e.target.value)}
+                    placeholder="e.g. Price undercut by competitor, scope misalignment, project shelved"
+                    className={`${inputCls} h-auto resize-y py-2.5`}
+                  />
+                </Field>
+
+                {isTender && (
+                  <>
+                    <Field label="Winning contractor">
+                      <input
+                        type="text"
+                        value={winningContractor}
+                        onChange={(e) => setWinningContractor(e.target.value)}
+                        placeholder="If known"
+                        className={inputCls}
+                      />
+                    </Field>
+                    <Field label="Next steps (one per line, required)">
+                      <textarea
+                        rows={3}
+                        value={tenderNextSteps}
+                        onChange={(e) => setTenderNextSteps(e.target.value)}
+                        className={`${inputCls} h-auto resize-y py-2.5`}
+                      />
+                    </Field>
+                  </>
+                )}
+
+                {feedback?.type === "error" && <p className="text-xs text-red-300">{feedback.message}</p>}
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-white/[0.07] bg-black/20 px-5 py-3">
                 <button
                   type="button"
                   onClick={() => setIsLostModalOpen(false)}
-                  className="px-3 py-1.5 border border-white/10 font-mono text-xs text-slate-light hover:text-paper"
+                  className="h-9 rounded-md border border-white/10 px-3.5 text-sm text-slate-light transition-colors hover:text-paper"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmLost}
-                  disabled={saving || (!winLossNotes.trim() && !selectedLossReasonId)}
-                  className="px-3 py-1.5 bg-red-600 font-mono text-xs font-semibold uppercase text-white hover:bg-red-500 disabled:opacity-50"
+                  disabled={
+                    saving ||
+                    (isTender
+                      ? winLossNotes.trim().length < 3 || parseNextSteps(tenderNextSteps).length === 0
+                      : !winLossNotes.trim() && !selectedLossReasonId)
+                  }
+                  className="inline-flex h-9 items-center gap-1.5 rounded-md bg-red-600 px-4 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {saving ? "Confirming..." : "Confirm Loss"}
+                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isTender ? "Close out as lost" : "Confirm loss"}
                 </button>
               </div>
             </div>
@@ -1928,7 +2286,7 @@ export function CommercialWorkspaceModal({
         )}
 
         {/* ======================================================================
-            7. DUPLICATE OPPORTUNITIES MODAL
+            6. DUPLICATE OPPORTUNITIES MODAL
         ====================================================================== */}
         {isDupModalOpen && (
           <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4">
@@ -1980,7 +2338,7 @@ export function CommercialWorkspaceModal({
         )}
 
         {/* ======================================================================
-            8. DOCUMENT INLINE PREVIEW MODAL
+            7. DOCUMENT INLINE PREVIEW MODAL
         ====================================================================== */}
         {previewDocUrl && (
           <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/90 p-4">

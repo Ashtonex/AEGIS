@@ -44,6 +44,8 @@ from app.services.tenders.egp.discovery import (
 )
 from app.services.tenders.egp.matching import assess_readiness, effective_fields, score_candidate
 from app.services.tenders.egp.parser import HARARE, SOURCE_TIMEZONE
+from app.services.tenders.pipeline import on_tender_entered
+from app.services.tenders.workflow import get_settings as get_workflow_settings
 from app.shared.events import emit_event, emit_notification
 from core.logging import logger
 
@@ -296,9 +298,12 @@ async def _add_task(db: AsyncSession, *, org_id: str, tender_id: str, user_id: O
 
 
 async def build_checklists(db: AsyncSession, *, org_id: str, tender_id: str, user_id: Optional[str], candidate: dict,
-                           fields: dict, responsible: Optional[str], review_date: Optional[date]) -> dict:
+                           fields: dict, responsible: Optional[str], review_date: Optional[date],
+                           create_tasks: bool = True) -> dict:
     """Published requirements (source EGP_PUBLISHED, each with its excerpt)
-    and SNC's internal checklist (source SNC_INTERNAL) are separate rows."""
+    and SNC's internal checklist (source SNC_INTERNAL) are separate rows.
+    create_tasks=False when the intake workflow owns the first tasks (its
+    review tasks replace the decision/documents tasks created here)."""
     published: list[str] = []
     internal: list[str] = []
     tasks: list[str] = []
@@ -349,14 +354,15 @@ async def build_checklists(db: AsyncSession, *, org_id: str, tender_id: str, use
     internal_items = [
         ("decision", "Bid / no-bid decision for this e-GP notice", "COMMERCIAL_BOQ", "CRITICAL", review_date, "high",
          "Decide whether SNC bids. Relevance score and missing evidence are on the discovery record; eligibility is not assumed."),
-        ("documents", "Sign in to e-GP and download the official bidding documents; attach them here", "TENDER_FORMS_DECLARATIONS",
-         "CRITICAL", doc_due, "high", "Documents need an e-GP supplier login. AEGIS does not log in for you or purchase documents."),
+        ("documents", "Confirm every official bidding document is attached here", "TENDER_FORMS_DECLARATIONS",
+         "CRITICAL", doc_due, "high", "AEGIS downloads the documents the e-GP notice lists; anything it could not download, "
+         "or anything only available elsewhere, is attached by the reviewer. AEGIS never purchases documents."),
         ("praz_check", "Confirm SNC holds a valid PRAZ registration in the required category", "PRAZ", "CRITICAL", review_date, "normal",
          "Check against the corporate credentials vault - none are assumed."),
         ("site_visit", "Confirm any mandatory site visit / pre-bid meeting from the bidding documents", "SITE_VISIT", "MAJOR", doc_due, "normal",
-         "The public notice does not publish site-visit details."),
+         "The e-GP schedule shows a pre-bid meeting at most; the bidding document can require a compulsory site visit."),
         ("bid_security", "Confirm bid security requirement (amount, form, validity) from the bidding documents", "BID_SECURITY", "MAJOR", doc_due, "normal",
-         "Not published on the public notice."),
+         "The notice shows an amount at most; form and validity are in the bidding documents."),
     ]
     if not closing_at:
         internal_items.append(("closing_time", "Confirm the closing date and time - not stated precisely on the notice", "TENDER_FORMS_DECLARATIONS",
@@ -370,7 +376,7 @@ async def build_checklists(db: AsyncSession, *, org_id: str, tender_id: str, use
                                      category=category, severity=severity, source="SNC_INTERNAL", sort_order=order,
                                      responsible_user_id=responsible, due_date=due)
         internal.append(rid)
-        if code in ("decision", "documents") or code == "closing_time":
+        if create_tasks and code in ("decision", "documents", "closing_time"):
             tasks.append(await _add_task(db, org_id=org_id, tender_id=tender_id, user_id=user_id, code=code, title=label,
                                          description=description, assignee=responsible, due=due, priority=priority,
                                          requirement_id=rid))
@@ -517,8 +523,10 @@ async def _import_one(db: AsyncSession, user: dict, org_id: str, actor: Optional
             )).scalar())
             status_value = "linked_existing"
 
+    workflow_settings = await get_workflow_settings(db, org_id)
     checklists = await build_checklists(db, org_id=org_id, tender_id=tender_id, user_id=actor, candidate=candidate,
-                                        fields=fields, responsible=responsible, review_date=review_date)
+                                        fields=fields, responsible=responsible, review_date=review_date,
+                                        create_tasks=not workflow_settings["workflow_enabled"])
 
     # Evidence: official attachments and any documents already obtained.
     await db.execute(text("UPDATE crm.tender_candidate_documents SET tender_id = :tid, updated_at = NOW() WHERE candidate_id = :cid"),
@@ -557,6 +565,12 @@ async def _import_one(db: AsyncSession, user: dict, org_id: str, actor: Optional
         """),
         {"org_id": org_id, "tid": tender_id, "data": _j(event), "user_id": actor},
     )
+    entered = None
+    if created:
+        # Review workflow + new-tender emails; documents are collected and
+        # the emails sent after the caller commits (pipeline.after_commit).
+        entered = await on_tender_entered(db, org_id=org_id, tender_id=tender_id, actor=actor,
+                                          origin="egp_auto_import" if actor is None else "egp_import")
     if responsible and responsible != actor and created:
         await emit_notification(db, org_id=org_id, user_id=responsible, title="e-GP tender assigned to you",
                                 message=f'"{title}" was imported from e-GP and assigned to you for review.',
@@ -564,6 +578,7 @@ async def _import_one(db: AsyncSession, user: dict, org_id: str, actor: Optional
                                 metadata={"tender_id": tender_id, "candidate_id": candidate_id})
     return {"candidate_id": candidate_id, "status": status_value, "created": created, "tender_id": tender_id,
             "tender_url": TENDER_URL.format(id=tender_id), "deadline_set": deadline is not None, **checklists,
+            "workflow": entered,
             "message": "Imported into the tender pipeline." if created else "Linked to the existing tender - no duplicate created."}
 
 

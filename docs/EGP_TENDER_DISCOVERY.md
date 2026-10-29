@@ -15,7 +15,7 @@ Schema: `imperium-api/migrations/275_egp_tender_discovery_intake.sql`.
 |---|---|
 | Portal | `https://egp.praz.org.zw`, linked as "eGP System" from `https://www.praz.org.zw` (checked 2026-10-26) |
 | Public pages used | Bulletin Board `/Indexes/index` (search form + `?page=N`), notice page `/Indexes/viewLiveTenderDetails/{id}` |
-| Login-only pages | Bidding documents `/Tenders/tender_doc_view/...`, activity schedule, addenda content (they return the signed-out shell) |
+| Popups (no login) | Document list `/Tenders/tender_doc_view/...` and activity schedule `/Tenders/tender_shedule/...` answer anonymous XMLHttpRequests, as the notice page's own buttons send them; document download links need no session (re-checked 2026-10-28 - see [TENDER_INTAKE_WORKFLOW.md](TENDER_INTAKE_WORKFLOW.md)) |
 | API / export | None published. RSS on praz.org.zw is news only |
 | robots.txt | None (404) |
 | Terms | Supplier terms allow notice information to be used/stored only to evaluate an opportunity or prepare a response. AEGIS keeps it internal and never republishes it |
@@ -83,10 +83,10 @@ does not hold (see limitations) - the UI shows the document tier as
 
 ## Limitations
 
-- No authenticated e-GP session: documents, activity schedule, site-visit and
-  bid-security details are not read automatically. They stay *unknown* and
-  appear as SNC checklist items until a person attaches the documents or
-  corrects the field.
+- Superseded by migration 276: documents and the activity schedule are now
+  collected automatically without a login (see TENDER_INTAKE_WORKFLOW.md).
+  Site-visit attendance rules and bid-security form/validity still come from
+  the bidding documents and are confirmed by the initial reviewer.
 - No OCR: scanned PDFs are flagged as "no text", not reviewed.
 - No SNC credentials are configured in the corporate credentials vault yet,
   so every notice shows eligibility as missing evidence.

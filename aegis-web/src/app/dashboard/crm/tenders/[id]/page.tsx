@@ -18,8 +18,9 @@ export default function TenderCanonicalPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the first load shows the full-page loader; refreshes after an edit
+  // (e.g. from the Review tab) update in place so the workspace stays open.
   const fetchTender = useCallback(async () => {
-    setLoading(true);
     setError(null);
     try {
       const res = await getCrmTenderById(id);

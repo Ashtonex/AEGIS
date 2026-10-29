@@ -39,6 +39,15 @@ import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 import { TenderStageMoveModal, TenderActivityLog } from '@/components/crm/TenderStageMove';
 import { CommercialWorkspaceModal } from '@/components/crm/CommercialWorkspaceModal';
 
+// Intake workflow position (crm.tenders.review_workflow_status) shown on board cards.
+const WORKFLOW_CHIP: Record<string, { label: string; tone: string }> = {
+  captured: { label: 'Captured', tone: 'text-slate-light border-white/10' },
+  pending_tender_review: { label: 'Pending review', tone: 'text-amber-300 border-amber-400/30 bg-amber-400/5' },
+  returned_for_correction: { label: 'Returned by QS', tone: 'text-rose-300 border-rose-400/30 bg-rose-400/5' },
+  pending_qs_verification: { label: 'Pending QS', tone: 'text-sky-300 border-sky-400/30 bg-sky-400/5' },
+  qs_preparation: { label: 'QS preparation', tone: 'text-emerald-300 border-emerald-400/30 bg-emerald-400/5' },
+};
+
 // Stages definition. 'Awarded' and 'Lost' used to be a single combined
 // 'Awarded/Lost' stage with no conversion logic - now moving into 'Awarded'
 // triggers the award handoff (creates/links a real project), while 'Lost'
@@ -93,6 +102,7 @@ interface Tender {
   closeout_recorded_at?: string | null;
   winning_contractor?: string | null;
   recycling_status?: string | null;
+  review_workflow_status?: string | null;
 }
 
 interface TenderRequirement {
@@ -1002,6 +1012,12 @@ export default function TendersCommand() {
               ← Back to Command
             </Link>
             <Link
+              href="/dashboard/crm/tenders/automation"
+              className="flex items-center space-x-1.5 px-3.5 py-1.5 border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] rounded-sm text-[10px] font-mono tracking-widest text-paper uppercase transition-all"
+            >
+              <span>Tender automation</span>
+            </Link>
+            <Link
               href="/dashboard/crm/tenders/discovery"
               className="flex items-center space-x-1.5 px-3.5 py-1.5 border border-[#D4AF37]/30 bg-[#D4AF37]/5 hover:bg-[#D4AF37]/10 rounded-sm text-[10px] font-mono tracking-widest text-[#D4AF37] uppercase transition-all"
             >
@@ -1227,6 +1243,11 @@ export default function TendersCommand() {
                           </span>
                         )}
                       </div>
+                      {t.review_workflow_status && WORKFLOW_CHIP[t.review_workflow_status] && (
+                        <span className={`mb-1.5 inline-block text-[7.5px] font-mono px-1 py-0.5 rounded-sm uppercase tracking-widest border ${WORKFLOW_CHIP[t.review_workflow_status].tone}`}>
+                          {WORKFLOW_CHIP[t.review_workflow_status].label}
+                        </span>
+                      )}
 
                       <h4 className="text-xs font-bold text-paper line-clamp-2 pr-2 group-hover:text-[#D4AF37] transition-colors mb-2">
                         {t.tender_name}

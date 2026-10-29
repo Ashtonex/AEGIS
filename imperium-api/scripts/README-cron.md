@@ -21,6 +21,7 @@ system cron, calling the backend container directly:
 0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hr_workforce_alerts.py >> /var/log/aegis-cron.log 2>&1
 0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_compliance_alerts.py >> /var/log/aegis-cron.log 2>&1
 0 * * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hse_escalation.py >> /var/log/aegis-cron.log 2>&1
+*/15 * * * * root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_tender_automation.py >> /var/log/aegis-cron.log 2>&1
 ```
 
 `run_hr_workforce_alerts.py`, `run_compliance_alerts.py`, and `run_hse_escalation.py`
@@ -48,3 +49,15 @@ because a reminder needs to reach the activity's owner unconditionally -
 it can't depend on the org having configured a matching automation rule
 first. It runs every 15 minutes and reminds about anything due in the next
 hour, using `crm.activities.reminder_sent_at` to avoid double-sending.
+
+
+## Tender automation (`run_tender_automation.py`)
+
+Runs every 15 minutes but only does work for an organisation whose schedule
+is due (CRM -> Tenders & Bids -> Tender automation: "Run on a schedule" and
+the interval). For each due organisation: re-verify the e-GP connection,
+run discovery, auto-import matching notices (if enabled), collect each new
+tender's documents and activity schedule from e-GP, and send the new-tender
+emails. Every run also retries failed/queued new-tender emails. Nothing is
+signed into: e-GP is read as an anonymous visitor (see
+app/services/tenders/egp/portal.py).

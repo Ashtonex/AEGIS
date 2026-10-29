@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -21,6 +21,8 @@ from app.services.finance.project_forecast import (
     seed_project_budget_from_quotation,
 )
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
+from app.services.tenders.pipeline import after_commit as tender_after_commit, on_tender_entered
+from app.services.tenders.workflow import ensure_stage_allowed, person_entered_source_columns, reject_managed_columns
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks, should_supersede_on_stage_change
 from app.shared.stage_moves import complete_open_stage_tasks, log_stage_move, require_stage_note
@@ -338,6 +340,7 @@ async def list_items(
 @router.post("/")
 async def create_item(
     request: Request,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("tender_bids.create")),
@@ -350,6 +353,10 @@ async def create_item(
 
     if not safe_keys:
         raise HTTPException(status_code=400, detail="Empty or invalid payload.")
+    reject_managed_columns(safe_keys)
+    tags = person_entered_source_columns(safe_keys)
+    payload = {**payload, **tags}
+    safe_keys = [*safe_keys, *tags]
 
     params = {k: payload[k] for k in safe_keys}
     params["org_id"] = user["org_id"]
@@ -369,6 +376,16 @@ async def create_item(
             db, org_id=user["org_id"], item_id=new_id,
             sync_submission="submission_deadline" in safe_keys, sync_visit="site_visit_at" in safe_keys,
         )
+
+        # Initial-review workflow and new-tender emails, as for every new tender.
+        try:
+            await on_tender_entered(db, org_id=user["org_id"], tender_id=new_id,
+                                    actor=user.get("user_id") or user.get("sub"), origin="manual_entry")
+            await db.commit()
+            background_tasks.add_task(tender_after_commit, user["org_id"], [new_id], post_import_hooks=False)
+        except Exception:  # noqa: BLE001 - the tender is saved; the workflow can be started by an admin
+            await db.rollback()
+            logger.exception("tender_workflow.start_failed", tender_id=new_id)
 
         return {
             "success": True,
@@ -455,6 +472,10 @@ async def update_item(
             "data": {"id": item_id},
             "message": "No fields to update.",
         }
+    reject_managed_columns(safe_keys)
+    tags = person_entered_source_columns(safe_keys)
+    payload = {**payload, **tags}
+    safe_keys = [*safe_keys, *tags]
 
     params = {k: payload[k] for k in safe_keys}
     params["item_id"] = item_id
@@ -467,7 +488,7 @@ async def update_item(
         current_stage = await _single_row(
             db,
             """
-            SELECT stage FROM crm.tenders
+            SELECT stage, review_workflow_status FROM crm.tenders
             WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
             """,
             {"item_id": item_id, "org_id": user["org_id"]},
@@ -475,6 +496,8 @@ async def update_item(
         if not current_stage:
             raise HTTPException(status_code=404, detail="Item not found")
         stage_changed = next_stage != current_stage.get("stage")
+        if stage_changed:
+            ensure_stage_allowed(current_stage.get("review_workflow_status"), next_stage)
         if stage_changed and next_stage in TENDER_RESOLVED_STAGES:
             raise HTTPException(
                 status_code=422,

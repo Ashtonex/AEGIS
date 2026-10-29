@@ -28,7 +28,6 @@ from app.services.tenders.egp.discovery import (
     create_run,
     ensure_default_profile,
     ensure_source,
-    execute_run,
     mark_stale_runs,
     probe_connection,
 )
@@ -41,9 +40,10 @@ from app.services.tenders.egp.intake import (
     update_review,
 )
 from core.config import settings
-from core.database import AsyncSessionLocal, get_db
+from core.database import get_db
 from core.logging import logger
 from core.security import require_permission, user_has_permission
+from app.services.tenders.pipeline import after_commit, run_discovery_and_import
 from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
@@ -72,8 +72,10 @@ def _limitations() -> list[dict]:
     return [
         {"key": "public_only", "title": "Public notices only",
          "detail": "AEGIS reads the public e-GP Bulletin Board and notice pages. It holds no e-GP login, password or session."},
-        {"key": "documents_need_login", "title": "Bidding documents need your e-GP login",
-         "detail": "The portal serves documents, the activity schedule and addenda only to signed-in suppliers. Sign in at the official portal in your own browser, download them, and attach them here. AEGIS never purchases documents or submits bids."},
+        {"key": "documents_collected", "title": "Documents and schedule are collected without a login",
+         "detail": "AEGIS reads each notice's document list and activity schedule the way the public notice page's own buttons do, "
+                   "downloads the listed documents and attaches them to the tender. It never signs in (the supplier login has a "
+                   "CAPTCHA), never purchases documents and never submits bids. Anything it can't download is flagged for the reviewer."},
         {"key": "no_ocr", "title": "No OCR",
          "detail": "Text is read from PDF and Word files. Scanned documents are flagged as unreadable, never as reviewed."},
         {"key": "terms", "title": "Internal use only", "detail": portal.TERMS_NOTE},
@@ -256,13 +258,14 @@ class RunCreate(BaseModel):
     page_limit: Optional[int] = Field(default=None, ge=1, le=200)
 
 
-async def run_discovery_in_background(run_id: str) -> None:
-    """Runs in the API process after the response is sent. If the process
-    restarts mid-run, the heartbeat goes stale and the run is closed as
+async def run_discovery_in_background(org_id: str, run_id: str) -> None:
+    """Runs in the API process after the response is sent: the run, then
+    (if enabled in tender automation settings) import of its matches, their
+    document collection and the new-tender emails. If the process restarts
+    mid-run, the heartbeat goes stale and the run is closed as
     partial/interrupted, resumable from its last completed page."""
     try:
-        async with AsyncSessionLocal() as db:
-            await execute_run(db, run_id)
+        await run_discovery_and_import(org_id, run_id)
     except Exception:  # noqa: BLE001 - execute_run records its own failures
         logger.exception("egp_discovery.background_failed", run_id=run_id)
 
@@ -289,7 +292,7 @@ async def start_run(payload: RunCreate, background: BackgroundTasks,
     except ActiveRunExists as exc:
         raise HTTPException(status_code=409, detail={"message": "A discovery run is already in progress.", "run_id": exc.run_id})
     await db.commit()
-    background.add_task(run_discovery_in_background, str(run["id"]))
+    background.add_task(run_discovery_in_background, org_id, str(run["id"]))
     return _ok(run, "Discovery run queued.")
 
 
@@ -336,7 +339,7 @@ async def resume_run(run_id: UUID, background: BackgroundTasks, user: dict = Dep
     except ActiveRunExists as exc:
         raise HTTPException(status_code=409, detail={"message": "A discovery run is already in progress.", "run_id": exc.run_id})
     await db.commit()
-    background.add_task(run_discovery_in_background, str(run["id"]))
+    background.add_task(run_discovery_in_background, org_id, str(run["id"]))
     return _ok(run, f"Resuming from page {int(previous['last_page_completed'] or 0) + 1}.")
 
 
@@ -523,7 +526,8 @@ class ImportRequest(BaseModel):
 
 
 @router.post("/candidates/import")
-async def import_selected(payload: ImportRequest, user: dict = Depends(require_permission("tender_discovery.import")),
+async def import_selected(payload: ImportRequest, background: BackgroundTasks,
+                          user: dict = Depends(require_permission("tender_discovery.import")),
                           db: AsyncSession = Depends(get_db)):
     if not await user_has_permission(db, user, "crm.create_tenders"):
         raise HTTPException(status_code=403, detail="Importing creates tenders and needs crm.create_tenders as well.")
@@ -547,6 +551,10 @@ async def import_selected(payload: ImportRequest, user: dict = Depends(require_p
                 logger.exception("egp_import.task_stack_failed", tender_id=result["tender_id"])
             await _sync_tender_calendar(db, org_id=user["org_id"], item_id=result["tender_id"],
                                         sync_submission=bool(result.get("deadline_set")), sync_visit=False)
+    created_ids = [r["tender_id"] for r in results if r.get("created")]
+    if created_ids:
+        # Documents + schedule from e-GP, then the new-tender emails.
+        background.add_task(after_commit, user["org_id"], created_ids, post_import_hooks=False)
     imported = sum(1 for r in results if r["status"] in ("imported", "linked_existing", "already_imported"))
     return _ok(results, f"{imported} of {len(results)} notice(s) are now in the tender pipeline.")
 

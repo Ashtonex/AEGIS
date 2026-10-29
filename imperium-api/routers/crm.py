@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError
@@ -24,6 +24,7 @@ from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
 )
 from app.shared.sql import update_tenant_row_sql
+from app.services.tenders.pipeline import after_commit as tender_after_commit, on_tender_entered
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks, should_supersede_on_stage_change
 from app.shared.stage_moves import close_quote_preparation, complete_open_stage_tasks, log_stage_move, require_stage_note
 from app.shared.pursuits import get_or_create_pursuit
@@ -1996,6 +1997,7 @@ async def list_tenders(
                (to_jsonb(t)->>'closeout_recorded_at')::timestamptz AS closeout_recorded_at,
                to_jsonb(t)->>'winning_contractor' AS winning_contractor,
                COALESCE(to_jsonb(t)->>'recycling_status', 'not_started') AS recycling_status,
+               to_jsonb(t)->>'review_workflow_status' AS review_workflow_status,
                t.region,
                t.latitude::float AS latitude, t.longitude::float AS longitude
         FROM crm.tenders t
@@ -3344,6 +3346,7 @@ async def create_win_loss_reason(
 @router.post("/tenders")
 async def create_tender(
     payload: TenderCreate,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(require_permission("crm.create_tenders")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -3398,6 +3401,17 @@ async def create_tender(
     await generate_task_stack(
         db, org_id=org_id, entity_type="tender", entity_id=new_tender_id, created_by=user.get("sub"),
     )
+
+    # Initial-review workflow (Ekow / Marvellous) and the new-tender emails.
+    # The tender is already saved: a problem here is logged, not a failed create.
+    try:
+        await on_tender_entered(db, org_id=org_id, tender_id=str(new_tender_id),
+                                actor=user.get("user_id") or user.get("sub"), origin="manual_entry")
+        await db.commit()
+        background_tasks.add_task(tender_after_commit, org_id, [str(new_tender_id)], post_import_hooks=False)
+    except Exception:  # noqa: BLE001
+        await db.rollback()
+        logger.exception("tender_workflow.start_failed", tender_id=str(new_tender_id))
 
     return {
         "success": True,

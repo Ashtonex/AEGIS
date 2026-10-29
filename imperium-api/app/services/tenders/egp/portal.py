@@ -3,17 +3,25 @@
 Source verification (2026-10-26): https://www.praz.org.zw links its "eGP
 System" to https://egp.praz.org.zw. That portal's public Bulletin Board
 (/Indexes/index) and tender detail pages (/Indexes/viewLiveTenderDetails/{id})
-are served without a login. Bidding documents (/Tenders/tender_doc_view/...)
-and the activity schedule return the portal's signed-out shell ("Your session
-has been expired, please login") - they need a supplier login, which this
-server does not hold and never asks for.
+are served without a login.
+
+Re-checked 2026-10-28: the public notice page's own "Documents: Preview" and
+"Schedule of activity: View all activity" buttons load
+/Tenders/tender_doc_view/{id}/{id} and /Tenders/tender_shedule/{id} with an
+XMLHttpRequest, and the portal answers those for anonymous visitors (a plain
+page load gets the signed-out shell instead). The document links in that
+popup (/privateUploads/downloads/?id=..&h=..) download without a session.
+So AEGIS reads documents and the schedule exactly as an anonymous visitor
+clicking those buttons does. It never signs in: the supplier login page has a
+CAPTCHA, and a CAPTCHA is never automated.
 
 Rules enforced here, not left to callers:
-  * only https://egp.praz.org.zw, only the read-only public paths below;
+  * only https://egp.praz.org.zw, only the read-only paths below;
   * at least ``min_interval`` seconds between requests (default 3 s);
   * bounded retries with exponential backoff on timeouts and 5xx;
   * HTTP 429 / 403, a CAPTCHA, or the login shell stop the run as
     ``access_restricted`` - they are never worked around;
+  * downloads are size-capped and only from the portal's download path;
   * no cookies are persisted between runs and none are logged.
 """
 
@@ -37,7 +45,11 @@ VERIFIED_FROM = "https://www.praz.org.zw (eGP System link), checked 2026-10-26"
 BULLETIN_PATH = "/Indexes/index"
 DETAIL_PATH = "/Indexes/viewLiveTenderDetails/{notice_id}"
 DOCUMENTS_PATH = "/Tenders/tender_doc_view/{notice_id}/{notice_id}"
+SCHEDULE_PATH = "/Tenders/tender_shedule/{notice_id}"
+DOWNLOAD_PATH = "/privateUploads/downloads/"
 LOGIN_URL = f"{BASE_URL}/Indexes/login"
+# Headers the notice page's own popup buttons send.
+POPUP_HEADERS = {"X-Requested-With": "XMLHttpRequest", "Accept": "text/html, */*; q=0.01"}
 TERMS_NOTE = (
     "The e-GP supplier terms allow notice information to be used and stored only to evaluate "
     "an opportunity or prepare a response; AEGIS keeps it internal and never republishes it."
@@ -125,6 +137,14 @@ def documents_url(notice_id: str) -> str:
     return build_url(DOCUMENTS_PATH.format(notice_id=safe))
 
 
+def schedule_url(notice_id: str) -> str:
+    return build_url(SCHEDULE_PATH.format(notice_id=_safe_notice_id(notice_id)))
+
+
+def is_download_url(url: str) -> bool:
+    return is_allowed_url(url) and urlsplit(url).path == DOWNLOAD_PATH
+
+
 def _safe_notice_id(notice_id: str) -> str:
     value = str(notice_id).strip()
     if not value.isdigit() or len(value) > 12:
@@ -186,7 +206,9 @@ class PortalClient:
                 await self.sleeper(wait)
         self._last_request_at = time.monotonic()
 
-    async def get(self, url: str) -> PortalResponse:
+    async def get(self, url: str, *, popup: bool = False) -> PortalResponse:
+        """popup=True sends the headers the notice page's own popup buttons
+        send (documents list, activity schedule)."""
         if not is_allowed_url(url):
             raise PortalRestricted("Refusing to fetch a URL outside the official e-GP portal.", url=url)
         if self._client is None:
@@ -198,7 +220,7 @@ class PortalClient:
             started = time.monotonic()
             self.requests_made += 1
             try:
-                response = await self._client.get(url)
+                response = await self._client.get(url, headers=POPUP_HEADERS if popup else None)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = PortalUnavailable(f"{type(exc).__name__} contacting the portal.", url=url)
             else:
@@ -234,6 +256,52 @@ class PortalClient:
         assert last_error is not None
         last_error.args = (f"{last_error.args[0]} Gave up after {self.max_attempts} attempts.",)
         raise last_error
+
+    async def download(self, url: str, *, max_bytes: int) -> "PortalDownload":
+        """One official document. Paced like every other request; refuses
+        anything but the portal's download path; stops reading past
+        max_bytes. Not retried here - the caller records a failure and a
+        later collection retries it."""
+        if not is_download_url(url):
+            raise PortalRestricted("Refusing to download from outside the e-GP document path.", url=url)
+        if self._client is None:
+            raise RuntimeError("PortalClient must be used as an async context manager.")
+        await self._pace()
+        self.requests_made += 1
+        try:
+            async with self._client.stream("GET", url, headers={"Accept": "*/*"}) as response:
+                if response.status_code in (401, 403, 429):
+                    raise PortalRestricted(f"The portal refused the download (HTTP {response.status_code}).",
+                                           url=url, status_code=response.status_code)
+                if response.status_code in (301, 302, 303, 307, 308):
+                    raise PortalRestricted("The portal redirected the download (login required).",
+                                           url=url, status_code=response.status_code)
+                if response.status_code != 200:
+                    raise PortalUnavailable(f"Download failed (HTTP {response.status_code}).",
+                                            url=url, status_code=response.status_code)
+                declared = response.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    raise PortalUnavailable(f"File is larger than {max_bytes // (1024 * 1024)} MB.", url=url)
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise PortalUnavailable(f"File is larger than {max_bytes // (1024 * 1024)} MB.", url=url)
+                    chunks.append(chunk)
+                return PortalDownload(url=url, content=b"".join(chunks),
+                                      disposition=response.headers.get("content-disposition"),
+                                      content_type=response.headers.get("content-type"))
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise PortalUnavailable(f"{type(exc).__name__} downloading the document.", url=url) from exc
+
+
+@dataclass
+class PortalDownload:
+    url: str
+    content: bytes
+    disposition: Optional[str]
+    content_type: Optional[str]
 
 
 def server_clock_offset_minutes(page_clock: Optional[str], server_date: Optional[str]) -> Optional[int]:
