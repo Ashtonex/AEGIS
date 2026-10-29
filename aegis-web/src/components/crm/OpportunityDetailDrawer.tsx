@@ -474,8 +474,10 @@ export function OpportunityDetailDrawer({
     setIsSubmittingOutcome(true);
     try {
       const res = await markCrmOpportunityWon(opportunity.id, {
-        project_name: opportunity.name,
-        notes: winNotes.trim() || undefined,
+        // The project is named from the opportunity server-side; MarkWonPayload
+        // forbids extra keys, so only send fields it declares.
+        create_project: true,
+        win_loss_reason: winNotes.trim() || undefined,
         department_id: winDepartmentId || undefined,
       });
       if (res.success) {
@@ -502,8 +504,11 @@ export function OpportunityDetailDrawer({
     setIsSubmittingOutcome(true);
     try {
       const res = await markCrmOpportunityLost(opportunity.id, {
-        win_loss_reason: lossReason.trim(),
-        win_loss_notes: lossReasonNotes.trim() || undefined,
+        // MarkLostPayload has no notes field and forbids extra keys, so the
+        // notes ride along in the reason text instead of being dropped.
+        win_loss_reason: lossReasonNotes.trim()
+          ? `${lossReason.trim()}: ${lossReasonNotes.trim()}`
+          : lossReason.trim(),
       });
       if (res.success) {
         setIsLostModalOpen(false);
