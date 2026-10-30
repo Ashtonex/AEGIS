@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import re
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -27,6 +29,7 @@ from app.services.quotations.calculator import (
     sum_buildup_by_type,
 )
 from app.services.quotations import workspace as qws
+from app.services.quotations import rate_sources
 from app.services.quotations.intelligence_engine import (
     QuotationBrain,
     AssemblyLibrary,
@@ -1257,6 +1260,96 @@ async def classify_boq_description(
         "message": "BOQ line description classification complete.",
         "meta": {"user_id": user["user_id"]},
     }
+
+
+# --- Live rate sources & build-up templates (estimating workspace) -------------
+# Declared before "/{item_id}" so the static paths are not captured by it.
+
+
+@router.get("/rate-sources")
+async def search_quotation_rate_sources(
+    q: str = "",
+    resource_type: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Current costs from inventory, purchase orders, supplier rate cards, own
+    fleet and site labour, each with its source, date and currency."""
+    if resource_type and resource_type not in rate_sources.RESOURCE_TYPES:
+        raise HTTPException(status_code=400, detail="Unknown resource_type.")
+    data = await rate_sources.search_rate_sources(db, user["org_id"], q, resource_type)
+    return {"success": True, "data": jsonable_encoder(data), "message": f"{len(data)} rate source(s).", "meta": {"labour_min_sample": rate_sources.LABOUR_MIN_SAMPLE}}
+
+
+@router.post("/rate-sources/resolve")
+async def resolve_quotation_rate_sources(
+    payload: Dict[str, Any],
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Today's value of each linked build-up source, for a refresh preview.
+    Read-only: nothing on any quotation changes here."""
+    refs = payload.get("refs")
+    if not isinstance(refs, list):
+        raise HTTPException(status_code=400, detail="refs must be a list of {source_type, source_ref}.")
+    data = await rate_sources.resolve_rate_sources(db, user["org_id"], [r for r in refs if isinstance(r, dict)])
+    return {"success": True, "data": jsonable_encoder(data), "message": f"{len(data)} source(s) resolved.", "meta": {}}
+
+
+@router.get("/rate-templates")
+async def list_quotation_rate_templates(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reusable build-ups: the org's saved templates (current version of each
+    code) and the built-in recipes, all as workspace build-up lines."""
+    data = await rate_sources.list_templates(db, user["org_id"], DEFAULT_ASSEMBLIES)
+    return {"success": True, "data": jsonable_encoder(data), "message": f"{len(data)} template(s).", "meta": {}}
+
+
+_TEMPLATE_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
+
+
+@router.post("/rate-templates")
+async def save_quotation_rate_template(
+    payload: Dict[str, Any],
+    user: dict = Depends(require_permission("quotations.manage_assemblies")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a line's build-up as a reusable template (per ONE unit). Saving an
+    existing code creates the next version and retires the previous one;
+    quotations that already used it keep their copied resources."""
+    code = str(payload.get("code") or "").strip().upper()
+    if not _TEMPLATE_CODE_RE.match(code):
+        raise HTTPException(status_code=400, detail="Template code: 1-40 letters, digits, '.', '_' or '-'.")
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required.")
+    resources = rate_sources.clean_buildup(payload.get("buildup"))
+    if not resources:
+        raise HTTPException(status_code=400, detail="The build-up has no valid resources to save.")
+    quotation_id = payload.get("quotation_id")
+    if quotation_id:
+        try:
+            uuid.UUID(str(quotation_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="quotation_id is not a valid id.")
+        owned = await db.execute(
+            text("SELECT 1 FROM finance.quotations WHERE id = :id AND organization_id = :org AND is_deleted = false"),
+            {"id": str(quotation_id), "org": user["org_id"]},
+        )
+        if not owned.first():
+            raise HTTPException(status_code=404, detail="Quotation not found.")
+    saved = await rate_sources.save_template(
+        db, user["org_id"], user["user_id"], code=code, name=name[:200],
+        category=str(payload.get("category") or "Workspace")[:100], unit=str(payload.get("unit") or "")[:30],
+        currency=(str(payload.get("currency"))[:10] if payload.get("currency") else None), resources=resources,
+        source_quotation_id=str(quotation_id) if quotation_id else None,
+        source_line_id=str(payload.get("line_id"))[:80] if payload.get("line_id") else None,
+        notes=str(payload.get("notes"))[:1000] if payload.get("notes") else None,
+    )
+    await db.commit()
+    return {"success": True, "data": saved, "message": f"Template {code} saved as version {saved['version']}.", "meta": {}}
 
 
 @router.get("/assemblies")

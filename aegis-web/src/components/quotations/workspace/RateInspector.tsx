@@ -7,9 +7,10 @@
  * until the estimator applies it, and every applied rate records its source.
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, History, Check, X } from "lucide-react";
+import { Plus, Trash2, History, Check, X, Database } from "lucide-react";
 import { findSimilarPastBoqLines, type PastBoqMatch, type ReviewFlag } from "@/lib/api/quotations";
 import { NumberField } from "./NumberField";
+import { SourceBadge, SourcePicker, TemplateTools, resourceFromSource } from "./RateSources";
 import { BoqLine, BuildupLine, RESOURCE_TYPES, ResourceType, buildupTotal, formatMoney, formatQty, lineAmount, roundCents, wastageWarning } from "./domain";
 
 interface Props {
@@ -27,10 +28,12 @@ const inputCls = "w-full bg-void border border-ink-mid rounded-sm px-1.5 py-1 te
 export function RateInspector({ line, quotationId, currency, readOnly, flags, onUpdate, onClose }: Props) {
   const [past, setPast] = useState<{ loading: boolean; matches: PastBoqMatch[]; summary: { median: number; samples: number; unit: string | null } | null; error?: string } | null>(null);
   const [preview, setPreview] = useState<PastBoqMatch | null>(null);
+  const [pickerFor, setPickerFor] = useState<number | null>(null);
 
   useEffect(() => {
     setPast(null);
     setPreview(null);
+    setPickerFor(null);
   }, [line?.line_id]);
 
   const total = useMemo(() => (line ? buildupTotal(line) : 0), [line]);
@@ -93,6 +96,8 @@ export function RateInspector({ line, quotationId, currency, readOnly, flags, on
           </ul>
         )}
 
+        <TemplateTools line={line} quotationId={quotationId} currency={currency} readOnly={readOnly} onApply={(patch) => onUpdate(line.line_id, patch)} />
+
         <section>
           <div className="flex items-center justify-between mb-1.5">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-slate">Build-up per 1 {line.unit || "unit"}</h4>
@@ -123,14 +128,26 @@ export function RateInspector({ line, quotationId, currency, readOnly, flags, on
                       <input className={inputCls} disabled={readOnly} value={b.unit} onChange={(e) => editRow(i, { unit: e.target.value })} />
                     </label>
                     <label className="text-[10px] text-slate">Unit cost
-                      <NumberField className={inputCls} disabled={readOnly} value={b.rate} onValueChange={(v) => editRow(i, { rate: v })} />
+                      <NumberField className={inputCls} disabled={readOnly} value={b.rate} onValueChange={(v) => editRow(i, v === b.rate ? {} : { rate: v, source_type: undefined, source_ref: undefined })} />
                     </label>
                     <div className="text-[10px] text-slate">Contribution
                       <div className="text-xs text-paper font-mono pt-1 text-right">{formatMoney(b.qty * b.rate, currency)}</div>
                     </div>
                   </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <SourceBadge resource={b} />
+                    {!readOnly && (
+                      <button type="button" className="text-[11px] text-signal hover:underline flex items-center gap-1 ml-auto" onClick={() => setPickerFor(pickerFor === i ? null : i)}>
+                        <Database className="w-3 h-3" /> {b.source_type ? "Change source" : "Price from inventory / PO / fleet / labour"}
+                      </button>
+                    )}
+                  </div>
+                  {pickerFor === i && (
+                    <SourcePicker resource={b} currency={currency} onClose={() => setPickerFor(null)}
+                      onPick={(c) => { editRow(i, resourceFromSource(b, c)); setPickerFor(null); }} />
+                  )}
                   <div className="grid grid-cols-[1fr_auto_auto] gap-1.5 items-end">
-                    <input className={inputCls} aria-label="Source (supplier, PO, rate library)" placeholder="Source: supplier / PO / library" disabled={readOnly} value={b.source || ""} onChange={(e) => editRow(i, { source: e.target.value })} />
+                    <input className={inputCls} aria-label="Source (supplier, PO, rate library)" placeholder="Source: supplier / PO / library" disabled={readOnly} value={b.source || ""} onChange={(e) => editRow(i, { source: e.target.value, source_type: undefined, source_ref: undefined })} />
                     <input className={`${inputCls} w-[118px]`} type="date" aria-label="Source date" disabled={readOnly} value={b.source_date || ""} onChange={(e) => editRow(i, { source_date: e.target.value })} />
                     {!readOnly && (
                       <button type="button" className="p-1 text-slate hover:text-danger" aria-label="Remove resource" onClick={() => setBuildup(line.buildup.filter((_, j) => j !== i))}><Trash2 className="w-3.5 h-3.5" /></button>

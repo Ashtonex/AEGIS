@@ -737,3 +737,69 @@ export async function deleteCashCurveScenario(scenarioId: string): Promise<ApiRe
     allowFallback: false,
   });
 }
+
+// --- Live rate sources & build-up templates (estimating workspace) --- //
+
+export type RateSourceType = 'inventory' | 'purchase_order' | 'vendor_rate' | 'fleet_operating' | 'fleet_charge' | 'site_labour';
+
+/** A current cost from inventory, purchase orders, rate cards, own fleet or
+ *  site labour. currency is null when the source does not record one. */
+export interface RateSourceCandidate {
+  source_type: RateSourceType;
+  source_ref: string;
+  resource_type: string;
+  name: string;
+  code: string | null;
+  unit: string;
+  rate: number;
+  currency: string | null;
+  date: string | null;
+  detail: string;
+}
+
+export interface RateTemplate {
+  id: string | null;
+  code: string;
+  name: string;
+  category: string | null;
+  unit: string;
+  version: number | null;
+  currency: string | null;
+  origin: 'workspace' | 'custom' | 'default';
+  source_quotation_id: string | null;
+  updated_at: string | null;
+  notes: string | null;
+  buildup: Array<Record<string, any>>;
+}
+
+export async function searchRateSources(q: string, resourceType?: string): Promise<ApiResponse<RateSourceCandidate[]>> {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (resourceType) params.set('resource_type', resourceType);
+  return fetchApi(`/api/v1/quotations/rate-sources?${params.toString()}`, { cache: 'no-store', allowFallback: false });
+}
+
+/** Today's value of each linked source, keyed "source_type:source_ref". A
+ *  source that no longer exists is absent from the result. */
+export async function resolveRateSources(refs: Array<{ source_type: string; source_ref: string }>): Promise<ApiResponse<Record<string, RateSourceCandidate>>> {
+  return fetchApi('/api/v1/quotations/rate-sources/resolve', {
+    method: 'POST',
+    body: JSON.stringify({ refs }),
+    allowFallback: false,
+  });
+}
+
+export async function listRateTemplates(): Promise<ApiResponse<RateTemplate[]>> {
+  return fetchApi('/api/v1/quotations/rate-templates', { cache: 'no-store', allowFallback: false });
+}
+
+export async function saveRateTemplate(payload: {
+  code: string; name: string; category?: string; unit: string; currency?: string;
+  buildup: Array<Record<string, unknown>>; quotation_id?: string; line_id?: string; notes?: string;
+}): Promise<ApiResponse<{ id: string; code: string; version: number; superseded: string[] }>> {
+  return fetchApi('/api/v1/quotations/rate-templates', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}

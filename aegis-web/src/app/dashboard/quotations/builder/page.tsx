@@ -13,7 +13,7 @@ import {
   getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation,
   getDrawingRevisionAsBoq, importBoqFile, getFinanceActiveRateTable,
   getCrmTenders, getCrmOpportunities, getQuotationSourceLookup,
-  createDocument, linkDocument,
+  createDocument, linkDocument, isStaleVersionError,
 } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -78,9 +78,43 @@ interface LineItem {
   }>;
 }
 
+// Keys the server owns or recomputes on every save. Two loads that differ only
+// in these did not change anything this builder edits.
+const SERVER_MANAGED_METADATA = new Set([
+  "boq_approval", "client_copy", "uploaded_boq", "revision_state",
+  "vat_rate", "vat_rate_source", "calculation_alerts", "calculated_at", "calculated_by",
+  "audit_trail_hash", "subtotal", "taxable_amount", "vat", "grand_total", "totals",
+]);
+
+const stableJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map((k) => `${JSON.stringify(k)}:${stableJson((value as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+};
+
+/** What the builder edits on a stored quotation, for "did anyone else change it?". */
+const editableFingerprint = (q: any): string => {
+  const meta = { ...(q?.metadata || {}) };
+  for (const key of SERVER_MANAGED_METADATA) delete meta[key];
+  return stableJson({
+    client_name: q?.client_name ?? null,
+    project_id: q?.project_id ?? null,
+    tender_id: q?.tender_id ?? null,
+    opportunity_id: q?.opportunity_id ?? null,
+    status: q?.status ?? null,
+    metadata: meta,
+  });
+};
+
 const DEFAULT_BOQ_SECTION = "Measured Works";
 
+// Unknown keys (line_id, item_type, rate_source, takeoff, ... written by the
+// estimating workspace or the importer) are carried through untouched, so a
+// save here never strips them.
 const normalizeLineItem = (item: any): LineItem => ({
+  ...item,
   section: item.section || DEFAULT_BOQ_SECTION,
   item_no: item.item_no || item.itemNo || "",
   description: item.description || "",
@@ -173,6 +207,12 @@ export default function QuotationBuilder() {
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  // Optimistic concurrency: the row_version this form was loaded at, and the
+  // editable content at that version. A save sends the version; if someone
+  // else saved meanwhile the server answers 409 and nothing is overwritten.
+  const [rowVersion, setRowVersion] = useState<number | null>(null);
+  const [loadedFingerprint, setLoadedFingerprint] = useState<string | null>(null);
+  const [staleConflict, setStaleConflict] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
 
   // PDF & Excel generator Preview modal state
@@ -201,6 +241,9 @@ export default function QuotationBuilder() {
           const res = await getQuotation(editId);
           if (res.success && res.data) {
             const q = res.data;
+            setRowVersion(typeof q.row_version === "number" ? q.row_version : null);
+            setLoadedFingerprint(editableFingerprint(q));
+            setStaleConflict(false);
             setClientName(q.client_name || "");
             setSelectedProjectId(q.project_id || "");
             if (q.tender_id) { setSourceType("tender"); setSourceId(q.tender_id); }
@@ -773,12 +816,39 @@ export default function QuotationBuilder() {
     try {
       let res;
       if (editId) {
-        res = await updateQuotation(editId, payload);
+        try {
+          res = await updateQuotation(editId, rowVersion === null ? payload : { ...payload, expected_row_version: rowVersion });
+        } catch (err) {
+          if (!isStaleVersionError(err)) throw err;
+          // Someone saved after this form loaded. If what changed is only
+          // server-owned (e.g. a BOQ approval decision), nothing this form
+          // edits was touched: retry once at the new version. Otherwise stop
+          // and keep the user's unsaved form as it is.
+          const latest = await getQuotation(editId);
+          const latestVersion = latest.data?.row_version;
+          if (latest.success && typeof latestVersion === "number" && loadedFingerprint !== null && editableFingerprint(latest.data) === loadedFingerprint) {
+            res = await updateQuotation(editId, { ...payload, expected_row_version: latestVersion });
+          } else {
+            setStaleConflict(true);
+            setErrorMsg("This quotation was changed by someone else after you opened it. Your changes have NOT been saved. Copy anything you need, then reload to see the latest version.");
+            return;
+          }
+        }
       } else {
         res = await createQuotation(payload);
       }
 
       if (res.success) {
+        if (editId) {
+          // Pick up the server's line ids and the new version so the next
+          // save is checked against what was just saved.
+          const saved = await getQuotation(editId);
+          if (saved.success && saved.data) {
+            setRowVersion(typeof saved.data.row_version === "number" ? saved.data.row_version : null);
+            setLoadedFingerprint(editableFingerprint(saved.data));
+            if (Array.isArray(saved.data.metadata?.items)) setLineItems(saved.data.metadata.items.map(normalizeLineItem));
+          }
+        }
         setSuccessMsg(`Quotation saved successfully! Reference: ${quoteRef}`);
         setPrintQuoteData({ ...payload, id: res.data?.id || editId });
         setRevisionNumber(nextRevisionNumber);
@@ -998,6 +1068,11 @@ export default function QuotationBuilder() {
         <div className="p-4 border border-red-500/20 bg-red-950/20 rounded-sm flex items-center space-x-3 text-red-400 text-sm print:hidden">
           <AlertCircle className="w-5 h-5 shrink-0" />
           <span>{errorMsg}</span>
+          {staleConflict && (
+            <button type="button" onClick={() => window.location.reload()} className="ml-auto shrink-0 px-3 py-1 border border-red-500/40 rounded-sm text-red-300 hover:bg-red-900/30">
+              Reload latest
+            </button>
+          )}
         </div>
       )}
 

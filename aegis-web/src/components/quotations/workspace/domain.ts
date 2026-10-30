@@ -19,8 +19,13 @@ export interface BuildupLine {
   unit: string;
   rate: number;
   currency?: string;
+  /** Free-text source label (supplier, PO number, library). */
   source?: string;
   source_date?: string;
+  /** Set when picked from a live source (inventory, PO, rate card, fleet,
+   *  site labour) so Rates can look the same source up again. */
+  source_type?: string;
+  source_ref?: string;
   spec?: string;
   conversion_note?: string;
 }
@@ -36,6 +41,9 @@ export interface BoqLine {
   rate: number;
   buildup: BuildupLine[];
   rate_source?: { type: string; ref?: string; date?: string; note?: string } | null;
+  /** The template the build-up was copied from (a copy: later template
+   *  versions never change this line). */
+  buildup_template?: { id: string | null; code: string; version: number | null; applied_at: string } | null;
   zero_rate_reason?: string;
   takeoff?: { drawing_revision_id?: string; drawing_name?: string; revision_label?: string; verified?: boolean } | null;
   review_status?: "unreviewed" | "reviewed" | "query";

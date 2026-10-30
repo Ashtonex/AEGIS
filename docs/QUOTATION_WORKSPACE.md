@@ -112,10 +112,11 @@ cash-flow forecast is derived from the quotation total.
 
 ## Rollout
 
-1. Apply `migrations/279_quotation_workspace_revisions.sql` **before**
-   deploying the backend (the update endpoint selects `row_version`). It is
-   additive and idempotent (applied twice on the local replica). Existing
-   rows get `row_version = 1`.
+1. Apply `migrations/279_quotation_workspace_revisions.sql` and
+   `migrations/280_quotation_rate_templates.sql` **before** deploying the
+   backend (the update endpoint selects `row_version`; templates use the new
+   assembly columns). Both are additive and idempotent (each applied twice on
+   the local replica). Existing rows get `row_version = 1`.
 2. Deploy the backend, then the frontend. The workspace is on by default;
    build the frontend with `NEXT_PUBLIC_QUOTATION_WORKSPACE=off` to hide it
    (`aegis-web/src/components/quotations/workspace/flags.ts`).
@@ -150,21 +151,81 @@ cash-flow forecast is derived from the quotation total.
   duplicate-safe handoff with a simulated failure and concurrent repeats,
   stale-save conflicts (5 concurrent saves → exactly one wins), and a
   1,000-line estimate.
+- `imperium-api/tests/test_quotation_rate_sources.py` - template conversion
+  (validation, legacy recipe mapping, built-in recipe = legacy unit rate).
+- `imperium-api/scripts/verify_quotation_rate_sources.py` - 34 checks on the
+  isolated database: each source's value and exclusions (draft/cancelled POs,
+  expired cards, retired plant, small trades), resolve after price changes and
+  deletion, template permission, versioning, validation, and 5 concurrent
+  saves of one code → versions 1..5 with one current row. Seeds tagged rows
+  and deletes them afterwards.
+
+## Live rate sources (migration 280)
+
+In the line inspector each build-up resource has **Price from inventory / PO
+/ fleet / labour** (`GET /quotations/rate-sources?q=&resource_type=`,
+`app/services/quotations/rate_sources.py`):
+
+| Source | Value used | Notes |
+|---|---|---|
+| Inventory | unit price ex VAT, else standard cost | stock items record no currency - shown as "not recorded", never guessed |
+| Purchase order | newest priced line for the stock item (approved / issued / received / invoiced / closed POs) | draft and cancelled POs ignored; unit price ex VAT |
+| Rate card | active `procurement.vendor_rate_items` in their effective dates | material, transport (with route), service → subcontractor |
+| Fleet | own plant: hourly operating cost **and** internal charge rate, offered separately | retired / disposed plant excluded |
+| Site labour | median hourly rate of active site workers per trade + currency | only trades with ≥ 3 workers, no names, so no individual's pay is exposed |
+
+Picking a source fills cost, unit, currency, source label and date and keeps
+`source_type` / `source_ref` on the resource. A different unit or currency is
+shown, never converted. Typing a cost by hand unlinks the source.
+
+**Rates → Refresh linked prices** looks every linked resource up again
+(`POST /quotations/rate-sources/resolve`), shows old → new per source, the
+lines affected and the direct-cost impact, and flags a source that no longer
+exists. Selected changes update the resources; a line whose rate equalled its
+build-up follows it, a line with a typed rate keeps it. Saved like any edit.
+
+## Build-up templates (migration 280)
+
+- **Apply template** lists the org's templates (current version per code)
+  and the built-in recipes (`GET /quotations/rate-templates`). Built-in
+  recipes are converted with their wastage % folded into material quantities
+  and are labelled as unsourced. Applying **copies** the resources into the
+  line and records `buildup_template {id, code, version}`; the line rate only
+  changes when the estimator uses "Use build-up".
+- **Save as template** (`POST /quotations/rate-templates`, needs
+  `quotations.manage_assemblies` - QS / executive) stores the build-up per one
+  unit with its sources in `finance.construction_assemblies.resources`, and
+  fills the legacy recipe columns for material/labour/plant so the CCB
+  assembly calculator still works (wastage 0, as it is already in the
+  quantities). Saving an existing code inserts version n+1 and retires the old
+  row (`is_deleted`, `superseded_by`), serialised per code by an advisory
+  lock. Templates never change a quotation that already used them.
+
+## Classic builder
+
+The classic builder now sends `expected_row_version`. If the quotation
+changed since it was opened and only server-owned fields moved (BOQ approval,
+client copy, computed totals), it retries once at the new version; if anything
+the builder edits changed, it stops with "Your changes have NOT been saved"
+and a Reload button. It also keeps unknown line keys (`line_id`, `item_type`,
+`rate_source`, `takeoff`, source links), so a classic save no longer strips
+workspace data, and reloads the server's line ids after each save.
 
 ## Limitations
 
 - Multi-currency: one currency per estimate. A build-up resource priced in
   another currency is flagged; no FX conversion is stored or applied.
-- Rate sources: inventory, procurement and fleet costs are not pulled into
-  build-ups automatically. Rate refresh uses the approved-BOQ library only.
-- Reusable rate templates: build-ups are not saved back to the assembly
-  library (its model differs); templates therefore cannot change historical
-  quotations.
+- Rate sources: inventory items carry no currency; fleet rates are own plant
+  only (hired-in plant agreements are not offered); labour is a median of
+  current site workers, not a payroll cost including on-costs.
+- Templates: the legacy CCB "custom assembly" form still inserts its own rows
+  without versioning; the newest row per code is shown.
 - Drawings: measuring, extraction and checklists stay on the Drawing Takeoff
   page; the workspace imports measurements and tracks committed / draft /
   superseded status per line.
 - Lump sums are entered as qty 1 × amount; alternates are not modelled.
-- Concurrency protection applies to the workspace; the classic builder does
-  not send a version and can still overwrite (as before).
+- Concurrency protection applies to the workspace and the classic builder;
+  other writers (CRM client-copy upload, decisions) are server actions that
+  do not overwrite lines.
 - Approval of an *issued* revision is the existing BOQ approval; there is no
   separate commercial-manager sign-off tier.

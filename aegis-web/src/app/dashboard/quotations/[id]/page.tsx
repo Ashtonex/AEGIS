@@ -135,14 +135,17 @@ function Workspace() {
   const currency = particulars?.currency || "USD";
   const editRevision = editor.revision + metaRevision;
 
+  // Depend on the stable reset callback, never on the editor object (a new
+  // object every render): that re-created load() and re-fetched in a loop.
+  const resetLines = editor.reset;
   const applyServer = useCallback((ws: QuotationWorkspaceData) => {
     setData(ws);
     setParticulars(particularsFrom(ws.quotation));
     setCommercial(commercialFrom(ws.quotation.metadata || {}));
     const items = Array.isArray(ws.quotation.metadata?.items) ? ws.quotation.metadata.items : [];
-    editor.reset(items.map((it: Record<string, any>) => normaliseLine(it)));
+    resetLines(items.map((it: Record<string, any>) => normaliseLine(it)));
     setLoadToken((t) => t + 1);
-  }, [editor]);
+  }, [resetLines]);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -198,8 +201,14 @@ function Workspace() {
     try {
       const res = await getQuotationWorkspace(id);
       const fresh = res.data;
-      // Keep local edits; refresh only the server-derived view.
-      if (fresh) setData(fresh);
+      // Keep local edits; refresh only the server-derived view. The VAT rate
+      // is server-owned (resolved from the rate table on every save), so the
+      // preview adopts it - otherwise it keeps the rate it loaded with.
+      if (fresh) {
+        setData(fresh);
+        const serverVat = commercialFrom(fresh.quotation.metadata || {}).vat_rate;
+        setCommercial((c) => (c && c.vat_rate !== serverVat ? { ...c, vat_rate: serverVat } : c));
+      }
     } catch {
       // the next explicit reload will show it
     }
