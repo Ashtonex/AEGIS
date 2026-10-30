@@ -126,7 +126,7 @@ def test_snapshot_skips_blank_lines_and_replaces_previous():
 
 def test_builder_save_cannot_forge_approval():
     src = (ROOT / "routers" / "quotations.py").read_text(encoding="utf-8")
-    assert '_SERVER_OWNED_METADATA_KEYS = ("boq_approval", "client_copy", "uploaded_boq")' in src
+    assert '_SERVER_OWNED_METADATA_KEYS = ("boq_approval", "client_copy", "uploaded_boq",' in src
     assert "_preserve_server_owned_metadata(db" in src
 
 

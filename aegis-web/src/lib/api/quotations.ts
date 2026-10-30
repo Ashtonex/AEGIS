@@ -90,12 +90,156 @@ export async function updateQuotation(id: string, payload: Record<string, unknow
   });
 }
 
-export async function decideQuotation(id: string, status: 'won' | 'lost', notes?: string): Promise<ApiResponse<any>> {
+export async function decideQuotation(id: string, status: 'won' | 'lost', notes?: string, revisionId?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${id}/decision`, {
     method: 'POST',
-    body: JSON.stringify({ status, notes }),
+    headers: { 'Idempotency-Key': createIdempotencyKey() },
+    body: JSON.stringify({ status, notes, ...(revisionId ? { revision_id: revisionId } : {}) }),
     allowFallback: false,
   });
+}
+
+// --- ESTIMATING WORKSPACE (revisions, review, handoff) --- //
+
+export interface QuotationRevisionSummary {
+  id: string;
+  revision_number: number;
+  parent_revision_id: string | null;
+  kind: 'issued' | 'internal';
+  change_reason: string | null;
+  currency: string | null;
+  tax_rate: string;
+  tax_rate_source: string | null;
+  direct_costs: string;
+  grand_total: string;
+  item_count: number;
+  audit_trail_hash: string | null;
+  created_at: string;
+  created_by_name: string | null;
+}
+
+export interface ReviewFlag {
+  code: string;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  line_id: string | null;
+  action: string | null;
+}
+
+export interface CommercialBreakdown {
+  currency: string;
+  steps: Array<{ key: string; label: string; amount: string; basis: string }>;
+  cost_total: string;
+  selling_ex_tax: string;
+  profit_realised: string;
+  markup_pct: number | null;
+  margin_pct: number | null;
+  definitions: Record<string, string>;
+  direct_cost_components: Record<string, string>;
+  section_totals: Array<{ section: string; amount: string }>;
+  tax: { applied: boolean; rate: string | null; source: string | null };
+  policy_alerts: string[];
+  grand_total: string;
+  direct_costs: string;
+}
+
+export interface QuotationWorkspaceData {
+  quotation: Record<string, any> & { id: string; row_version: number; metadata: Record<string, any> };
+  breakdown: CommercialBreakdown | null;
+  flags: ReviewFlag[];
+  revisions: QuotationRevisionSummary[];
+  revision_state: Record<string, any>;
+  working_matches_latest_revision: boolean | null;
+  viewer: { is_author: boolean; is_superadmin: boolean };
+}
+
+export async function getQuotationWorkspace(id: string): Promise<ApiResponse<QuotationWorkspaceData>> {
+  return fetchApi<ApiResponse<QuotationWorkspaceData>>(`/api/v1/quotations/${id}/workspace`, { cache: 'no-store', allowFallback: false });
+}
+
+/** Save the working draft with optimistic concurrency. A stale version comes
+ *  back as ApiError 409 with details.code === 'STALE_VERSION'. */
+export async function saveQuotationDraft(
+  id: string,
+  payload: Record<string, unknown>,
+  expectedRowVersion: number,
+  options?: { signal?: AbortSignal },
+): Promise<ApiResponse<{ id: string; row_version: number; quote_amount: string | number; items: any[]; totals: Record<string, any> }>> {
+  return fetchApi(`/api/v1/quotations/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ ...payload, expected_row_version: expectedRowVersion }),
+    allowFallback: false,
+    signal: options?.signal,
+  });
+}
+
+export function isStaleVersionError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 &&
+    (error.details as { code?: string } | undefined)?.code === 'STALE_VERSION';
+}
+
+export async function issueQuotationRevision(
+  id: string,
+  payload: { kind: 'issued' | 'internal'; change_reason?: string; expected_row_version?: number },
+): Promise<ApiResponse<QuotationRevisionSummary & { already_issued?: boolean }>> {
+  return fetchApi(`/api/v1/quotations/${id}/revisions`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': createIdempotencyKey() },
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getQuotationRevision(id: string, revisionId: string): Promise<ApiResponse<any>> {
+  return fetchApi(`/api/v1/quotations/${id}/revisions/${revisionId}`, { cache: 'no-store', allowFallback: false });
+}
+
+export interface RevisionComparison {
+  lines: Array<{
+    key: string; line_id: string | null; item_no: string | null; section: string | null;
+    change: 'added' | 'removed' | 'changed';
+    description_before: string | null; description_after: string | null;
+    unit_before: string | null; unit_after: string | null;
+    qty_before: string; qty_after: string; rate_before: string; rate_after: string;
+    amount_before: string; amount_after: string; amount_delta: string;
+    qty_effect: string; rate_effect: string; interaction: string;
+  }>;
+  variance: Record<'qty_effect' | 'rate_effect' | 'interaction' | 'added' | 'removed', string>;
+  direct_cost_delta: string;
+  rounding: string;
+  grand_total_delta: string;
+  before: { direct_costs: string; grand_total: string; selling_ex_tax: string; margin_pct: number | null; markup_pct: number | null };
+  after: { direct_costs: string; grand_total: string; selling_ex_tax: string; margin_pct: number | null; markup_pct: number | null };
+  counts: { added: number; removed: number; changed: number };
+  base_label: string;
+  target_label: string;
+}
+
+export async function compareQuotationRevisions(id: string, base: string, target = 'working'): Promise<ApiResponse<RevisionComparison>> {
+  const query = new URLSearchParams({ base, target }).toString();
+  return fetchApi(`/api/v1/quotations/${id}/revisions/compare?${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function downloadQuotationRevisionDocument(id: string, revisionId: string, kind: 'client-pdf' | 'internal-xlsx'): Promise<Blob> {
+  const url = resolveApiUrl(`/api/v1/quotations/${id}/revisions/${revisionId}/documents/${kind}`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: 'GET', headers });
+  if (!response.ok) {
+    throw await buildApiError(response);
+  }
+  return response.blob();
+}
+
+export async function getQuotationHandoff(id: string): Promise<ApiResponse<any>> {
+  return fetchApi(`/api/v1/quotations/${id}/handoff`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getQuotationMaterialsSchedule(id: string): Promise<ApiResponse<any>> {
+  return fetchApi(`/api/v1/quotations/${id}/handoff/materials-schedule`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createQuotationMaterialsSchedule(id: string): Promise<ApiResponse<any>> {
+  return fetchApi(`/api/v1/quotations/${id}/handoff/materials-schedule`, { method: 'POST', allowFallback: false });
 }
 
 /** Convert an approved/won quotation into an operational project. */

@@ -56,7 +56,7 @@ def boq_material_lines(items: Any) -> list[dict[str, Any]]:
             return []
     out: list[dict[str, Any]] = []
     for item in items or []:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("item_type") == "note":
             continue
         description = str(item.get("description") or "").strip()
         unit = str(item.get("unit") or "").strip().lower()

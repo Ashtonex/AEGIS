@@ -450,7 +450,7 @@ async def seed_boq_line_items_from_quotation(
     """
     rows = []
     for idx, item in enumerate(metadata.get("items") or []):
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("item_type") == "note":
             continue
         raw_qty, raw_rate, unit = quotation_item_qty_rate(item)
         try:

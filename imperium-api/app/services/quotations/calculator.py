@@ -435,7 +435,18 @@ def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) 
     needs to re-derive a priced cost breakdown from a quotation - originally
     inlined in quotations.py's decide_quotation, extracted so
     mark_opportunity_won (crm.py) can run the identical calculation instead
-    of re-deriving its own, subtly different version."""
+    of re-deriving its own, subtly different version.
+
+    tax_rate: the rate frozen on the record at its last server save
+    (metadata.vat_rate, resolved from the effective-dated rate table - see
+    app/services/quotations/workspace.py); records saved before that keep
+    the long-standing 15.5% default. Lines typed "note" (headings,
+    exclusions, clarifications) are carried at zero."""
+    if metadata.get("apply_vat"):
+        frozen_rate = metadata.get("vat_rate")
+        tax_rate = frozen_rate if frozen_rate not in (None, "") else 0.155
+    else:
+        tax_rate = 0
     return {
         "quotation_id": quotation_id,
         "preliminaries": metadata.get("preliminaries", 0),
@@ -443,7 +454,7 @@ def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) 
         "contingency_rate": float(metadata.get("contingency_pct", 0) or 0) / 100.0,
         "profit_rate": float(metadata.get("profit_pct", 0) or 0) / 100.0,
         "discount": metadata.get("discount", 0),
-        "tax_rate": 0.155 if metadata.get("apply_vat") else 0,
+        "tax_rate": tax_rate,
         "provisional_sums": metadata.get("provisional_sums", 0),
         "built_area_sqm": metadata.get("built_area_sqm", 0),
         "items": [
@@ -451,9 +462,9 @@ def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) 
                 "description": it.get("description"),
                 "section": it.get("section") or "Measured Works",
                 "item_no": it.get("item_no") or it.get("itemNo") or "",
-                "quantity": qty,
+                "quantity": 0 if it.get("item_type") == "note" else qty,
                 "unit": unit,
-                "rate": rate,
+                "rate": 0 if it.get("item_type") == "note" else rate,
                 "material_rate": sum_buildup_by_type(it, "material"),
                 "labour_rate": sum_buildup_by_type(it, "labour"),
                 "equipment_rate": sum_buildup_by_type(it, "equipment"),

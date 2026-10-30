@@ -2,13 +2,14 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import {
+import { LayoutDashboard,
   FileText, Plus, Trash2, CheckCircle,
   AlertCircle, Loader2, RefreshCw, Search, ArrowRight,
   TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
   ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp, Scale, TrendingDown,
   FolderKanban, Link2
 } from "lucide-react";
+import { QUOTATION_WORKSPACE_ENABLED, quotationWorkspaceHref } from "@/components/quotations/workspace/flags";
 import { getQuotations, getInternalProjects, getQuotationsNeedsBoq, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
@@ -631,10 +632,20 @@ export default function QuotationsDashboard() {
                                   </button>
                                 </>
                               )}
+                              {QUOTATION_WORKSPACE_ENABLED && (
+                                <Link
+                                  href={quotationWorkspaceHref(q.id)}
+                                  className="p-1.5 border border-signal/40 bg-ink rounded-sm hover:border-signal text-signal transition-colors"
+                                  title="Open estimating workspace"
+                                  aria-label="Open estimating workspace"
+                                >
+                                  <LayoutDashboard className="w-3.5 h-3.5" />
+                                </Link>
+                              )}
                               <Link
                                 href={`/dashboard/quotations/builder?edit=${q.id}`}
                                 className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-white transition-colors"
-                                title="Edit estimate"
+                                title="Edit estimate (classic builder)"
                               >
                                 <FileText className="w-3.5 h-3.5" />
                               </Link>

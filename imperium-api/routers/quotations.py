@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -26,6 +26,7 @@ from app.services.quotations.calculator import (
     build_calc_input_from_metadata,
     sum_buildup_by_type,
 )
+from app.services.quotations import workspace as qws
 from app.services.quotations.intelligence_engine import (
     QuotationBrain,
     AssemblyLibrary,
@@ -2405,6 +2406,17 @@ async def create_item(
     # it's popped out here before the payload reaches the generic column
     # writer below.
     task_id = payload.pop("task_id", None)
+    payload.pop("expected_row_version", None)
+    if isinstance(payload.get("metadata"), dict):
+        # A new record (including "Duplicate") starts unapproved and with no
+        # revision history - those keys are only ever written server-side.
+        payload["metadata"] = {
+            k: v for k, v in payload["metadata"].items() if k not in _SERVER_OWNED_METADATA_KEYS
+        }
+    if str(payload.get("status") or "").lower() in ("won", "lost"):
+        if idempotency_key:
+            await fail_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint)
+        raise HTTPException(status_code=409, detail="A new quotation cannot be created already won or lost - use the Won/Lost decision.")
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
@@ -2429,8 +2441,10 @@ async def create_item(
 
     try:
         result = await db.execute(query, params)
-        await db.commit()
         new_id = str(result.scalar())
+        if isinstance(payload.get("metadata"), dict):
+            await _persist_server_totals(db, user["org_id"], new_id, payload["metadata"])
+        await db.commit()
         if task_id:
             await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=new_id)
             await db.commit()
@@ -2543,7 +2557,7 @@ async def get_quotation_history(
 
 # Written only by their own endpoints (/boq-approval, the CRM client-quotation
 # upload, /boq/import) - a builder save must neither drop nor forge them.
-_SERVER_OWNED_METADATA_KEYS = ("boq_approval", "client_copy", "uploaded_boq")
+_SERVER_OWNED_METADATA_KEYS = ("boq_approval", "client_copy", "uploaded_boq", qws.REVISION_STATE_KEY)
 
 
 def _items_fingerprint(items: Any) -> str:
@@ -2589,6 +2603,36 @@ async def _preserve_server_owned_metadata(
     return merged
 
 
+async def _persist_server_totals(db: AsyncSession, org_id: str, item_id: str, metadata: Dict[str, Any]) -> None:
+    """Re-derives the saved totals with QuotationCalculator after an insert
+    (the calculation's audit hash is keyed on the real quotation id)."""
+    grand_total = await qws.apply_server_calculation(db, org_id, item_id, metadata)
+    if grand_total is None:
+        return
+    await db.execute(
+        text("""
+            UPDATE finance.quotations
+            SET metadata = CAST(:metadata AS jsonb), quote_amount = :quote_amount, updated_at = NOW()
+            WHERE id = :item_id AND organization_id = :org_id
+        """),
+        {"metadata": json.dumps(metadata, default=str), "quote_amount": grand_total, "item_id": item_id, "org_id": org_id},
+    )
+
+
+def _stale_version_response(current_version: int, expected: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": (
+                "This quotation was changed by someone else since you opened it "
+                f"(version {current_version}, yours is {expected}). Reload to see their changes - nothing was overwritten."
+            ),
+            "code": "STALE_VERSION",
+            "current_row_version": current_version,
+        },
+    )
+
+
 @router.put("/{item_id}")
 async def update_item(
     item_id: str,
@@ -2596,34 +2640,68 @@ async def update_item(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Saves the working draft. Two server-side guarantees on top of the
+    generic column write:
+      - totals: when metadata carries BOQ lines, quote_amount and every stored
+        total come from QuotationCalculator (the browser's are a preview);
+      - concurrency: a caller that sends the row_version it loaded
+        (expected_row_version in the body, or If-Match) gets 409 instead of
+        overwriting a newer save. Callers that send none keep last-write-wins."""
     payload = await request.json()
     task_id = payload.pop("task_id", None)
+    expected_raw = payload.pop("expected_row_version", None) or request.headers.get("If-Match")
+    expected_version: Optional[int] = None
+    if expected_raw not in (None, ""):
+        try:
+            expected_version = int(str(expected_raw).strip().strip('"'))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="expected_row_version must be an integer.")
+    # The award / revision state is never set through a draft save.
+    payload.pop("row_version", None)
     safe_keys = safe_payload_columns(payload.keys())
 
-    current_status_row = (
+    current_row = (
         await db.execute(
-            text("SELECT status FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            text("""
+                SELECT status, row_version FROM finance.quotations
+                WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+                FOR UPDATE
+            """),
             {"id": item_id, "org_id": user["org_id"]},
         )
     ).first()
-    if current_status_row and current_status_row.status in ("won", "lost") and user.get("role") != SUPERADMIN_ROLE:
+    if not current_row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if current_row.status in ("won", "lost") and user.get("role") != SUPERADMIN_ROLE:
         raise HTTPException(
             status_code=409,
-            detail=f"Quotation cannot be edited because it has already been decided as '{current_status_row.status}'. Reopen or revision required.",
+            detail=f"Quotation cannot be edited because it has already been decided as '{current_row.status}'. Reopen or revision required.",
         )
+    if expected_version is not None and expected_version != current_row.row_version:
+        await db.rollback()
+        return _stale_version_response(current_row.row_version, expected_version)
+    requested_status = str(payload.get("status") or "").lower()
+    if requested_status in ("won", "lost") and requested_status != current_row.status:
+        # Won/lost carry the four-eyes, SOP and budget-seeding controls of
+        # POST /{id}/decision - a plain save must not be a way around them.
+        raise HTTPException(status_code=409, detail="Use the Won/Lost decision to close a quotation - it cannot be set by saving.")
 
     if not safe_keys:
         if task_id:
             await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=item_id)
-            await db.commit()
+        await db.commit()
         return {
             "success": True,
-            "data": {"id": item_id},
+            "data": {"id": item_id, "row_version": current_row.row_version},
             "message": "No fields to update.",
         }
 
     if isinstance(payload.get("metadata"), dict):
         payload["metadata"] = await _preserve_server_owned_metadata(db, user["org_id"], item_id, payload["metadata"])
+        grand_total = await qws.apply_server_calculation(db, user["org_id"], item_id, payload["metadata"])
+        if grand_total is not None:
+            payload["quote_amount"] = grand_total
+            safe_keys = safe_payload_columns(payload.keys())
 
     json_columns = [k for k in safe_keys if isinstance(payload[k], (dict, list))]
     params = {
@@ -2643,10 +2721,30 @@ async def update_item(
         if task_id:
             await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=item_id)
 
+        saved = (
+            await db.execute(
+                text("SELECT row_version, quote_amount, metadata FROM finance.quotations WHERE id = :id AND organization_id = :org_id"),
+                {"id": item_id, "org_id": user["org_id"]},
+            )
+        ).first()
         await db.commit()
+        saved_meta = qws.parse_metadata(saved.metadata) if saved else {}
         return {
             "success": True,
-            "data": {"id": item_id},
+            "data": {
+                "id": item_id,
+                "row_version": saved.row_version if saved else None,
+                "quote_amount": saved.quote_amount if saved else None,
+                "items": saved_meta.get("items"),
+                "totals": {
+                    k: saved_meta.get(k)
+                    for k in (
+                        "direct_costs", "overhead_amount", "contingency_amount", "profit_amount", "subtotal",
+                        "taxable_amount", "vat", "grand_total", "vat_rate", "vat_rate_source", "audit_trail_hash",
+                        "calculation_alerts",
+                    )
+                },
+            },
             "message": "quotations updated.",
             "meta": {},
         }
@@ -2780,6 +2878,28 @@ async def decide_quotation(
         if payload.get("notes"):
             metadata["decision_notes"] = payload["notes"]
 
+        # Award basis: the client accepted an issued revision, so when one is
+        # named the execution baseline seeds from that frozen snapshot rather
+        # than the live working draft. Without one, the legacy behaviour
+        # (seed from the saved draft) is unchanged.
+        seed_metadata = metadata
+        awarded_revision = None
+        if decision == "won" and payload.get("revision_id"):
+            awarded_revision = await qws.load_revision(db, user["org_id"], item_id, str(payload["revision_id"]))
+            if not awarded_revision:
+                raise HTTPException(status_code=404, detail="That revision does not belong to this quotation.")
+            if awarded_revision["kind"] != "issued":
+                raise HTTPException(status_code=409, detail="Only a revision issued to the client can be awarded.")
+            seed_metadata = awarded_revision["snapshot"]
+            state = dict(metadata.get(qws.REVISION_STATE_KEY) or {})
+            state.update({
+                "awarded_revision_id": str(awarded_revision["id"]),
+                "awarded_revision_number": awarded_revision["revision_number"],
+                "awarded_at": datetime.now(timezone.utc).isoformat(),
+                "awarded_by": user["sub"],
+            })
+            metadata[qws.REVISION_STATE_KEY] = state
+
         await db.execute(
             text("""
                 UPDATE finance.quotations
@@ -2838,10 +2958,10 @@ async def decide_quotation(
                 )
 
         if decision == "won" and target_project_id:
-            calc_input = build_calc_input_from_metadata(item_id, metadata)
+            calc_input = build_calc_input_from_metadata(item_id, seed_metadata)
             calculation = QuotationCalculator.calculate(calc_input)
             budget_pending_reason = (
-                quotation_budget_block_reason(metadata, calculation)
+                quotation_budget_block_reason(seed_metadata, calculation)
                 or await protected_budget_block_reason(db, user, str(target_project_id))
             )
             if not budget_pending_reason:
@@ -2849,7 +2969,7 @@ async def decide_quotation(
                     db, user["org_id"], str(target_project_id), item_id, calculation, created_by=user["sub"],
                 )
                 await seed_boq_line_items_from_quotation(
-                    db, user["org_id"], str(target_project_id), item_id, metadata, created_by=user["sub"],
+                    db, user["org_id"], str(target_project_id), item_id, seed_metadata, created_by=user["sub"],
                 )
             forecast_metrics = await refresh_project_forecast(
                 db, user["org_id"], str(target_project_id), computed_by=user["sub"],
@@ -2887,6 +3007,7 @@ async def decide_quotation(
                 "notes": payload.get("notes"),
                 "budget_id": str(budget_id) if budget_id else None,
                 "project_id": str(target_project_id) if target_project_id else None,
+                "awarded_revision_id": str(awarded_revision["id"]) if awarded_revision else None,
             },
         )
 
@@ -2914,6 +3035,10 @@ async def decide_quotation(
             "budget_pending_reason": budget_pending_reason,
             "forecast": forecast_metrics,
             "margin_alert_raised": alert_raised,
+            "awarded_revision_id": str(awarded_revision["id"]) if awarded_revision else None,
+            "budget_basis": (
+                f"issued revision {awarded_revision['revision_number']}" if awarded_revision else "saved working draft"
+            ),
         },
         "message": f"Quotation marked as {decision}." + (
             " Project execution budget seeded from this quotation." if budget_id
@@ -2986,6 +3111,23 @@ async def convert_quotation_to_project(
                 },
                 "message": "Quotation is already linked to project.",
             }
+
+    # Converting marks the quotation won, so a quotation not yet won must
+    # clear the same award controls as POST /{id}/decision.
+    if str(q_row.get("status") or "").lower() != "won" and user.get("role") != SUPERADMIN_ROLE:
+        if is_self_certification(user["sub"], q_row.get("created_by")):
+            raise HTTPException(
+                status_code=403,
+                detail="You authored this quotation and cannot also convert it to a won project - get an independent commercial sign-off.",
+            )
+        missing_sops = await get_missing_required_sops(db, user["org_id"], item_id)
+        if missing_sops:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot convert - required SOP checklist(s) not yet complete: {', '.join(missing_sops)}.",
+            )
+        if str(q_row.get("status") or "").lower() == "lost":
+            raise HTTPException(status_code=409, detail="This quotation was lost - it cannot be converted to a project.")
 
     meta = q_row["metadata"] or {}
     if isinstance(meta, str):
@@ -3191,3 +3333,473 @@ async def generate_quotation_invoice_pdf(
     Generates an official SNC Proforma / Tax invoice from Quotation data.
     """
     return await invoice_pdf_response(payload, "SNC_Invoice")
+
+
+# -----------------------------------------------------------------------------
+# Estimating workspace: review, frozen revisions, documents, handoff
+# (app/services/quotations/workspace.py, migration 279)
+# -----------------------------------------------------------------------------
+
+_ISSUE_BLOCKING_FLAGS = {"missing_description", "missing_quantity", "missing_unit", "unpriced", "no_boq", "missing_client"}
+
+
+async def _load_quotation_row(db: AsyncSession, org_id: str, item_id: str, *, lock: bool = False) -> Dict[str, Any]:
+    lock_clause = "FOR UPDATE" if lock else ""
+    row = (
+        await db.execute(
+            text(f"""
+                SELECT * FROM finance.quotations
+                WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+                {lock_clause}
+            """),  # nosec B608 - fixed clause, no user input
+            {"item_id": item_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found.")
+    out = dict(row)
+    out["metadata"] = qws.parse_metadata(out.get("metadata"))
+    return out
+
+
+def _working_matches_revision(item_id: str, metadata: Dict[str, Any], revision: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """Whether the live draft is commercially identical to a revision: same
+    calculator audit hash when priced under that revision's number."""
+    if not revision or not qws.has_priced_structure(metadata):
+        return None
+    candidate = qws.snapshot_metadata(metadata)
+    candidate["revision_number"] = revision["revision_number"]
+    return qws.calculate(item_id, candidate).audit_trail_hash == revision.get("audit_trail_hash")
+
+
+@router.get("/{item_id}/workspace")
+async def get_quotation_workspace(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Everything the estimating workspace header and review need in one read:
+    the record (with row_version for safe saves), the calculator's commercial
+    breakdown, actionable review flags, revisions and award/handoff state."""
+    quotation = await _load_quotation_row(db, user["org_id"], item_id)
+    metadata = quotation["metadata"]
+    revisions = await qws.list_revisions(db, user["org_id"], item_id)
+    latest = revisions[0] if revisions else None
+    flags = await qws.review_flags(db, user["org_id"], quotation, metadata)
+    breakdown = qws.commercial_breakdown(item_id, metadata) if qws.has_priced_structure(metadata) else None
+    return {
+        "success": True,
+        "data": jsonable_encoder({
+            "quotation": quotation,
+            "breakdown": breakdown,
+            "flags": flags,
+            "revisions": revisions,
+            "revision_state": metadata.get(qws.REVISION_STATE_KEY) or {},
+            "working_matches_latest_revision": _working_matches_revision(item_id, metadata, latest),
+            "viewer": {
+                "is_author": is_self_certification(user["sub"], quotation.get("created_by")),
+                "is_superadmin": user.get("role") == SUPERADMIN_ROLE,
+            },
+        }),
+        "message": "Quotation workspace loaded.",
+        "meta": {},
+    }
+
+
+class QuotationRevisionIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    change_reason: Optional[str] = Field(default=None, max_length=4000)
+    kind: Literal["issued", "internal"] = "issued"
+    expected_row_version: Optional[int] = None
+
+
+@router.post("/{item_id}/revisions", status_code=201)
+async def issue_quotation_revision(
+    item_id: str,
+    payload: QuotationRevisionIssue,
+    request: Request,
+    user: dict = Depends(require_permission("quotations.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Freezes the saved working draft as an immutable revision.
+
+    'issued' = the version going to the client. It needs the BOQ's
+    independent approval (POST /{id}/boq-approval, four-eyes) for the current
+    lines and no blocking review flags; it moves a draft quotation to 'sent'.
+    'internal' = a checkpoint for comparison only, no gates.
+    Re-issuing identical commercial content returns the existing revision."""
+    idempotency_key = request.headers.get("Idempotency-Key")
+    endpoint = f"POST /quotations/{item_id}/revisions"
+    if idempotency_key:
+        cached = await begin_idempotent_request(
+            db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint, request_body=payload.model_dump(),
+        )
+        if cached is not None:
+            return cached
+    try:
+        quotation = await _load_quotation_row(db, user["org_id"], item_id, lock=True)
+        if payload.expected_row_version is not None and payload.expected_row_version != quotation["row_version"]:
+            raise HTTPException(
+                status_code=409,
+                detail="The quotation changed since you reviewed it - reload and check the figures before issuing.",
+            )
+        if str(quotation.get("status") or "").lower() in ("won", "lost"):
+            raise HTTPException(status_code=409, detail=f"Quotation is already {quotation['status']} - raise a variation instead of a new revision.")
+        metadata = quotation["metadata"]
+        if not qws.has_priced_structure(metadata):
+            raise HTTPException(status_code=409, detail="There are no BOQ lines to freeze.")
+        # Freeze exactly what the server would save now (current effective tax rate).
+        await qws.apply_server_calculation(db, user["org_id"], item_id, metadata)
+
+        if payload.kind == "issued":
+            flags = await qws.review_flags(db, user["org_id"], quotation, metadata)
+            blocking = [f["message"] for f in flags if f["code"] in _ISSUE_BLOCKING_FLAGS]
+            if blocking:
+                raise HTTPException(status_code=409, detail="Fix before issuing: " + " ".join(blocking[:8]))
+            approval = metadata.get("boq_approval") or {}
+            if approval.get("status") != "approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail="The BOQ needs independent approval of its current lines before it can be issued to the client.",
+                )
+
+        latest_rows = await qws.list_revisions(db, user["org_id"], item_id)
+        latest = latest_rows[0] if latest_rows else None
+        if latest and latest["kind"] == payload.kind and _working_matches_revision(item_id, metadata, latest):
+            await db.rollback()
+            response = {
+                "success": True,
+                "data": jsonable_encoder({**latest, "already_issued": True}),
+                "message": f"Revision {latest['revision_number']} already holds these exact figures - nothing new was frozen.",
+                "meta": {},
+            }
+            if idempotency_key:
+                await complete_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint, response_status=201, response_body=jsonable_encoder(response))
+            return response
+
+        revision = await qws.insert_revision(
+            db,
+            org_id=user["org_id"],
+            quotation_id=item_id,
+            metadata=metadata,
+            kind=payload.kind,
+            change_reason=(payload.change_reason or "").strip() or None,
+            created_by=user["sub"],
+            source_row_version=quotation["row_version"],
+        )
+        state = dict(metadata.get(qws.REVISION_STATE_KEY) or {})
+        state.update({
+            "latest_revision_id": revision["id"],
+            "latest_revision_number": revision["revision_number"],
+        })
+        new_status = quotation.get("status")
+        if payload.kind == "issued":
+            state.update({
+                "latest_issued_revision_id": revision["id"],
+                "latest_issued_revision_number": revision["revision_number"],
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+                "issued_by": user["sub"],
+            })
+            metadata["revision_number"] = revision["revision_number"]
+            if str(new_status or "draft").lower() in ("draft", "approved", ""):
+                new_status = "sent"
+        metadata[qws.REVISION_STATE_KEY] = state
+        await db.execute(
+            text("""
+                UPDATE finance.quotations
+                SET metadata = CAST(:metadata AS jsonb), quote_amount = CAST(:quote_amount AS numeric),
+                    status = :status, updated_at = NOW()
+                WHERE id = :item_id AND organization_id = :org_id
+            """),
+            {
+                "metadata": json.dumps(metadata, default=str),
+                "quote_amount": str(metadata.get("grand_total") or 0),
+                "status": new_status or "draft",
+                "item_id": item_id,
+                "org_id": user["org_id"],
+            },
+        )
+        await emit_event(
+            db,
+            user=user,
+            event_type="finance.quotation.revision_frozen.v1",
+            aggregate_type="quotation",
+            aggregate_id=item_id,
+            project_id=quotation.get("project_id"),
+            event_data={
+                "quotation_id": item_id,
+                "revision_id": revision["id"],
+                "revision_number": revision["revision_number"],
+                "kind": payload.kind,
+                "grand_total": revision["grand_total"],
+                "change_reason": payload.change_reason,
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        if idempotency_key:
+            await fail_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint)
+        raise
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to freeze revision for quotation %s", item_id)
+        if idempotency_key:
+            await fail_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint)
+        raise HTTPException(status_code=500, detail="Failed to freeze the revision.")
+
+    response = {
+        "success": True,
+        "data": jsonable_encoder(revision),
+        "message": f"Revision {revision['revision_number']} frozen" + (" and marked as issued to the client." if payload.kind == "issued" else " as an internal checkpoint."),
+        "meta": {},
+    }
+    if idempotency_key:
+        await complete_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint, response_status=201, response_body=jsonable_encoder(response))
+    return response
+
+
+@router.get("/{item_id}/revisions")
+async def list_quotation_revisions(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _load_quotation_row(db, user["org_id"], item_id)
+    revisions = await qws.list_revisions(db, user["org_id"], item_id)
+    return {"success": True, "data": jsonable_encoder(revisions), "message": "Revisions listed.", "meta": {"total": len(revisions)}}
+
+
+async def _comparison_side(db: AsyncSession, org_id: str, item_id: str, ref: str, working: Dict[str, Any]):
+    from app.services.quotations.calculator import QuotationCalculationResult
+
+    if ref == "working":
+        meta = qws.snapshot_metadata(working)
+        return meta, qws.calculate(item_id, meta), "Working draft"
+    revision = await qws.load_revision(db, org_id, item_id, ref)
+    if not revision:
+        raise HTTPException(status_code=404, detail="That revision is not on this quotation.")
+    return revision["snapshot"], QuotationCalculationResult(**revision["calculation"]), f"Rev {revision['revision_number']}"
+
+
+@router.get("/{item_id}/revisions/compare")
+async def compare_quotation_revisions(
+    item_id: str,
+    base: str,
+    target: str = "working",
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Line-by-line difference between two revisions (or a revision and the
+    working draft), matched on stable line ids, with quantity / rate /
+    interaction variance that reconciles to the direct-cost movement."""
+    quotation = await _load_quotation_row(db, user["org_id"], item_id)
+    base_meta, base_calc, base_label = await _comparison_side(db, user["org_id"], item_id, base, quotation["metadata"])
+    target_meta, target_calc, target_label = await _comparison_side(db, user["org_id"], item_id, target, quotation["metadata"])
+    result = qws.compare_snapshots(base_meta, target_meta, base_calc, target_calc)
+    result["base_label"], result["target_label"] = base_label, target_label
+    return {"success": True, "data": jsonable_encoder(result), "message": "Revisions compared.", "meta": {}}
+
+
+@router.get("/{item_id}/revisions/{revision_id}")
+async def get_quotation_revision(
+    item_id: str,
+    revision_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    revision = await qws.load_revision(db, user["org_id"], item_id, revision_id)
+    if not revision:
+        raise HTTPException(status_code=404, detail="Revision not found.")
+    revision["breakdown"] = qws.commercial_breakdown(item_id, revision["snapshot"])
+    return {"success": True, "data": jsonable_encoder(revision), "message": "Revision retrieved.", "meta": {}}
+
+
+@router.get("/{item_id}/revisions/{revision_id}/documents/{document_kind}")
+async def download_quotation_revision_document(
+    item_id: str,
+    revision_id: str,
+    document_kind: Literal["client-pdf", "internal-xlsx"],
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Documents derive from the frozen revision only. client-pdf shows selling
+    rates and totals - no cost rates, build-ups, markups or margin.
+    internal-xlsx carries all of those and is labelled internal."""
+    from app.services.documents.quotation_documents import (
+        render_client_quotation_pdf,
+        render_internal_estimate_xlsx,
+    )
+
+    quotation = await _load_quotation_row(db, user["org_id"], item_id)
+    revision = await qws.load_revision(db, user["org_id"], item_id, revision_id)
+    if not revision:
+        raise HTTPException(status_code=404, detail="Revision not found.")
+    ref = "".join(ch for ch in str(revision["snapshot"].get("reference_number") or "quotation") if ch.isalnum() or ch in "-_")[:60]
+    if document_kind == "client-pdf":
+        content = render_client_quotation_pdf(revision=revision, client_name=quotation.get("client_name"))
+        return Response(
+            content=content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{ref}_Rev{revision["revision_number"]}.pdf"'},
+        )
+    breakdown = qws.commercial_breakdown(item_id, revision["snapshot"])
+    content = render_internal_estimate_xlsx(revision=revision, client_name=quotation.get("client_name"), breakdown=breakdown)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{ref}_Rev{revision["revision_number"]}_INTERNAL.xlsx"'},
+    )
+
+
+@router.get("/{item_id}/handoff")
+async def get_quotation_handoff(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Where the awarded quotation has landed downstream - read from the real
+    records (project, approved budget, BOQ lines, procurement plan, planning
+    packages), so a partial handoff is visible rather than assumed."""
+    quotation = await _load_quotation_row(db, user["org_id"], item_id)
+    state = quotation["metadata"].get(qws.REVISION_STATE_KEY) or {}
+    project_id = quotation.get("project_id")
+    project = budget = plan = None
+    boq_lines = 0
+    if project_id:
+        project = (await db.execute(
+            text("SELECT id, name, project_code, status, contract_value FROM projects.projects WHERE id = :pid AND organization_id = :org_id"),
+            {"pid": project_id, "org_id": user["org_id"]},
+        )).mappings().first()
+        budget = (await db.execute(
+            text("""
+                SELECT id, status, total_amount, budget_version, label, created_at
+                FROM finance.project_budgets
+                WHERE project_id = :pid AND organization_id = :org_id AND is_deleted = false
+                  AND label = :label
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"pid": project_id, "org_id": user["org_id"], "label": f"Seeded from accepted quotation {item_id}"},
+        )).mappings().first()
+        boq_lines = (await db.execute(
+            text("""
+                SELECT count(*) FROM finance.boq_line_items
+                WHERE project_id = :pid AND organization_id = :org_id AND source_quotation_id = :qid
+                  AND status = 'active' AND is_deleted = false
+            """),
+            {"pid": project_id, "org_id": user["org_id"], "qid": item_id},
+        )).scalar() or 0
+        plan = (await db.execute(
+            text("""
+                SELECT id, stage, requisition_id FROM procurement.procurement_plans
+                WHERE organization_id = :org_id AND project_id = :pid AND is_deleted = false
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"pid": project_id, "org_id": user["org_id"]},
+        )).mappings().first()
+    packages = (await db.execute(
+        text("""
+            SELECT id, revision_id, package_type, status, summary, created_at
+            FROM finance.quotation_handoff_packages
+            WHERE organization_id = :org_id AND quotation_id = :qid
+            ORDER BY created_at DESC
+        """),
+        {"org_id": user["org_id"], "qid": item_id},
+    )).mappings().all()
+    return {
+        "success": True,
+        "data": jsonable_encoder({
+            "status": quotation.get("status"),
+            "awarded_revision_id": state.get("awarded_revision_id"),
+            "awarded_revision_number": state.get("awarded_revision_number"),
+            "project": dict(project) if project else None,
+            "budget": dict(budget) if budget else None,
+            "boq_lines": int(boq_lines),
+            "procurement_plan": dict(plan) if plan else None,
+            "packages": [dict(p) for p in packages],
+        }),
+        "message": "Handoff status loaded.",
+        "meta": {},
+    }
+
+
+@router.get("/{item_id}/handoff/materials-schedule")
+async def get_quotation_materials_schedule(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _load_quotation_row(db, user["org_id"], item_id)
+    package = (await db.execute(
+        text("""
+            SELECT * FROM finance.quotation_handoff_packages
+            WHERE organization_id = :org_id AND quotation_id = :qid AND package_type = 'materials_schedule'
+            ORDER BY created_at DESC LIMIT 1
+        """),
+        {"org_id": user["org_id"], "qid": item_id},
+    )).mappings().first()
+    return {"success": True, "data": jsonable_encoder(dict(package)) if package else None, "message": "Materials schedule.", "meta": {}}
+
+
+@router.post("/{item_id}/handoff/materials-schedule", status_code=201)
+async def create_quotation_materials_schedule(
+    item_id: str,
+    user: dict = Depends(require_permission("quotations.decide")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Planning materials schedule from the awarded revision's build-ups.
+    Idempotent: one package per (quotation, awarded revision); a repeat or
+    retry returns the existing one. Creates no purchase request or order."""
+    quotation = await _load_quotation_row(db, user["org_id"], item_id, lock=True)
+    if str(quotation.get("status") or "").lower() != "won":
+        raise HTTPException(status_code=409, detail="A materials schedule is produced after award - this quotation is not won.")
+    state = quotation["metadata"].get(qws.REVISION_STATE_KEY) or {}
+    revision_id = state.get("awarded_revision_id")
+    if not revision_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This quotation was won without naming an issued revision, so there is no frozen basis to schedule from.",
+        )
+    revision = await qws.load_revision(db, user["org_id"], item_id, revision_id)
+    if not revision:
+        raise HTTPException(status_code=404, detail="Awarded revision not found.")
+    schedule = qws.build_materials_schedule(revision["snapshot"])
+    inserted = (await db.execute(
+        text("""
+            INSERT INTO finance.quotation_handoff_packages (
+                organization_id, quotation_id, revision_id, project_id, package_type, lines, summary, created_by
+            ) VALUES (
+                :org_id, :qid, CAST(:rid AS uuid), :pid, 'materials_schedule',
+                CAST(:lines AS jsonb), CAST(:summary AS jsonb), :user_id
+            )
+            ON CONFLICT (quotation_id, revision_id, package_type) DO NOTHING
+            RETURNING id
+        """),
+        {
+            "org_id": user["org_id"], "qid": item_id, "rid": revision_id, "pid": quotation.get("project_id"),
+            "lines": json.dumps(schedule["lines"], default=str), "summary": json.dumps(schedule["summary"], default=str),
+            "user_id": user["sub"],
+        },
+    )).first()
+    created = inserted is not None
+    package = (await db.execute(
+        text("""
+            SELECT * FROM finance.quotation_handoff_packages
+            WHERE quotation_id = :qid AND revision_id = CAST(:rid AS uuid) AND package_type = 'materials_schedule'
+        """),
+        {"qid": item_id, "rid": revision_id},
+    )).mappings().first()
+    if created:
+        await emit_event(
+            db, user=user, event_type="finance.quotation.materials_schedule_created.v1",
+            aggregate_type="quotation", aggregate_id=item_id, project_id=quotation.get("project_id"),
+            event_data={"quotation_id": item_id, "revision_id": revision_id, "package_id": str(package["id"])},
+        )
+    await db.commit()
+    return {
+        "success": True,
+        "data": jsonable_encoder({**dict(package), "created": created}),
+        "message": "Materials schedule created (planning only)." if created else "Materials schedule already exists for this revision - returned it unchanged.",
+        "meta": {},
+    }

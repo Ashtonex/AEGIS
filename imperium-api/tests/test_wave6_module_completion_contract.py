@@ -18,8 +18,8 @@ class Wave6ModuleCompletionContractTests(unittest.TestCase):
     """
 
     def test_quotation_locks_against_updates_when_decided(self):
-        self.assertIn('SELECT status FROM finance.quotations WHERE id = :id', QUOTATIONS_PY)
-        self.assertIn('current_status_row.status in ("won", "lost")', QUOTATIONS_PY)
+        self.assertIn('SELECT status, row_version FROM finance.quotations', QUOTATIONS_PY)
+        self.assertIn('current_row.status in ("won", "lost")', QUOTATIONS_PY)
         self.assertIn('status_code=409', QUOTATIONS_PY)
         self.assertIn('Quotation cannot be edited because it has already been decided', QUOTATIONS_PY)
 
