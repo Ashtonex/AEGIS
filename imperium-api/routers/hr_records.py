@@ -201,6 +201,122 @@ async def decide_leave_request(
     return ok({"id": str(leave_id)}, f"Leave request {decision_val}.")
 
 
+@router.get("/leave/balances")
+async def list_leave_balances(
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("hr.leave.read")),
+):
+    """One row per current employee: annual entitlement, leave taken in the year and what is pending."""
+    balance_year = year or date.today().year
+    rows = await db.execute(
+        text("""
+        SELECT e.id AS employee_id, e.employee_name, e.employee_number, e.job_title, e.employment_status,
+               e.annual_leave_days,
+               COALESCE(SUM(lr.days_requested) FILTER (
+                   WHERE lr.status = 'approved' AND lr.leave_type = 'annual'
+                     AND EXTRACT(YEAR FROM lr.start_date) = CAST(:year AS integer)), 0) AS annual_taken,
+               COALESCE(SUM(lr.days_requested) FILTER (
+                   WHERE lr.status = 'approved' AND EXTRACT(YEAR FROM lr.start_date) = CAST(:year AS integer)), 0) AS days_taken,
+               COUNT(lr.id) FILTER (WHERE lr.status = 'pending') AS pending_count,
+               COUNT(lr.id) AS request_count,
+               MAX(lr.end_date) FILTER (WHERE lr.status = 'approved' AND lr.start_date <= CURRENT_DATE) AS last_leave_end,
+               BOOL_OR(lr.status = 'approved' AND CURRENT_DATE BETWEEN lr.start_date AND lr.end_date) AS on_leave_today
+        FROM hr.employees e
+        LEFT JOIN hr.leave_requests lr
+            ON lr.employee_id = e.id AND lr.organization_id = e.organization_id AND lr.is_deleted = false
+        WHERE e.organization_id = :org_id AND e.is_deleted = false AND e.employment_status <> 'terminated'
+        GROUP BY e.id
+        ORDER BY e.employee_name
+        """),
+        {"org_id": user["org_id"], "year": balance_year},
+    )
+    items = []
+    for row in rows.mappings():
+        item = dict(row)
+        for key in ("annual_taken", "days_taken"):
+            item[key] = float(item[key] or 0)
+        item["annual_remaining"] = float(item["annual_leave_days"] or 0) - item["annual_taken"]
+        item["on_leave_today"] = bool(item["on_leave_today"])
+        items.append(item)
+    return ok({"year": balance_year, "people": items}, "Leave balances listed.")
+
+
+@router.get("/leave/employee/{employee_id}/pdf")
+async def download_employee_leave_record(
+    employee_id: UUID,
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("hr.leave.read")),
+):
+    """Branded PDF of one employee's leave: every request with dates, days, reason and decision."""
+    employee = (
+        await db.execute(
+            text("""
+            SELECT e.*, p.name AS position_name, d.name AS department_name
+            FROM hr.employees e
+            LEFT JOIN hr.positions p ON p.id = e.position_id AND p.organization_id = e.organization_id
+            LEFT JOIN finance.departments d ON d.id = e.department_id AND d.organization_id = e.organization_id
+            WHERE e.id = :id AND e.organization_id = :org_id AND e.is_deleted = false
+            """),
+            {"id": employee_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found.")
+
+    query_str = """
+        SELECT lr.id, lr.leave_type, lr.start_date, lr.end_date, lr.days_requested, lr.reason,
+               lr.status, lr.approved_at, lr.rejection_reason, lr.created_at,
+               approver.full_name AS approved_by_name
+        FROM hr.leave_requests lr
+        LEFT JOIN core.users approver ON approver.id = lr.approved_by
+        WHERE lr.organization_id = :org_id AND lr.employee_id = :employee_id AND lr.is_deleted = false
+    """
+    params: dict = {"org_id": user["org_id"], "employee_id": employee_id}
+    if year:
+        query_str += " AND EXTRACT(YEAR FROM lr.start_date) = CAST(:year AS integer)"
+        params["year"] = year
+    query_str += " ORDER BY lr.start_date, lr.created_at"
+    requests = [dict(r) for r in (await db.execute(text(query_str), params)).mappings()]
+
+    balance_year = year or date.today().year
+    annual_taken = (
+        await db.execute(
+            text("""
+            SELECT COALESCE(SUM(days_requested), 0) FROM hr.leave_requests
+            WHERE organization_id = :org_id AND employee_id = :employee_id AND is_deleted = false
+              AND status = 'approved' AND leave_type = 'annual'
+              AND EXTRACT(YEAR FROM start_date) = CAST(:balance_year AS integer)
+            """),
+            {"org_id": user["org_id"], "employee_id": employee_id, "balance_year": balance_year},
+        )
+    ).scalar()
+    generated_by = (
+        await db.execute(text("SELECT full_name FROM core.users WHERE id = CAST(:id AS uuid)"), {"id": user["user_id"]})
+    ).scalar()
+
+    from fastapi.concurrency import run_in_threadpool
+    from fastapi.responses import Response
+    from app.services.documents.leave_renderer import render_leave_record_pdf
+
+    pdf = await run_in_threadpool(
+        lambda: render_leave_record_pdf(
+            dict(employee), requests, year=year, balance_year=balance_year,
+            annual_taken=float(annual_taken or 0), generated_by=generated_by,
+        )
+    )
+    slug = "".join(c if c.isalnum() else "_" for c in str(employee["employee_name"] or "employee")).strip("_") or "employee"
+    filename = f"SNC_Leave_Record_{slug}{f'_{year}' if year else ''}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # --- Self-service ("me") endpoints ---
 #
 # No require_permission on any of these - every authenticated user gets

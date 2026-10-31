@@ -119,6 +119,39 @@ export async function approveHRLeaveRequest(id: string, decision: 'approved' | '
   });
 }
 
+export type LeaveBalance = {
+  employee_id: string;
+  employee_name: string;
+  employee_number: string | null;
+  job_title: string | null;
+  employment_status: string;
+  annual_leave_days: number;
+  annual_taken: number;
+  annual_remaining: number;
+  days_taken: number;
+  pending_count: number;
+  request_count: number;
+  last_leave_end: string | null;
+  on_leave_today: boolean;
+};
+
+export async function getLeaveBalances(year?: number): Promise<ApiResponse<{ year: number; people: LeaveBalance[] }>> {
+  return fetchApi<ApiResponse<{ year: number; people: LeaveBalance[] }>>(`/api/v1/hr-records/leave/balances${year ? `?year=${year}` : ''}`, { cache: 'no-store', allowFallback: false });
+}
+
+/** Six Nine branded leave record for one employee: every request with dates, days, reason and decision. */
+export async function downloadEmployeeLeaveRecordPdf(employeeId: string, year?: number): Promise<Blob> {
+  const qs = year ? `?year=${year}` : '';
+  const url = resolveApiUrl(`/api/v1/hr-records/leave/employee/${encodeURIComponent(employeeId)}/pdf${qs}`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: 'GET', headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, body?.detail || body?.error?.message || 'Could not generate the leave record PDF.');
+  }
+  return response.blob();
+}
+
 export async function getMyHREmployeeRecord(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/hr-records/me', { cache: 'no-store', allowFallback: false });
 }
