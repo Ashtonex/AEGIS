@@ -14,6 +14,7 @@ API = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".joi
 HR_PAGE = (WEB_ROOT / "src" / "app" / "dashboard" / "hr" / "page.tsx").read_text(encoding="utf-8") + (
     WEB_ROOT / "src" / "app" / "dashboard" / "hr" / "HRTabPanels.tsx"
 ).read_text(encoding="utf-8")  # tab bodies now live here, see HRTabPanels.tsx
+LEAVE_PAGE = (WEB_ROOT / "src" / "app" / "dashboard" / "hr" / "HRLeavePage.tsx").read_text(encoding="utf-8")
 PROFILE_PAGE = (WEB_ROOT / "src" / "app" / "dashboard" / "profile" / "page.tsx").read_text(encoding="utf-8")
 MIGRATION = (ROOT / "migrations" / "162_hr_operating_layer_self_service_leave.sql").read_text(encoding="utf-8")
 
@@ -57,9 +58,12 @@ def test_hr_operations_api_and_ui_are_wired():
         "Org chart and reporting lines",
         "Workforce planning by project and site",
         "Payroll statutory compliance",
-        "LeaveCalendar",
     ]:
         assert marker in HR_PAGE
+    # Leave Management (requests, balances, calendar, PDF record) is its own page.
+    assert "HRLeavePage" in HR_PAGE
+    for marker in ["CalendarView", "Needs a decision", "downloadEmployeeLeaveRecordPdf", "getLeaveBalances"]:
+        assert marker in LEAVE_PAGE
     assert "Submit leave from your account" in PROFILE_PAGE
     # Contracts, credentials and assets moved to per-employee pages (HRFilesPage
     # + the person card tabs), backed by routers/hr_files.py.
@@ -88,6 +92,7 @@ def test_hr_leave_permissions_and_robustness():
     assert "CAST(:org_id AS uuid)" in HR_RECORDS
     assert "CAST(:user_id AS uuid)" in HR_RECORDS
 
-    assert "clean || fallback" in HR_PAGE
-    assert "End date must be on or after start date." in HR_PAGE
-    assert "Days requested must be greater than zero." in HR_PAGE
+    # Server error text reaches the user; client-side checks block bad ranges.
+    assert "err instanceof Error ? err.message" in LEAVE_PAGE
+    assert "The last day must be on or after the first day." in LEAVE_PAGE
+    assert "Days must be more than zero." in LEAVE_PAGE
