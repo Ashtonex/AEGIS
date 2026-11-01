@@ -1,4 +1,8 @@
-"""Unified CRM communication ledger and WhatsApp integration endpoints."""
+"""Unified CRM communication ledger and WhatsApp integration endpoints.
+
+WhatsApp goes out through either Meta's Cloud API or Twilio, chosen by
+settings.WHATSAPP_PROVIDER; both providers' inbound and status webhooks stay
+mounted so a switch never drops replies already in flight."""
 
 from datetime import datetime
 import hashlib
@@ -10,7 +14,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -78,17 +82,25 @@ class CommunicationUpdatePayload(Payload):
 
 
 class WhatsAppMessagePayload(Payload):
-    body: str = Field(min_length=1, max_length=4096)
+    body: Optional[str] = Field(default=None, min_length=1, max_length=4096)
     to_phone: Optional[str] = Field(default=None, min_length=6, max_length=50)
     contact_id: Optional[UUID] = None
     lead_id: Optional[UUID] = None
     opportunity_id: Optional[UUID] = None
     subject: Optional[str] = Field(default=None, max_length=255)
+    # Twilio Content API template (HX...). Needed to open a conversation
+    # outside WhatsApp's 24-hour customer service window.
+    content_sid: Optional[str] = Field(default=None, pattern=r"^HX[0-9a-fA-F]{32}$")
+    content_variables: Optional[dict[str, str]] = None
 
     @model_validator(mode="after")
-    def has_recipient(self):
+    def has_recipient_and_content(self):
         if not self.to_phone and not self.contact_id:
             raise ValueError("Either to_phone or contact_id is required.")
+        if not self.body and not self.content_sid:
+            raise ValueError("Either body or content_sid is required.")
+        if self.content_variables and not self.content_sid:
+            raise ValueError("content_variables requires content_sid.")
         return self
 
 
@@ -127,8 +139,10 @@ def _twilio_callback_url(request: Request) -> str:
 
 
 def _validate_twilio_signature(url: str, params: dict[str, str], signature: str) -> bool:
+    # Fail closed: without the auth token nothing can be verified, and these
+    # webhooks are public, so anyone could post fake calls/messages in.
     if not settings.TWILIO_AUTH_TOKEN:
-        return True
+        return False
     signed = url + "".join(f"{key}{params[key]}" for key in sorted(params))
     digest = hmac.new(
         settings.TWILIO_AUTH_TOKEN.encode("utf-8"),
@@ -152,6 +166,32 @@ def _twilio_status_to_ledger(status_value: Optional[str]) -> str:
         "canceled": "cancelled",
     }
     return status_map.get(str(status_value or "").lower(), "updated")
+
+
+# Twilio message statuses in the order they progress. Callbacks can arrive out
+# of order, so a status never overwrites one that comes after it here.
+_TWILIO_MESSAGE_STATUS_ORDER = ["accepted", "scheduled", "queued", "sending", "sent", "delivered", "read"]
+
+
+def _twilio_whatsapp_sender() -> Optional[str]:
+    return settings.TWILIO_WHATSAPP_FROM or settings.TWILIO_FROM_NUMBER
+
+
+async def _verified_twilio_form(request: Request) -> dict[str, str]:
+    form = await request.form()
+    params = {key: str(value) for key, value in form.items()}
+    signature = request.headers.get("x-twilio-signature", "")
+    if not _validate_twilio_signature(_twilio_callback_url(request), params, signature):
+        raise HTTPException(status_code=403, detail="Invalid Twilio webhook signature.")
+    return params
+
+
+def _twiml_ack() -> Response:
+    # An empty TwiML document: acknowledge without sending an auto-reply.
+    return Response(
+        content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+        media_type="application/xml",
+    )
 
 
 async def _contact_phone(
@@ -594,16 +634,19 @@ async def send_whatsapp_message(
     user: dict = Depends(require_permission("crm_communications.create")),
     db: AsyncSession = Depends(get_db),
 ):
+    if settings.WHATSAPP_PROVIDER == "twilio":
+        return await _send_whatsapp_via_twilio(payload, user, db)
+    if payload.content_sid:
+        raise HTTPException(
+            status_code=422,
+            detail="Template messages (content_sid) need WHATSAPP_PROVIDER=twilio.",
+        )
     if not settings.WHATSAPP_ACCESS_TOKEN or not settings.WHATSAPP_PHONE_NUMBER_ID:
         raise HTTPException(
             status_code=503,
             detail="WhatsApp Cloud API is not configured on the backend.",
         )
-    to_phone = _clean_phone(payload.to_phone)
-    if not to_phone and payload.contact_id:
-        to_phone = await _contact_phone(db, user["org_id"], payload.contact_id)
-    if not to_phone:
-        raise HTTPException(status_code=422, detail="Recipient phone number is missing.")
+    to_phone = await _whatsapp_recipient(db, user["org_id"], payload)
 
     url = (
         f"https://graph.facebook.com/{settings.WHATSAPP_GRAPH_API_VERSION}/"
@@ -659,6 +702,93 @@ async def send_whatsapp_message(
     return _response(
         {"id": str(communication_id), "external_message_id": message_id},
         "WhatsApp message sent and logged.",
+    )
+
+
+async def _whatsapp_recipient(db: AsyncSession, org_id: str, payload: WhatsAppMessagePayload) -> str:
+    to_phone = _clean_phone(payload.to_phone)
+    if not to_phone and payload.contact_id:
+        to_phone = await _contact_phone(db, org_id, payload.contact_id)
+    if not to_phone:
+        raise HTTPException(status_code=422, detail="Recipient phone number is missing.")
+    return to_phone
+
+
+async def _send_whatsapp_via_twilio(
+    payload: WhatsAppMessagePayload, user: dict, db: AsyncSession
+) -> dict[str, Any]:
+    sender = _clean_phone(_twilio_whatsapp_sender())
+    if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN or not sender:
+        raise HTTPException(
+            status_code=503,
+            detail="Twilio WhatsApp is not configured on the backend.",
+        )
+    to_phone = await _whatsapp_recipient(db, user["org_id"], payload)
+
+    form: dict[str, str] = {"From": f"whatsapp:+{sender}", "To": f"whatsapp:+{to_phone}"}
+    if payload.content_sid:
+        form["ContentSid"] = payload.content_sid
+        if payload.content_variables:
+            form["ContentVariables"] = json.dumps(payload.content_variables)
+    else:
+        form["Body"] = payload.body or ""
+    if settings.TWILIO_WEBHOOK_BASE_URL:
+        form["StatusCallback"] = (
+            f"{settings.TWILIO_WEBHOOK_BASE_URL.rstrip('/')}"
+            "/api/v1/crm-communications/webhooks/twilio/whatsapp/status"
+        )
+
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{settings.TWILIO_ACCOUNT_SID}/Messages.json"
+    try:
+        async with httpx.AsyncClient(timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                url,
+                auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
+                data=form,
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Could not reach Twilio.") from exc
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+    if response.status_code >= 400:
+        # Twilio's message names the actual problem (unverified sender,
+        # invalid number, unapproved template), so pass it through.
+        reason = result.get("message") or f"HTTP {response.status_code}"
+        raise HTTPException(status_code=502, detail=f"Twilio rejected the WhatsApp message: {reason}")
+
+    message_sid = result.get("sid")
+    communication_id = await _insert_communication(
+        db,
+        org_id=user["org_id"],
+        user_id=user["user_id"],
+        values={
+            "channel": "whatsapp_message",
+            "direction": "outbound",
+            "contact_id": payload.contact_id,
+            "lead_id": payload.lead_id,
+            "opportunity_id": payload.opportunity_id,
+            "subject": payload.subject or "WhatsApp message",
+            "body": payload.body or result.get("body") or f"Template {payload.content_sid}",
+            "status": result.get("status") or "queued",
+            "external_provider": "twilio_whatsapp",
+            "external_message_id": message_sid,
+            "from_address": sender,
+            "to_address": to_phone,
+            "metadata": {
+                "content_sid": payload.content_sid,
+                "content_variables": payload.content_variables,
+            },
+            "raw_payload": result,
+        },
+    )
+    await db.commit()
+    return _response(
+        {"id": str(communication_id), "external_message_id": message_sid},
+        "WhatsApp message sent via Twilio and logged.",
     )
 
 
@@ -718,7 +848,9 @@ async def _org_for_whatsapp_phone_id(
     return None
 
 
-async def _org_for_twilio_number(db: AsyncSession, from_number: Optional[str]) -> Optional[str]:
+async def _org_for_twilio_number(
+    db: AsyncSession, from_number: Optional[str], *, whatsapp: bool = False
+) -> Optional[str]:
     if not from_number:
         return None
     rows = (
@@ -734,7 +866,8 @@ async def _org_for_twilio_number(db: AsyncSession, from_number: Optional[str]) -
     for item in rows:
         if _phone_matches(item.get("external_reference"), from_number):
             return str(item["organization_id"])
-    if settings.TWILIO_FROM_NUMBER and _phone_matches(settings.TWILIO_FROM_NUMBER, from_number):
+    fallback_number = _twilio_whatsapp_sender() if whatsapp else settings.TWILIO_FROM_NUMBER
+    if fallback_number and _phone_matches(fallback_number, from_number):
         return await _single_tenant_org_id(db)
     return None
 
@@ -857,6 +990,115 @@ async def receive_twilio_voice_status_callback(
         )
     await db.commit()
     return _response({"processed": 1, "id": str(communication_id)}, "Twilio call status logged.")
+
+
+@router.post("/webhooks/twilio/whatsapp")
+async def receive_twilio_whatsapp_message(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    params = await _verified_twilio_form(request)
+    message_sid = params.get("MessageSid") or params.get("SmsMessageSid")
+    # To is our WhatsApp sender, which identifies the tenant.
+    org_id = await _org_for_twilio_number(db, params.get("To"), whatsapp=True)
+    if not message_sid or not org_id:
+        return _twiml_ack()
+
+    # Twilio retries a webhook it thinks failed; log each message once so the
+    # activity mirror and automations don't fire twice.
+    existing = (
+        await db.execute(
+            text("""
+        SELECT id FROM crm.communication_events
+        WHERE organization_id=:org_id
+          AND external_provider='twilio_whatsapp'
+          AND external_message_id=:message_sid
+          AND is_deleted=false
+    """),
+            {"org_id": org_id, "message_sid": message_sid},
+        )
+    ).scalar()
+    if existing:
+        return _twiml_ack()
+
+    from_phone = _clean_phone(params.get("From"))
+    contact_id = await _contact_for_phone(db, org_id, from_phone)
+    num_media = params.get("NumMedia") or "0"
+    media = [
+        {"url": params.get(f"MediaUrl{i}"), "content_type": params.get(f"MediaContentType{i}")}
+        for i in range(min(int(num_media), 10) if num_media.isdigit() else 0)
+    ]
+    body = params.get("Body") or (f"[{len(media)} attachment(s)]" if media else None)
+    await _insert_communication(
+        db,
+        org_id=org_id,
+        user_id=None,
+        values={
+            "channel": "whatsapp_message",
+            "direction": "inbound",
+            "contact_id": contact_id,
+            "subject": "WhatsApp reply",
+            "body": body,
+            "status": "received",
+            "external_provider": "twilio_whatsapp",
+            "external_message_id": message_sid,
+            "from_address": from_phone,
+            "to_address": _clean_phone(params.get("To")),
+            "metadata": {
+                "profile_name": params.get("ProfileName"),
+                "wa_id": params.get("WaId"),
+                "media": media,
+            },
+            "raw_payload": params,
+        },
+    )
+    await db.commit()
+    return _twiml_ack()
+
+
+@router.post("/webhooks/twilio/whatsapp/status")
+async def receive_twilio_whatsapp_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    params = await _verified_twilio_form(request)
+    message_sid = params.get("MessageSid") or params.get("SmsSid")
+    status_value = str(params.get("MessageStatus") or params.get("SmsStatus") or "").lower()
+    # On a status callback From is our WhatsApp sender.
+    org_id = await _org_for_twilio_number(db, params.get("From"), whatsapp=True)
+    if not message_sid or not status_value or not org_id:
+        return _response({"processed": 0}, "Twilio WhatsApp status ignored.")
+
+    later_statuses = (
+        _TWILIO_MESSAGE_STATUS_ORDER[_TWILIO_MESSAGE_STATUS_ORDER.index(status_value) + 1:]
+        if status_value in _TWILIO_MESSAGE_STATUS_ORDER
+        else []
+    )
+    error_code = params.get("ErrorCode")
+    result = await db.execute(
+        text("""
+        UPDATE crm.communication_events
+        SET status=:status,
+            outcome=COALESCE(:outcome, outcome),
+            raw_payload=CAST(:raw_payload AS jsonb),
+            updated_at=NOW()
+        WHERE organization_id=:org_id
+          AND external_provider='twilio_whatsapp'
+          AND external_message_id=:message_sid
+          AND is_deleted=false
+          AND NOT (status = ANY(CAST(:later_statuses AS varchar[])))
+    """),
+        {
+            "org_id": org_id,
+            "message_sid": message_sid,
+            "status": status_value,
+            "outcome": f"Twilio error {error_code}" if error_code else None,
+            "raw_payload": json.dumps(params),
+            "later_statuses": later_statuses,
+        },
+    )
+    await db.commit()
+    return _response({"processed": result.rowcount}, "Twilio WhatsApp status logged.")
 
 
 @router.post("/webhooks/whatsapp")

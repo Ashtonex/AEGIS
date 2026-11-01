@@ -204,6 +204,14 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_FROM_NUMBER: Optional[str] = None
     TWILIO_WEBHOOK_BASE_URL: Optional[str] = None
+    # Which provider POST /crm-communications/whatsapp/messages sends through:
+    # "meta" (WhatsApp Cloud API, WHATSAPP_* above) or "twilio" (Twilio's
+    # WhatsApp channel, TWILIO_ACCOUNT_SID/AUTH_TOKEN + TWILIO_WHATSAPP_FROM).
+    WHATSAPP_PROVIDER: Literal["meta", "twilio"] = "meta"
+    # The WhatsApp-enabled sender in E.164, e.g. +14155238886 for the Twilio
+    # sandbox. Falls back to TWILIO_FROM_NUMBER when the voice and WhatsApp
+    # numbers are the same.
+    TWILIO_WHATSAPP_FROM: Optional[str] = None
     PWA_VAPID_SUBJECT: str = "mailto:alerts@aegis.local"
     PWA_VAPID_PRIVATE_KEY_PEM: Optional[str] = None
     PWA_VAPID_PRIVATE_KEY_PATH: str = ".aegis-runtime/pwa/vapid_private.pem"

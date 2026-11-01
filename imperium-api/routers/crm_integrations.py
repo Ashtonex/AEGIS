@@ -162,7 +162,16 @@ def _namecheap_settings(overrides: Optional[dict[str, Any]] = None) -> dict[str,
 def _provider_catalog() -> list[dict[str, Any]]:
     google_ready = bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET)
     microsoft_ready = bool(settings.MICROSOFT_CLIENT_ID and settings.MICROSOFT_CLIENT_SECRET)
-    whatsapp_ready = bool(settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_PHONE_NUMBER_ID)
+    if settings.WHATSAPP_PROVIDER == "twilio":
+        whatsapp_ready = bool(
+            settings.TWILIO_ACCOUNT_SID
+            and settings.TWILIO_AUTH_TOKEN
+            and (settings.TWILIO_WHATSAPP_FROM or settings.TWILIO_FROM_NUMBER)
+        )
+        whatsapp_env = ["WHATSAPP_PROVIDER", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM"]
+    else:
+        whatsapp_ready = bool(settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_PHONE_NUMBER_ID)
+        whatsapp_env = ["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID"]
     return [
         {
             "provider": "gmail",
@@ -217,7 +226,7 @@ def _provider_catalog() -> list[dict[str, Any]]:
             "auth_type": "webhook",
             "configured": whatsapp_ready,
             "capabilities": ["message_send", "webhook_receive", "crm_activity_mirror"],
-            "required_env": ["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID"],
+            "required_env": whatsapp_env,
         },
         {
             "provider": "maps",

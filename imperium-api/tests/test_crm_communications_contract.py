@@ -64,6 +64,14 @@ class CrmCommunicationsContractTests(unittest.TestCase):
         self.assertIn("twilio_voice", ROUTER)
         self.assertIn("phone_call", ROUTER)
 
+    def test_twilio_whatsapp_is_server_side_and_webhook_backed(self):
+        self.assertIn('settings.WHATSAPP_PROVIDER == "twilio"', ROUTER)
+        self.assertIn('"/webhooks/twilio/whatsapp"', ROUTER)
+        self.assertIn('"/webhooks/twilio/whatsapp/status"', ROUTER)
+        self.assertIn("twilio_whatsapp", ROUTER)
+        self.assertIn("TWILIO_WHATSAPP_FROM", (ROOT / "core" / "config.py").read_text(encoding="utf-8"))
+        self.assertNotIn("TWILIO_AUTH_TOKEN", WEB_API)
+
     def test_activity_page_uses_communication_ledger_and_captures_call_context(self):
         self.assertIn("getCrmCommunications", ACTIVITIES_PAGE)
         self.assertIn("createCrmCommunication", ACTIVITIES_PAGE)
