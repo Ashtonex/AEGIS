@@ -10,11 +10,15 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # CRM -> Tenders & Bids -> Tender automation is due.
 */15 * * * * root aegis-cron-run scripts/run_tender_automation.py >> /var/log/aegis-cron.log 2>&1
 
-# The other scheduled checks in scripts/README-cron.md. Off until someone
-# decides to start their notifications (uncomment a line to enable it):
+# Already installed by hand on the droplet (2026-08-21) with `docker compose
+# exec`, which stopped reaching the API once blue/green deploys moved it off
+# container #1 - kept on, now through the runner.
+0 * * * *    root aegis-cron-run scripts/run_hse_escalation.py >> /var/log/aegis-cron.log 2>&1
+0 7 * * *    root aegis-cron-run scripts/run_hr_workforce_alerts.py >> /var/log/aegis-cron.log 2>&1
+0 7 * * *    root aegis-cron-run scripts/run_compliance_alerts.py >> /var/log/aegis-cron.log 2>&1
+0 8 * * *    root aegis-cron-run scripts/run_stale_quote_check.py >> /var/log/aegis-cron.log 2>&1
+0 6 * * 1    root aegis-cron-run scripts/run_weekly_digest.py >> /var/log/aegis-cron.log 2>&1
+
+# Documented in scripts/README-cron.md but never installed. Off until someone
+# decides to start its notifications (uncomment to enable):
 # */15 * * * * root aegis-cron-run scripts/run_activity_reminders.py >> /var/log/aegis-cron.log 2>&1
-# 0 * * * *    root aegis-cron-run scripts/run_hse_escalation.py >> /var/log/aegis-cron.log 2>&1
-# 0 7 * * *    root aegis-cron-run scripts/run_hr_workforce_alerts.py >> /var/log/aegis-cron.log 2>&1
-# 0 7 * * *    root aegis-cron-run scripts/run_compliance_alerts.py >> /var/log/aegis-cron.log 2>&1
-# 0 8 * * *    root aegis-cron-run scripts/run_stale_quote_check.py >> /var/log/aegis-cron.log 2>&1
-# 0 6 * * 1    root aegis-cron-run scripts/run_weekly_digest.py >> /var/log/aegis-cron.log 2>&1
