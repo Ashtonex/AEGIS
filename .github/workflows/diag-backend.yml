@@ -22,6 +22,11 @@ jobs:
             docker compose -f deploy/digitalocean/docker-compose.yml logs --since=2h imperium-api 2>&1 | grep -iE "error|500 Internal|traceback|exception" | tail -400 || true
             echo "--- db pool pressure/timeout events since deploy (~2h) ---"
             docker compose -f deploy/digitalocean/docker-compose.yml logs --since=2h imperium-api 2>&1 | grep -F "db_pool_" | tail -200 || true
+            echo "--- scheduled automation ---"
+            ls -l /etc/cron.d/ || true
+            cat /etc/cron.d/aegis-automation || true
+            systemctl is-active cron || true
+            grep -E "^[0-9TZ:-]+ run_" /var/log/aegis-cron.log 2>/dev/null | tail -40 || true
             echo "--- current git commit on droplet ---"
             git log -1 --oneline
             echo "--- disk/memory ---"
