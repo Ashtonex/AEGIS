@@ -111,6 +111,15 @@ jobs:
             # ECONNREFUSED on :443 for the whole restart.)
             $COMPOSE up -d --no-build --no-deps --remove-orphans imperium-worker caddy
             docker image prune -f
+            # Scheduled automation (tender check/import/email, reminders, alerts).
+            # Installed from the repo on every deploy so the droplet's cron can't
+            # drift or go missing (it used to be a manual step that never happened).
+            echo "--- installing scheduled automation (/etc/cron.d/aegis-automation) ---"
+            install -m 0755 deploy/digitalocean/aegis-cron-run.sh /usr/local/bin/aegis-cron-run
+            install -m 0644 deploy/digitalocean/aegis-automation.cron /etc/cron.d/aegis-automation
+            install -m 0644 deploy/digitalocean/aegis-cron.logrotate /etc/logrotate.d/aegis-cron
+            grep -v '^#' /etc/cron.d/aegis-automation | grep -v '^$'
+            systemctl is-active cron
             echo "--- disk usage after build ---"
             df -h /
 

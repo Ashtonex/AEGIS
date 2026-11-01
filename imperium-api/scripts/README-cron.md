@@ -10,19 +10,18 @@ managed Redis, since the local container's queue isn't durable across
 redeploys). Standing that up is a real infra decision, not something to
 route around silently.
 
-Until that's in place, these two checks run instead via the droplet's own
-system cron, calling the backend container directly:
-
-```
-# /etc/cron.d/aegis-automation (as root)
-0 8 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_stale_quote_check.py >> /var/log/aegis-cron.log 2>&1
-0 6 * * 1   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_weekly_digest.py >> /var/log/aegis-cron.log 2>&1
-*/15 * * * * root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_activity_reminders.py >> /var/log/aegis-cron.log 2>&1
-0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hr_workforce_alerts.py >> /var/log/aegis-cron.log 2>&1
-0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_compliance_alerts.py >> /var/log/aegis-cron.log 2>&1
-0 * * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hse_escalation.py >> /var/log/aegis-cron.log 2>&1
-*/15 * * * * root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_tender_automation.py >> /var/log/aegis-cron.log 2>&1
-```
+Until that's in place, these checks run instead via the droplet's own
+system cron, calling the backend container directly. The schedule lives in
+`deploy/digitalocean/aegis-automation.cron`; every backend deploy
+(`.github/workflows/deploy-backend.yml`) installs it to
+`/etc/cron.d/aegis-automation`, together with the runner
+`deploy/digitalocean/aegis-cron-run.sh` (as `/usr/local/bin/aegis-cron-run`)
+and a logrotate rule for `/var/log/aegis-cron.log`. Change the schedule in
+the repo, never on the droplet. The runner execs into the newest running
+`imperium-api` container (the blue/green deploy means it is not always
+container #1, so `docker compose exec` is not used) and holds a per-script
+lock so a slow run is never started twice. The "Diagnose Backend" workflow
+prints the installed file and the recent run log.
 
 `run_hr_workforce_alerts.py`, `run_compliance_alerts.py`, and `run_hse_escalation.py`
 follow the same direct-`emit_notification`/`emit_role_notification` pattern
