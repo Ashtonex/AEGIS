@@ -174,8 +174,13 @@ async def attest(
     return {"verification_code": code, "file_sha256": sha256, "key_id": key_id, "issued_at": issued_at.isoformat()}
 
 
-# Columns that must agree with the signed payload; a mismatch means the row was edited.
-_BOUND_COLUMNS = ("verification_code", "document_type", "document_number", "counterparty", "amount", "file_sha256")
+# Columns that must agree with the signed payload; a mismatch means the row was
+# edited. Every signed field the public verification page shows is listed, so
+# an edited currency, title or status can't ride along on a valid signature.
+_BOUND_COLUMNS = (
+    "verification_code", "document_type", "document_number", "title", "project_name",
+    "counterparty", "amount", "currency", "document_status", "file_sha256",
+)
 
 
 async def verify(db: AsyncSession, code: str) -> Optional[Dict[str, Any]]:
@@ -215,6 +220,12 @@ async def verify(db: AsyncSession, code: str) -> Optional[Dict[str, Any]]:
 
     payload_key = {"verification_code": "code"}
     record_consistent = all(as_payload(col) == payload.get(payload_key.get(col, col)) for col in _BOUND_COLUMNS)
+    record_consistent = record_consistent and row["file_size"] == payload.get("file_size")
+    try:
+        signed_issued_at = datetime.fromisoformat(payload.get("issued_at") or "")
+    except ValueError:
+        signed_issued_at = None
+    record_consistent = record_consistent and signed_issued_at is not None and row["issued_at"] == signed_issued_at
 
     if row["revoked_at"]:
         status = "revoked"

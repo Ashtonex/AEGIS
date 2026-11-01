@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Optional
 
 from sqlalchemy import text
@@ -54,11 +54,19 @@ def activity_days(start: date, finish: date) -> list[date]:
 
 
 def split_evenly(total: Decimal, parts: int, places: str) -> list[Decimal]:
-    """Even split whose last part takes the rounding remainder, so the parts
-    always add back to the total."""
+    """Even split in whole steps of `places`: no part is negative, parts differ
+    by at most one step, and they add back exactly to the total (the last part
+    also carries any precision finer than `places`). Rounding every part up
+    and leaving the remainder to the last one could drive it below zero, e.g.
+    1 over 600 days at 0.001."""
+    if total < 0:
+        return [-part for part in split_evenly(-total, parts, places)]
     quantum = Decimal(places)
-    each = (total / parts).quantize(quantum)
-    return [each] * (parts - 1) + [total - each * (parts - 1)]
+    steps = int((total / quantum).to_integral_value(rounding=ROUND_FLOOR))
+    base, extra = divmod(steps, parts)
+    shares = [quantum * (base + (1 if i < extra else 0)) for i in range(parts)]
+    shares[-1] += total - sum(shares)
+    return shares
 
 
 def plan_weeks(activities: list[dict[str, Any]]) -> dict[date, list[dict[str, Any]]]:

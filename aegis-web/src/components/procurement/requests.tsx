@@ -551,7 +551,7 @@ function QuoteFileLink({ documentId, name }: { documentId: string; name: string 
 
 // ─── Edit PR Modal ───────────────────────────────────────────────────────────
 
-type EditLine = LineItem & { id?: string; work_package?: string; notes?: string; is_price_confirmed?: boolean };
+type EditLine = LineItem & { id?: string; item_id?: string | null; work_package?: string; notes?: string; is_price_confirmed?: boolean };
 
 export function EditPRModal({ pr, onClose, onSaved }: { pr: Rec; onClose: () => void; onSaved: (message: string) => void; }) {
   const status = tx(pr.status, "draft").toLowerCase();
@@ -563,6 +563,7 @@ export function EditPRModal({ pr, onClose, onSaved }: { pr: Rec; onClose: () => 
   });
   const [lines, setLines] = useState<EditLine[]>(() => (Array.isArray(pr.lines) ? pr.lines : []).map((l: Rec) => ({
     id: l.id,
+    item_id: l.item_id ?? null,
     description: tx(l.description, ""),
     qty: String(l.quantity ?? 1),
     uom: tx(l.unit_of_measure, "each"),
@@ -590,7 +591,7 @@ export function EditPRModal({ pr, onClose, onSaved }: { pr: Rec; onClose: () => 
         required_by_date: form.required_by_date || undefined,
         justification: form.justification || null,
         lines: lines.map((l) => ({
-          id: l.id, description: l.description.trim(), qty: num(l.qty), uom: l.uom || "each", unit_cost: num(l.unit_cost),
+          id: l.id, item_id: l.item_id ?? null, description: l.description.trim(), qty: num(l.qty), uom: l.uom || "each", unit_cost: num(l.unit_cost),
           work_package: l.work_package || null, notes: l.notes || null, is_price_confirmed: l.is_price_confirmed,
         })),
         reason: reason.trim() || undefined,

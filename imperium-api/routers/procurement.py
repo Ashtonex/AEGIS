@@ -1480,15 +1480,18 @@ async def amend_requisition(
                 "is_price_confirmed": bool(line.is_price_confirmed),
             }
             if line.id:
+                # An edit that leaves item_id out keeps the line's inventory link,
+                # so the PO and goods receipt still replenish the original item.
                 await db.execute(
                     text("""
                     UPDATE procurement.requisition_lines
-                    SET item_id=:item_id, description=:description, quantity=:quantity,
+                    SET item_id=CASE WHEN :keep_item THEN item_id ELSE CAST(:item_id AS uuid) END,
+                        description=:description, quantity=:quantity,
                         unit_of_measure=:uom, estimated_unit_cost=:unit_cost, work_package=:work_package,
                         notes=:notes, is_price_confirmed=:is_price_confirmed
                     WHERE id=:id AND organization_id=:org_id AND requisition_id=:req_id
                 """),
-                    {**params, "id": line.id},
+                    {**params, "id": line.id, "keep_item": "item_id" not in line.model_fields_set},
                 )
             else:
                 await db.execute(

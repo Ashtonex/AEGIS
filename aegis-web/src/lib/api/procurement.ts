@@ -109,7 +109,7 @@ export type RequisitionAmendment = {
   priority?: "low" | "normal" | "urgent" | "emergency";
   justification?: string | null;
   /** The full set of lines; existing lines keep their id, lines left out are removed. */
-  lines?: { id?: string; description: string; qty: number; uom: string; unit_cost: number; work_package?: string | null; notes?: string | null; is_price_confirmed?: boolean }[];
+  lines?: { id?: string; item_id?: string | null; description: string; qty: number; uom: string; unit_cost: number; work_package?: string | null; notes?: string | null; is_price_confirmed?: boolean }[];
   /** Required once the requisition has been submitted, approved or ordered. */
   reason?: string;
 };
