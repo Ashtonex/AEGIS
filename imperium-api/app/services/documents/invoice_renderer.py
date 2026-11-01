@@ -154,6 +154,11 @@ class NumberedCanvas(canvas.Canvas):
             self.setLineWidth(0.5)
             self.line(36, h - 32, w - 36, h - 32)
 
+        # AEGIS verification strip (attested documents only): QR + code on every page.
+        verification = getattr(self, "verification", None)
+        if verification:
+            self.draw_verification(verification, w)
+
         # Running footer (all pages)
         self.setFont("Helvetica", 7.5)
         self.setFillColor(colors.HexColor("#64748B"))
@@ -166,6 +171,33 @@ class NumberedCanvas(canvas.Canvas):
         self.line(36, 36, w - 36, 36)
 
         self.restoreState()
+
+    def draw_verification(self, verification: Dict[str, Any], w: float):
+        """Band above the footer (y 42-94): needs a bottom margin of at least 100."""
+        from reportlab.graphics import renderPDF
+        from reportlab.graphics.barcode.qr import QrCodeWidget
+        from reportlab.graphics.shapes import Drawing
+
+        size = 50
+        x_qr, y_qr = w - 36 - size, 42
+        widget = QrCodeWidget(verification["url"], barLevel="M")
+        x0, y0, x1, y1 = widget.getBounds()
+        drawing = Drawing(size, size, transform=[size / (x1 - x0), 0, 0, size / (y1 - y0), 0, 0])
+        drawing.add(widget)
+        renderPDF.draw(drawing, self, x_qr, y_qr)
+
+        self.setStrokeColor(colors.HexColor("#0B2B39"))
+        self.setLineWidth(0.6)
+        self.roundRect(36, 42, w - 72 - size - 8, size, 4, stroke=1, fill=0)
+        self.setFillColor(colors.HexColor("#0B2B39"))
+        self.setFont("Helvetica-Bold", 8)
+        self.drawString(44, 80, "AEGIS SIGNED DOCUMENT")
+        self.setFont("Helvetica-Bold", 11)
+        self.drawString(44, 66, verification["code"])
+        self.setFont("Helvetica", 7)
+        self.setFillColor(colors.HexColor("#475569"))
+        self.drawString(44, 55, f"Verify this document: scan the QR code or visit {verification['url']}")
+        self.drawString(44, 47, "The page confirms the issuer, the details below and that this exact file has not been altered.")
 
 
 class SNCInvoicePDFRenderer:

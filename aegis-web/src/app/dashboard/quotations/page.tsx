@@ -10,7 +10,7 @@ import { LayoutDashboard,
   FolderKanban, Link2
 } from "lucide-react";
 import { QUOTATION_WORKSPACE_ENABLED, quotationWorkspaceHref } from "@/components/quotations/workspace/flags";
-import { getQuotations, getInternalProjects, getQuotationsNeedsBoq, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
+import { getQuotations, getInternalProjects, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -57,7 +57,6 @@ export default function QuotationsDashboard() {
   const quotationsTour = useModuleTour("quotations");
   const [quotes, setQuotes] = useState<any[]>([]);
   const [projectsList, setProjectsList] = useState<any[]>([]);
-  const [needsBoq, setNeedsBoq] = useState<{ tenders: any[]; opportunities: any[] }>({ tenders: [], opportunities: [] });
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -120,10 +119,9 @@ export default function QuotationsDashboard() {
     // (primary) quotations ledger. They used to be yoked in one Promise.all,
     // which meant a single missing permission on projects.read made every
     // real quotation disappear from this page.
-    const [quotesResult, projectsResult, needsBoqResult] = await Promise.allSettled([
+    const [quotesResult, projectsResult] = await Promise.allSettled([
       getQuotations({ limit: LOAD_LIMIT, sort_by: "created_at", sort_dir: "desc" }),
       getInternalProjects(),
-      getQuotationsNeedsBoq(),
     ]);
 
     if (quotesResult.status === "fulfilled" && quotesResult.value.success && Array.isArray(quotesResult.value.data)) {
@@ -158,14 +156,6 @@ export default function QuotationsDashboard() {
           )
         );
       }
-    }
-
-    // Also non-blocking: this queue is a secondary discovery widget, so a
-    // failure here should never affect the primary ledger or its errors.
-    if (needsBoqResult.status === "fulfilled" && needsBoqResult.value.success && needsBoqResult.value.data) {
-      setNeedsBoq(needsBoqResult.value.data);
-    } else {
-      setNeedsBoq({ tenders: [], opportunities: [] });
     }
 
     setLoading(false);
@@ -379,47 +369,6 @@ export default function QuotationsDashboard() {
         </div>
       )}
 
-      {/* Needs BOQ queue - tenders/opportunities with no estimate started yet */}
-      {(needsBoq.tenders.length + needsBoq.opportunities.length) > 0 && (
-        <div className="border border-signal/20 bg-signal/5 rounded-sm p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <Briefcase className="w-4 h-4 text-signal" />
-            <h2 className="text-sm font-bold text-white">Needs BOQ</h2>
-            <span className="text-xs text-slate">
-              {needsBoq.tenders.length + needsBoq.opportunities.length} awaiting an estimate
-            </span>
-          </div>
-          <div className="flex gap-3 overflow-x-auto pb-1">
-            {needsBoq.tenders.map((t) => (
-              <Link
-                key={`tender-${t.id}`}
-                href={`/dashboard/quotations/builder?source_type=tender&source_id=${t.id}`}
-                className="shrink-0 w-56 p-3 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 transition-all"
-              >
-                <span className="text-[10px] font-mono uppercase text-amber-400">Tender</span>
-                <p className="text-xs font-semibold text-white truncate mt-1">{t.label}</p>
-                <p className="text-[11px] text-slate mt-1">
-                  {t.bid_amount ? `$${Number(t.bid_amount).toLocaleString()}` : "TBD - pending BOQ"}
-                </p>
-              </Link>
-            ))}
-            {needsBoq.opportunities.map((o) => (
-              <Link
-                key={`opportunity-${o.id}`}
-                href={`/dashboard/quotations/builder?source_type=opportunity&source_id=${o.id}`}
-                className="shrink-0 w-56 p-3 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 transition-all"
-              >
-                <span className="text-[10px] font-mono uppercase text-emerald-400">Opportunity</span>
-                <p className="text-xs font-semibold text-white truncate mt-1">{o.label}</p>
-                <p className="text-[11px] text-slate mt-1">
-                  {o.bid_amount ? `$${Number(o.bid_amount).toLocaleString()}` : "TBD"}
-                </p>
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6" data-tour="quotations-kpis">
         <div className="p-5 bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-2 relative group hover:border-signal/20 transition-colors">
@@ -455,11 +404,9 @@ export default function QuotationsDashboard() {
         </div>
       </div>
 
-      {/* Main content split */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Ledger - Left Col */}
-        <div className="lg:col-span-2 space-y-6" data-tour="quotations-ledger">
+      {/* Ledger */}
+      <div>
+        <div className="space-y-6" data-tour="quotations-ledger">
           <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -710,115 +657,6 @@ export default function QuotationsDashboard() {
               </div>
             )}
           </div>
-        </div>
-
-        {/* Sidebar Info & Workflows - Right Col */}
-        <div className="space-y-6">
-          
-          {/* Quick link builder card */}
-          <div className="bg-gradient-to-br from-ink-light to-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 relative overflow-hidden group">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-signal/5 rounded-full blur-2xl -mr-10 -mt-10 group-hover:bg-signal/10 transition-colors"></div>
-            <div className="space-y-4 relative">
-              <div className="w-10 h-10 rounded-sm bg-signal/10 border border-signal/20 flex items-center justify-center text-signal">
-                <FileText className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="font-display font-semibold text-white">Quotation Builder</h3>
-                <p className="text-xs text-slate mt-1">
-                  Adjust Direct Costs, add Preliminaries, set contingency markups, and calculate tax structures interactively.
-                </p>
-              </div>
-              <Link 
-                href="/dashboard/quotations/builder"
-                className="flex items-center space-x-2 text-xs text-signal font-semibold hover:text-signal-hover transition-colors font-mono group-hover:translate-x-1 duration-200"
-              >
-                <span>Launch builder</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
-            </div>
-          </div>
-
-          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
-            <div className="w-10 h-10 rounded-sm bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-300">
-              <Scale className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-display font-semibold text-white">Rate Build-Up</h3>
-              <p className="text-xs text-slate mt-1">
-                Build task rates from materials, labour, plant, subcontractors, waste, overhead, profit, and owner-approved standard benchmarks.
-              </p>
-            </div>
-            <Link
-              href="/dashboard/quotations/rates"
-              className="flex items-center space-x-2 text-xs text-signal font-semibold hover:text-signal-hover transition-colors font-mono"
-            >
-              <span>Open rate builder</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
-          </div>
-
-          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
-            <div className="w-10 h-10 rounded-sm bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-300">
-              <Brain className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-display font-semibold text-white">Commercial Control Brain</h3>
-              <p className="text-xs text-slate mt-1">
-                Convert an estimate into material demand, spend guardrails, output targets, margin protection, and exception flags.
-              </p>
-            </div>
-            <Link
-              href="/dashboard/quotations/ccb"
-              className="flex items-center space-x-2 text-xs text-signal font-semibold hover:text-signal-hover transition-colors font-mono"
-            >
-              <span>Open CCB</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
-          </div>
-
-          {/* Historical link card */}
-          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
-            <h3 className="font-display font-semibold text-white">Export &amp; History Archive</h3>
-            <p className="text-xs text-slate">
-              View historic estimations, export logs, generated PDF/Excel document caches, and cost variances.
-            </p>
-            <Link 
-              href="/dashboard/quotations/history"
-              className="flex items-center space-x-2 bg-ink border border-ink-mid hover:border-signal/50 hover:bg-ink-light px-4 py-2 rounded-sm text-xs font-semibold transition-all w-full justify-center"
-            >
-              <span>View Archives &amp; Logs</span>
-            </Link>
-          </div>
-
-          {/* Active Projects Selector info */}
-          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
-            <h3 className="font-display font-semibold text-white">Delivery Integration</h3>
-            <p className="text-xs text-slate">
-              Marking a quotation linked to a project as <span className="text-emerald-400 font-semibold">Won</span> seeds that project&apos;s execution budget from this quotation&apos;s own cost breakdown, and takes an initial forecast snapshot. From then on, actual site costs are tracked against this same baseline - referenceable anytime on the Finance dashboard - and a margin-threat alert fires automatically if costs run over without a matching approved variation.
-            </p>
-            <Link
-              href="/dashboard/finance"
-              className="flex items-center space-x-2 bg-ink border border-ink-mid hover:border-emerald-500/50 hover:bg-ink-light px-4 py-2 rounded-sm text-xs font-semibold transition-all w-full justify-center text-emerald-400"
-            >
-              <span>View Budget vs. Actual (Finance)</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
-            <div className="border-t border-ink-mid/50 pt-4 space-y-3">
-              <div className="flex justify-between text-[10px] font-mono text-slate uppercase tracking-wider">
-                <span>Active Projects Count</span>
-                <span className="text-white font-bold">{projectsList.length}</span>
-              </div>
-              <div className="flex flex-col space-y-2">
-                {projectsList.slice(0, 3).map((p) => (
-                  <div key={p.id} className="flex items-center justify-between text-xs py-1 border-b border-ink-mid/20">
-                    <span className="text-slate-light truncate max-w-[150px]">{p.name}</span>
-                    <span className="text-emerald-400 font-mono font-medium text-[10px] uppercase">Active</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
         </div>
 
       </div>

@@ -29,6 +29,7 @@ SLATE = colors.HexColor("#475569")
 DARK = colors.HexColor("#0F172A")
 RULE = colors.HexColor("#CBD5E1")
 ZEBRA = colors.HexColor("#F8FAFC")
+BAND = colors.HexColor("#E2E8F0")
 
 # Statuses at which the PO is a binding order; anything else is stamped.
 OFFICIAL_STATUSES = {"issued", "partially_received", "received", "invoiced", "closed"}
@@ -84,6 +85,9 @@ def _styles() -> Dict[str, ParagraphStyle]:
 
     return {
         "title": s("POTitle", fontName="Helvetica-Bold", fontSize=18, leading=22, textColor=NAVY, alignment=2),
+        "subtitle": s("POSubtitle", fontName="Helvetica-Bold", fontSize=9, leading=12, textColor=GOLD, alignment=2),
+        "band": s("POBand", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=NAVY),
+        "callout": s("POCallout", fontName="Helvetica", fontSize=8, leading=11, textColor=DARK),
         "number": s("PONumber", fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=NAVY, alignment=2),
         "date": s("PODate", fontName="Helvetica", fontSize=9, leading=12, textColor=SLATE, alignment=2),
         "co_name": s("POCoName", fontName="Helvetica-Bold", fontSize=13, leading=15, textColor=NAVY),
@@ -105,7 +109,7 @@ def _styles() -> Dict[str, ParagraphStyle]:
     }
 
 
-def _header(st, po_number: str, po_date: str) -> Table:
+def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) -> Table:
     logo: Any = Paragraph("", st["body"])
     if os.path.exists(LOGO_PATH):
         from reportlab.platypus import Image as RLImage
@@ -122,6 +126,7 @@ def _header(st, po_number: str, po_date: str) -> Table:
     ]
     title = [
         Paragraph("PURCHASE ORDER", st["title"]),
+        *([Paragraph(escape(subtitle), st["subtitle"])] if subtitle else []),
         Spacer(1, 3),
         Paragraph(f"No. {_text(po_number)}", st["number"]),
         Paragraph(po_date, st["date"]),
@@ -144,8 +149,20 @@ def _box(st, title: str, rows: List[tuple]) -> List[Any]:
     return out
 
 
-def render_purchase_order_pdf(po: Dict[str, Any], organization: Optional[Dict[str, Any]] = None) -> bytes:
-    """Render a purchase order (as returned by the procurement API) to PDF bytes."""
+def render_purchase_order_pdf(
+    po: Dict[str, Any],
+    organization: Optional[Dict[str, Any]] = None,
+    verification: Optional[Dict[str, str]] = None,
+    extract: Optional[Dict[str, Any]] = None,
+) -> bytes:
+    """Render a purchase order (as returned by the procurement API) to PDF bytes.
+
+    verification: {"code", "url"} from attestation - prints the AEGIS signed-document
+    strip and QR on every page.
+    extract: {"subtitle", "lines_label", "note"} - the PO's lines are a subset of an
+    issued order (e.g. its cement lines); totals cover the subset and the note
+    states the full order. A line with "section" starts a heading band; a line
+    whose unit_price is None prints "To be quoted" rather than a zero price."""
     st = _styles()
     currency = str(po.get("currency") or "USD").upper()
     po_number = str(po.get("po_number") or "DRAFT")
@@ -153,10 +170,21 @@ def render_purchase_order_pdf(po: Dict[str, Any], organization: Optional[Dict[st
     supplier = po.get("supplier") or {}
     po_date = _date(po.get("issued_at") or po.get("approved_at") or po.get("created_at"))
 
-    story: List[Any] = [_header(st, po_number, po_date), Spacer(1, 10)]
+    subtitle = (extract or {}).get("subtitle") or po.get("subtitle")
+    story: List[Any] = [_header(st, po_number, po_date, subtitle), Spacer(1, 10)]
 
     if po.get("title"):
         story += [Paragraph(_text(po["title"]), st["subject"]), Spacer(1, 8)]
+    callout = (extract or {}).get("note") or po.get("callout")
+    if callout:
+        box = Table([[Paragraph(callout, st["callout"])]], colWidths=[523])
+        box.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FEF3C7")),
+            ("BOX", (0, 0), (-1, -1), 0.8, GOLD),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story += [box, Spacer(1, 10)]
 
     supplier_rows = [
         ("", f"<b>{_text(supplier.get('supplier_name') or po.get('supplier_name'))}</b>"),
@@ -200,24 +228,40 @@ def render_purchase_order_pdf(po: Dict[str, Any], organization: Optional[Dict[st
         Paragraph("Unit", st["th"]), Paragraph("Unit price", st["th_r"]), Paragraph("Amount", st["th_r"]),
     ]]
     lines_total = Decimal("0")
+    unpriced = 0
+    bands: List[int] = []
     for index, line in enumerate(lines, start=1):
+        if line.get("section"):
+            bands.append(len(rows))
+            rows.append([Paragraph(_text(line["section"]), st["band"]), "", "", "", "", ""])
         qty = Decimal(str(line.get("quantity") or 0))
-        price = Decimal(str(line.get("unit_price") or 0))
-        amount = Decimal(str(line.get("line_total") if line.get("line_total") is not None else qty * price))
-        lines_total += amount
+        description = _text(line.get("description"))
+        if line.get("detail"):
+            description += f"<br/><font size='6.8' color='#475569'>{_text(line['detail'])}</font>"
+        if line.get("unit_price") is None and line.get("line_total") is None:
+            unpriced += 1
+            price_cell = Paragraph("<i>To be quoted</i>", st["td_r"])
+            amount_cell = Paragraph("—", st["td_r"])
+        else:
+            price = Decimal(str(line.get("unit_price") or 0))
+            amount = Decimal(str(line.get("line_total") if line.get("line_total") is not None else qty * price))
+            lines_total += amount
+            price_cell = Paragraph(_money(price, currency), st["td_r"])
+            amount_cell = Paragraph(_money(amount, currency), st["td_r"])
         rows.append([
             Paragraph(str(index), st["td"]),
-            Paragraph(_text(line.get("description")), st["td"]),
+            Paragraph(description, st["td"]),
             Paragraph(_qty(qty), st["td_r"]),
             Paragraph(_text(line.get("unit_of_measure"), ""), st["td"]),
-            Paragraph(_money(price, currency), st["td_r"]),
-            Paragraph(_money(amount, currency), st["td_r"]),
+            price_cell,
+            amount_cell,
         ])
     if not lines:
         rows.append([Paragraph("", st["td"]), Paragraph("No line items on this order.", st["td"]), "", "", "", ""])
 
     items = Table(rows, colWidths=[22, 233, 52, 46, 80, 90], repeatRows=1)
-    zebra = [("BACKGROUND", (0, r), (-1, r), ZEBRA) for r in range(2, len(rows), 2)]
+    zebra = [("BACKGROUND", (0, r), (-1, r), ZEBRA) for r in range(2, len(rows), 2) if r not in bands]
+    zebra += [rule for r in bands for rule in (("SPAN", (0, r), (-1, r)), ("BACKGROUND", (0, r), (-1, r), BAND))]
     items.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), NAVY),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -228,29 +272,43 @@ def render_purchase_order_pdf(po: Dict[str, Any], organization: Optional[Dict[st
     ]))
     story += [items, Spacer(1, 6)]
 
-    subtotal = Decimal(str(po.get("subtotal") if po.get("subtotal") is not None else lines_total))
-    tax = Decimal(str(po.get("tax_amount") or 0))
-    total = Decimal(str(po.get("total_amount") if po.get("total_amount") is not None else subtotal + tax))
-    totals = Table([
-        [Paragraph("Subtotal (excl. VAT)", st["total_l"]), Paragraph(_money(subtotal, currency), st["total_r"])],
-        [Paragraph("VAT", st["total_l"]), Paragraph(_money(tax, currency), st["total_r"])],
-        [Paragraph("ORDER TOTAL", st["total_l"]), Paragraph(_money(total, currency), st["total_r"])],
-    ], colWidths=[433, 90])
-    totals.setStyle(TableStyle([
-        ("LINEABOVE", (0, 2), (-1, 2), 1.2, NAVY),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(KeepTogether([totals, Paragraph(number_to_words_usd(float(total)) if currency == "USD" else "", st["words"])]))
+    words = ""
+    if extract:
+        total = lines_total
+        label = escape(extract.get("lines_label") or "Total of the lines above (excl. VAT)").upper()
+        totals = Table([[Paragraph(label, st["total_l"]), Paragraph(_money(total, currency), st["total_r"])]],
+                       colWidths=[433, 90])
+        totals.setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, 0), 1.2, NAVY), ("TOPPADDING", (0, 0), (-1, -1), 3)]))
+        words = number_to_words_usd(float(total)) if currency == "USD" else ""
+    elif unpriced and not lines_total:
+        totals = Table([[Paragraph("ORDER TOTAL", st["total_l"]),
+                         Paragraph("To be priced from supplier quotations", st["total_r"])]], colWidths=[303, 220])
+        totals.setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, 0), 1.2, NAVY), ("TOPPADDING", (0, 0), (-1, -1), 3)]))
+    else:
+        subtotal = Decimal(str(po.get("subtotal") if po.get("subtotal") is not None else lines_total))
+        tax = Decimal(str(po.get("tax_amount") or 0))
+        total = Decimal(str(po.get("total_amount") if po.get("total_amount") is not None else subtotal + tax))
+        totals = Table([
+            [Paragraph("Subtotal (excl. VAT)", st["total_l"]), Paragraph(_money(subtotal, currency), st["total_r"])],
+            [Paragraph("VAT", st["total_l"]), Paragraph(_money(tax, currency), st["total_r"])],
+            [Paragraph("ORDER TOTAL", st["total_l"]), Paragraph(_money(total, currency), st["total_r"])],
+        ], colWidths=[433, 90])
+        totals.setStyle(TableStyle([
+            ("LINEABOVE", (0, 2), (-1, 2), 1.2, NAVY),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        words = number_to_words_usd(float(total)) if currency == "USD" else ""
+    story.append(KeepTogether([totals, Paragraph(words, st["words"])]))
     story.append(Spacer(1, 12))
 
     # Notes and terms
     terms: List[Any] = [Paragraph("Notes &amp; terms", st["h2"]), Spacer(1, 4)]
     if po.get("notes"):
         terms += [Paragraph(_text(po["notes"]), st["note"]), Spacer(1, 4)]
-    for index, term in enumerate(DEFAULT_TERMS, start=1):
+    for index, term in enumerate(po.get("terms") or DEFAULT_TERMS, start=1):
         terms.append(Paragraph(f"{index}. {escape(term)}", st["note"]))
-    story += [KeepTogether(terms), Spacer(1, 16)]
+    terms.append(Spacer(1, 16))
 
     # Authorisation block
     def signer(label: str, name: Any, when: Any) -> List[Any]:
@@ -269,7 +327,7 @@ def render_purchase_order_pdf(po: Dict[str, Any], organization: Optional[Dict[st
         signer("Issued by", po.get("issued_by_name"), po.get("issued_at")),
     ]], colWidths=[131, 131, 131, 130])
     sign.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-    story.append(KeepTogether(sign))
+    story.append(KeepTogether(terms + [sign]))
     if po.get("signoff_override_reason"):
         story += [Spacer(1, 8), Paragraph(
             f"Issued by superadmin override of the sign-offs: {_text(po['signoff_override_reason'])}", st["note"])]
@@ -281,10 +339,12 @@ def render_purchase_order_pdf(po: Dict[str, Any], organization: Optional[Dict[st
         canv.client_name = str(supplier.get("supplier_name") or po.get("supplier_name") or "Supplier")
         canv.project_title = str(po.get("project_name") or po.get("title") or "")
         canv.status_stamp = None if status in OFFICIAL_STATUSES else STATUS_STAMPS.get(status, status.upper())
+        canv.verification = verification
         return canv
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=48,
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36,
+                            bottomMargin=104 if verification else 48,
                             title=f"Purchase Order {po_number}", author="Six Nine Construction (Pvt) Ltd")
     doc.build(story, canvasmaker=make_canvas)
     return buffer.getvalue()

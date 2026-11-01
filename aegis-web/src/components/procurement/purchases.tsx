@@ -63,8 +63,8 @@ export function PurchasesView({
   expandedId: string | null;
   onToggle: (id: string | null) => void;
   saving: string | null;
-  requestHandlers: { onSubmit: (id: string) => void; onApprove: (row: Rec) => void; onCreateRFQ: (row: Rec) => void; onCreatePO: (row: Rec) => void };
-  rfqHandlers: { onQuote: (row: Rec) => void; onDecideQuote: (rfq: Rec, response: Rec, decision: "selected" | "rejected" | "evaluated") => void; onCreatePO: (response: Rec) => void };
+  requestHandlers: { onSubmit: (id: string) => void; onApprove: (row: Rec) => void; onCreateRFQ: (row: Rec) => void; onCreatePO: (row: Rec) => void; onEdit?: (row: Rec) => void };
+  rfqHandlers: { onQuote: (row: Rec) => void; onDecideQuote: (rfq: Rec, response: Rec, decision: "selected" | "rejected" | "evaluated") => void; onCreatePO: (response: Rec) => void; onUploadQuotes?: (rfq: Rec) => void };
   onViewOrder: (row: Rec) => void;
   invoiceHandlers: { onMatch: (row: Rec) => void; onInspect: (row: Rec) => void; onApprovePayment: (row: Rec) => void };
 }) {

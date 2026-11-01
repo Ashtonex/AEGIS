@@ -13,6 +13,7 @@ from routers import auth, users, projects, site_operations, site_reports, workfo
 from routers import workforce_foundation
 from routers import finance_ccb_findings  # fmt: skip
 from routers import data_room
+from routers import document_verification
 from routers import general_ledger
 from routers import gl_bridge
 from routers import company_budgets
@@ -270,6 +271,7 @@ def create_app() -> FastAPI:
     app.include_router(
         public_intake.router, prefix="/api/v1/public/intake", tags=["Public Intake"]
     )
+    app.include_router(document_verification.router, prefix="/api/v1/public/verify", tags=["Document Verification"])  # fmt: skip
     app.include_router(profiles.router, prefix="/api/v1/profile", tags=["Profile"])
     app.include_router(portals.router, prefix="/api/v1/portals", tags=["Portals"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])  # fmt: skip

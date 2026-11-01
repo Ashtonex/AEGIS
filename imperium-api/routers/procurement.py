@@ -35,6 +35,12 @@ router = APIRouter()
 # auditable instead of an undocumented backend-only escape hatch.
 BUDGET_OVERRIDE_ROLES = {"SUPERADMIN", "Finance Manager", "Project Manager"}
 
+# Who gathers quotations when procurement opens ahead of a mobilisation.
+PROCUREMENT_TEAM_ROLES = [
+    "Procurement Manager", "Procurement Associate",
+    "Stores & Procurement Manager", "Stores and Procurement Manager",
+]
+
 
 class Payload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -60,6 +66,19 @@ class RequisitionCreate(Payload):
     priority: Literal["low", "normal", "urgent", "emergency"] = "normal"
     justification: Optional[str] = None
     line_items: list[RequisitionLinePayload] = Field(min_length=1)
+
+
+class RequisitionAmendLine(RequisitionLinePayload):
+    id: Optional[UUID] = None  # existing line; omit for a new one
+    is_price_confirmed: Optional[bool] = None
+
+
+class RequisitionAmendPayload(Payload):
+    required_by_date: Optional[date] = None
+    priority: Optional[Literal["low", "normal", "urgent", "emergency"]] = None
+    justification: Optional[str] = None
+    lines: Optional[list[RequisitionAmendLine]] = Field(default=None, min_length=1)
+    reason: Optional[str] = Field(default=None, max_length=2000)
 
 
 class ReplenishmentDraftPayload(Payload):
@@ -98,6 +117,8 @@ class RfqResponsePayload(Payload):
     validity_days: int = Field(default=30, gt=0, le=3650)
     notes: Optional[str] = None
     line_items: list[dict[str, Any]] = Field(default_factory=list)
+    # The supplier's quotation file, registered in core.documents first.
+    document_id: Optional[UUID] = None
 
 
 class RfqResponseDecisionPayload(Payload):
@@ -236,7 +257,13 @@ async def emit_event(
     aggregate_id: UUID,
     project_id: Optional[UUID],
     payload: dict[str, Any],
+    idempotency_suffix: Optional[str] = None,
 ) -> None:
+    """idempotency_suffix: set it for events that can happen more than once
+    to the same record (e.g. each amendment), or the repeat is dropped."""
+    idempotency_key = f"{event_type}:{aggregate_type}:{aggregate_id}"
+    if idempotency_suffix:
+        idempotency_key = f"{idempotency_key}:{idempotency_suffix}"
     await db.execute(
         text("""
         INSERT INTO core.domain_events (
@@ -254,7 +281,7 @@ async def emit_event(
             "aggregate_id": aggregate_id,
             "project_id": project_id,
             "actor_id": user["user_id"],
-            "idempotency_key": f"{event_type}:{aggregate_type}:{aggregate_id}",
+            "idempotency_key": idempotency_key,
             "payload": json.dumps(payload, default=str),
         },
     )
@@ -407,6 +434,21 @@ async def has_document_link(
     return bool(row.scalar())
 
 
+PRE_MOBILISATION_STATUSES = ("planning", "pending_deposit", "pre_mobilisation")
+
+
+async def project_awaiting_mobilisation(db: AsyncSession, *, org_id: str, project_id: Optional[UUID]) -> bool:
+    if project_id is None:
+        return False
+    status_value = (
+        await db.execute(
+            text("SELECT status FROM projects.projects WHERE id=:id AND organization_id=:org_id AND is_deleted=false"),
+            {"id": project_id, "org_id": org_id},
+        )
+    ).scalar()
+    return str(status_value or "").lower() in PRE_MOBILISATION_STATUSES
+
+
 async def ensure_current_weekly_budget(
     db: AsyncSession,
     *,
@@ -415,6 +457,10 @@ async def ensure_current_weekly_budget(
     site_id: Optional[UUID] = None,
 ) -> Optional[UUID]:
     if project_id is None:
+        return None
+    if await project_awaiting_mobilisation(db, org_id=org_id, project_id=project_id):
+        # Weekly budgets start at mobilisation; procurement for the first
+        # weeks has to be raised and quoted before then.
         return None
     row = await db.execute(
         text("""
@@ -923,6 +969,24 @@ async def insert_requisition(
             "budget_available": available,
         },
     )
+    if await project_awaiting_mobilisation(db, org_id=user["org_id"], project_id=payload.project_id):
+        project_name = (
+            await db.execute(text("SELECT name FROM projects.projects WHERE id=:id"), {"id": payload.project_id})
+        ).scalar()
+        await emit_role_notification(
+            db,
+            org_id=user["org_id"],
+            role_names=PROCUREMENT_TEAM_ROLES,
+            title="Open procurement pending mobilisation",
+            message=(
+                f"{req_no} for {project_name} needs supplier quotations before mobilisation "
+                f"(required by {payload.required_by_date:%d %b %Y}). Gather quotes and upload them against the RFQ."
+            ),
+            notification_type="procurement",
+            priority="high",
+            action_url="/dashboard/procurement?tab=requisitions",
+            metadata={"requisition_id": str(req_id), "project_id": str(payload.project_id)},
+        )
     return req_id, req_no
 
 
@@ -1351,6 +1415,151 @@ async def decide_requisition(
     )
 
 
+@router.patch("/requisitions/{req_id}")
+async def amend_requisition(
+    req_id: UUID,
+    payload: RequisitionAmendPayload,
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a requisition so it shows what is - or what actually was - needed.
+
+    Drafts and rejected requests edit freely. Once a request has been
+    submitted, approved or ordered, only procurement approvers may amend it and
+    a reason is required; its status is kept and every amendment is counted,
+    stamped and written to the event trail with the totals before and after.
+    `lines`, when sent, is the full set: lines left out are removed.
+    """
+    req = await requisition_or_404(db, req_id, user["org_id"])
+    req_status = str(req["status"] or "draft")
+    if req_status == "cancelled":
+        raise HTTPException(status_code=409, detail="A cancelled requisition cannot be amended.")
+    controlled = req_status not in {"draft", "rejected"}
+    if controlled:
+        if not await user_has_permission(db, user, "procurement.requisition.approve"):
+            raise HTTPException(
+                status_code=403,
+                detail=f"This requisition is {req_status}; only a procurement approver can amend it.",
+            )
+        if not payload.reason or len(payload.reason.strip()) < 5:
+            raise HTTPException(status_code=422, detail="Give the reason for amending a requisition that is already in process.")
+    fields = payload.model_dump(exclude_unset=True, exclude={"lines", "reason"})
+    if not fields and payload.lines is None:
+        raise HTTPException(status_code=422, detail="No requisition changes were supplied.")
+
+    old_total = Decimal(str(req["total_estimated"] or 0))
+    if payload.lines is not None:
+        existing = {
+            str(row.id)
+            for row in await db.execute(
+                text("""
+                SELECT id FROM procurement.requisition_lines
+                WHERE requisition_id=:req_id AND organization_id=:org_id AND is_deleted=false
+            """),
+                {"req_id": req_id, "org_id": user["org_id"]},
+            )
+        }
+        kept = {str(line.id) for line in payload.lines if line.id}
+        unknown = kept - existing
+        if unknown:
+            raise HTTPException(status_code=422, detail="One or more lines do not belong to this requisition.")
+        removed = existing - kept
+        if removed:
+            await db.execute(
+                text("""
+                UPDATE procurement.requisition_lines SET is_deleted=true
+                WHERE organization_id=:org_id AND requisition_id=:req_id AND id = ANY(CAST(:ids AS uuid[]))
+            """),
+                {"org_id": user["org_id"], "req_id": req_id, "ids": sorted(removed)},
+            )
+        for line in payload.lines:
+            params = {
+                "org_id": user["org_id"], "req_id": req_id, "item_id": line.item_id,
+                "description": line.description, "quantity": line.qty, "uom": line.uom,
+                "unit_cost": line.unit_cost, "work_package": line.work_package, "notes": line.notes,
+                "is_price_confirmed": bool(line.is_price_confirmed),
+            }
+            if line.id:
+                await db.execute(
+                    text("""
+                    UPDATE procurement.requisition_lines
+                    SET item_id=:item_id, description=:description, quantity=:quantity,
+                        unit_of_measure=:uom, estimated_unit_cost=:unit_cost, work_package=:work_package,
+                        notes=:notes, is_price_confirmed=:is_price_confirmed
+                    WHERE id=:id AND organization_id=:org_id AND requisition_id=:req_id
+                """),
+                    {**params, "id": line.id},
+                )
+            else:
+                await db.execute(
+                    text("""
+                    INSERT INTO procurement.requisition_lines (
+                        organization_id, requisition_id, item_id, description, quantity,
+                        unit_of_measure, estimated_unit_cost, work_package, notes, is_price_confirmed
+                    ) VALUES (
+                        :org_id, :req_id, :item_id, :description, :quantity,
+                        :uom, :unit_cost, :work_package, :notes, :is_price_confirmed
+                    )
+                """),
+                    params,
+                )
+
+    new_total = (
+        await db.execute(
+            text("""
+            UPDATE procurement.purchase_requisitions pr
+            SET required_by_date = CASE WHEN :set_required_by THEN CAST(:required_by_date AS date) ELSE pr.required_by_date END,
+                priority = COALESCE(CAST(:priority AS varchar), pr.priority),
+                justification = CASE WHEN :set_justification THEN CAST(:justification AS text) ELSE pr.justification END,
+                total_estimated = (
+                    SELECT COALESCE(SUM(quantity * COALESCE(estimated_unit_cost, 0)), 0)
+                    FROM procurement.requisition_lines rl
+                    WHERE rl.requisition_id=pr.id AND rl.organization_id=pr.organization_id AND rl.is_deleted=false
+                ),
+                amendment_count = pr.amendment_count + 1,
+                last_amended_at = NOW(),
+                last_amended_by = CAST(:user_id AS uuid),
+                last_amendment_reason = CAST(:reason AS text),
+                updated_at = NOW()
+            WHERE pr.id=:id AND pr.organization_id=:org_id
+            RETURNING total_estimated, amendment_count
+        """),
+            {
+                "id": req_id, "org_id": user["org_id"], "user_id": user["user_id"],
+                "set_required_by": "required_by_date" in fields and fields["required_by_date"] is not None,
+                "required_by_date": fields.get("required_by_date"),
+                "priority": fields.get("priority"),
+                "set_justification": "justification" in fields,
+                "justification": fields.get("justification"),
+                "reason": payload.reason,
+            },
+        )
+    ).first()
+    await emit_event(
+        db,
+        user=user,
+        event_type="procurement.requisition.amended.v1",
+        aggregate_type="purchase_requisition",
+        aggregate_id=req_id,
+        project_id=req["project_id"],
+        payload={
+            "status": req_status,
+            "reason": payload.reason,
+            "fields": sorted(fields),
+            "lines_replaced": payload.lines is not None,
+            "total_before": str(old_total),
+            "total_after": str(new_total.total_estimated),
+        },
+        idempotency_suffix=str(new_total.amendment_count),
+    )
+    await db.commit()
+    return ok(
+        {"id": str(req_id), "status": req_status, "total_estimated": float(new_total.total_estimated),
+         "amendment_count": new_total.amendment_count},
+        "Purchase requisition amended.",
+    )
+
+
 @router.get("/rfqs")
 async def list_rfqs(
     status_filter: Optional[str] = Query(default=None, alias="status"),
@@ -1375,11 +1584,14 @@ async def list_rfqs(
                      'status', rr.status,
                      'notes', rr.notes,
                      'line_items', rr.line_items,
-                     'received_at', rr.received_at
+                     'received_at', rr.received_at,
+                     'document_id', rr.document_id,
+                     'document_name', COALESCE(d.file_name, d.title)
                    ) ORDER BY rr.total_amount ASC, rr.received_at ASC
                  )
                  FROM procurement.rfq_responses rr
                  JOIN procurement.suppliers s ON s.id=rr.supplier_id AND s.organization_id=rr.organization_id
+                 LEFT JOIN core.documents d ON d.id=rr.document_id AND d.is_deleted=false
                  WHERE rr.rfq_id=rfq.id AND rr.organization_id=rfq.organization_id AND rr.is_deleted=false
                ), '[]'::jsonb) AS responses
         FROM procurement.rfqs rfq
@@ -1449,9 +1661,11 @@ async def create_rfq(
     weekly_budget_id = await ensure_current_weekly_budget(
         db, org_id=user["org_id"], project_id=req["project_id"], site_id=req.get("site_id")
     )
-    if req["status"] != "approved":
+    # Quotes are gathered while the request awaits approval too - the approver
+    # usually needs real prices. The PO still needs an approved request.
+    if req["status"] not in {"submitted", "approved"}:
         raise HTTPException(
-            status_code=409, detail="RFQ requires an approved requisition."
+            status_code=409, detail="RFQ requires a submitted or approved requisition."
         )
     rfq_no = await next_number(db, user["org_id"], "rfq", "RFQ")
     status_value = "issued" if payload.issue_now else "draft"
@@ -1528,19 +1742,23 @@ async def record_rfq_response(
     ).scalar()
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
+    if payload.document_id:
+        await document_or_404(db, payload.document_id, user["org_id"])
     response_id = (
         await db.execute(
             text("""
         INSERT INTO procurement.rfq_responses (
             organization_id, rfq_id, supplier_id, reference, total_amount,
-            delivery_days, validity_days, notes, line_items, created_by
+            delivery_days, validity_days, notes, line_items, document_id, created_by
         ) VALUES (
             :org_id, :rfq_id, :supplier_id, :reference, :total_amount,
-            :delivery_days, :validity_days, :notes, CAST(:line_items AS jsonb), :user_id
+            :delivery_days, :validity_days, :notes, CAST(:line_items AS jsonb), :document_id, :user_id
         ) ON CONFLICT (organization_id, rfq_id, supplier_id)
           DO UPDATE SET reference=EXCLUDED.reference, total_amount=EXCLUDED.total_amount,
               delivery_days=EXCLUDED.delivery_days, validity_days=EXCLUDED.validity_days,
-              notes=EXCLUDED.notes, line_items=EXCLUDED.line_items, status='received', updated_at=NOW()
+              notes=EXCLUDED.notes, line_items=EXCLUDED.line_items,
+              document_id=COALESCE(EXCLUDED.document_id, procurement.rfq_responses.document_id),
+              status='received', updated_at=NOW()
         RETURNING id
     """),
             {
@@ -1553,6 +1771,7 @@ async def record_rfq_response(
                 "validity_days": payload.validity_days,
                 "notes": payload.notes,
                 "line_items": json.dumps(payload.line_items, default=str),
+                "document_id": payload.document_id,
                 "user_id": user["user_id"],
             },
         )
@@ -1729,14 +1948,32 @@ async def download_purchase_order_pdf(
 
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import Response
+    from app.services.documents import attestation
     from app.services.documents.po_renderer import render_purchase_order_pdf
 
-    pdf = await run_in_threadpool(render_purchase_order_pdf, dict(row))
+    # Every copy issued is signed and registered, so it can be verified publicly.
+    code = attestation.new_verification_code()
+    verification = {"code": code, "url": attestation.verification_url(code)}
+    pdf = await run_in_threadpool(render_purchase_order_pdf, dict(row), None, verification)
     filename = "".join(c for c in str(row["po_number"] or "purchase-order") if c.isalnum() or c in "-_") or "purchase-order"
+    supplier = row["supplier"] or {}
+    issuer = (await db.execute(text("SELECT full_name FROM core.users WHERE id=:id"), {"id": user.get("user_id") or user.get("sub")})).scalar()
+    await attestation.attest(
+        db, code=code, pdf=pdf, organization_id=user["org_id"], document_type="purchase_order",
+        document_number=str(row["po_number"]), title=row["title"], entity_type="procurement.purchase_order",
+        entity_id=row["id"], project_id=row["project_id"], project_name=row["project_name"],
+        counterparty=supplier.get("supplier_name"), amount=row["total_amount"], currency=row["currency"],
+        document_status=row["status"], filename=f"SNC_Purchase_Order_{filename}.pdf",
+        issued_by=user.get("user_id") or user.get("sub"), issued_by_name=issuer,
+    )
+    await db.commit()
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="SNC_Purchase_Order_{filename}.pdf"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="SNC_Purchase_Order_{filename}.pdf"',
+            "X-AEGIS-Verification-Code": code,
+        },
     )
 
 

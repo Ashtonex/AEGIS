@@ -104,6 +104,24 @@ export async function submitProcurementRequisition(id: string, overrideReason?: 
   });
 }
 
+export type RequisitionAmendment = {
+  required_by_date?: string;
+  priority?: "low" | "normal" | "urgent" | "emergency";
+  justification?: string | null;
+  /** The full set of lines; existing lines keep their id, lines left out are removed. */
+  lines?: { id?: string; description: string; qty: number; uom: string; unit_cost: number; work_package?: string | null; notes?: string | null; is_price_confirmed?: boolean }[];
+  /** Required once the requisition has been submitted, approved or ordered. */
+  reason?: string;
+};
+
+export async function amendProcurementRequisition(id: string, payload: RequisitionAmendment): Promise<ApiResponse<{ id: string; status: string; total_estimated: number; amendment_count: number }>> {
+  return fetchApi<ApiResponse<{ id: string; status: string; total_estimated: number; amendment_count: number }>>(`/api/v1/procurement/requisitions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function approveProcurementRequisition(id: string, decision: "approved" | "rejected", reason?: string, overrideReason?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/procurement/requisitions/${id}/decision`, {
     method: "POST",
@@ -536,6 +554,16 @@ export async function generateProjectMilestonesFromBOQ(
       allowFallback: false,
     }
   );
+}
+
+export type ProgrammeRolloutSummary = { rebaselined_days?: number; site_id?: string; weeks_created?: number; weeks_skipped?: number; daily_targets?: number; message?: string };
+
+/** Fills any programme weeks of an active project that have no weekly budget yet (weekly budget + daily targets). */
+export async function rerunProgrammeRollout(projectId: string): Promise<ApiResponse<ProgrammeRolloutSummary>> {
+  return fetchApi<ApiResponse<ProgrammeRolloutSummary>>(`/api/v1/projects/${projectId}/programme/rollout`, {
+    method: 'POST',
+    allowFallback: false,
+  });
 }
 
 /** Links an existing project to a CRM opportunity deal. */

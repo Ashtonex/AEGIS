@@ -131,8 +131,10 @@ def calculate_cpm_schedule(
         valid_preds = [p for p in preds[mid] if p[0] in node_map]
 
         if not valid_preds:
-            # Anchor to existing forecast_date, baseline_date, or default anchor
-            es = node["forecast_date"] or node["baseline_date"] or anchor_date
+            # Anchor to the baseline start first: the pass below writes each
+            # activity's early finish into an empty forecast_date, so anchoring
+            # on forecast_date would push a root later on every recalculation.
+            es = node["baseline_date"] or node["forecast_date"] or anchor_date
         else:
             max_ef_pred: date | None = None
             for pid, lag, dep_type in valid_preds:

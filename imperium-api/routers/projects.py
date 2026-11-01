@@ -42,6 +42,7 @@ from app.services.finance.project_forecast import (
     seed_project_budget_from_quotation,
 )
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
+from app.services.programme_rollout import rollout_programme
 from app.services.project_cpm import CyclicDependencyError, calculate_cpm_schedule, recalculate_and_persist_project_cpm
 from app.services.project_plant import get_project_plant_analytics, record_project_plant_shift_log
 from app.services.project_delays_eot import (
@@ -284,6 +285,10 @@ class MilestonePayload(BaseModel):
     predecessor_id: Optional[UUID] = None
     lag_days: Optional[int] = Field(default=0)
     dependency_type: Optional[Literal["FS", "SS", "FF", "SF"]] = "FS"
+    # The BOQ line this activity delivers; linked activities become weekly
+    # budget lines and daily targets when the project mobilises.
+    boq_line_item_id: Optional[UUID] = None
+    work_package: Optional[str] = Field(default=None, max_length=40)
 
 
 class MilestoneUpdate(BaseModel):
@@ -1113,11 +1118,14 @@ async def add_milestone(
                 """INSERT INTO projects.project_milestones (
                     project_id, organization_id, created_by, name, status,
                     baseline_date, forecast_date, actual_date, weight, percent_complete, owner_id, notes,
-                    duration_days, predecessor_id, lag_days, dependency_type
+                    duration_days, predecessor_id, lag_days, dependency_type, boq_line_item_id, work_package
                 ) VALUES (
                     :project_id, :org_id, :user_id, :name, :status,
                     :baseline_date, :forecast_date, :actual_date, :weight, COALESCE(:percent_complete, 0), :owner_id, :notes,
-                    COALESCE(:duration_days, 1), :predecessor_id, COALESCE(:lag_days, 0), COALESCE(:dependency_type, 'FS')
+                    COALESCE(:duration_days, 1), :predecessor_id, COALESCE(:lag_days, 0), COALESCE(:dependency_type, 'FS'),
+                    (SELECT b.id FROM finance.boq_line_items b
+                     WHERE b.id = CAST(:boq_line_item_id AS uuid) AND b.project_id = :project_id AND b.is_deleted = false),
+                    :work_package
                 ) RETURNING id"""
             ),
             {
@@ -2209,10 +2217,35 @@ async def approve_pre_mobilisation(
         await db.rollback()
         logger.warning("microsoft_graph.project_mobilisation_calendar_errored", project_id=str(project_id), error=str(exc))
 
+    # The programme becomes the site's weeks: weekly budgets and daily targets
+    # from the BOQ-linked schedule, re-baselined to the mobilisation date.
+    rollout = await rollout_programme(
+        db, org_id=user["org_id"], project_id=str(project_id), user_id=user["user_id"],
+        mobilisation_date=payload.mobilisation_date,
+    )
+
     return _result(
-        {"id": str(project_id), "status": "active", "mobilisation_authorisation_number": auth_number},
+        {"id": str(project_id), "status": "active", "mobilisation_authorisation_number": auth_number,
+         "programme_rollout": rollout},
         "Mobilisation authorised. Project is now active.",
     )
+
+
+@router.post("/{project_id}/programme/rollout")
+async def rerun_programme_rollout(
+    project_id: UUID,
+    user: dict = Depends(require_permission("projects.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fill any weeks of an active project's programme that have no weekly
+    budget yet (e.g. after activities were added). Existing weeks are kept."""
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    if str(project.get("status") or "").lower() != "active":
+        raise HTTPException(status_code=409, detail="Weekly budgets are generated once the project has mobilised.")
+    rollout = await rollout_programme(db, org_id=user["org_id"], project_id=str(project_id), user_id=user["user_id"])
+    if rollout.get("error"):
+        raise HTTPException(status_code=500, detail=f"Programme rollout failed: {rollout['error']}")
+    return _result(rollout, f"{rollout.get('weeks_created', 0)} weekly budgets and {rollout.get('daily_targets', 0)} daily targets created.")
 
 
 @router.post("/{project_id}/budget", status_code=201)
