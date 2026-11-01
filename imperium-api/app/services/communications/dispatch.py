@@ -27,7 +27,10 @@ from sqlalchemy.orm import Session
 from app.services.communications.twilio_whatsapp import (
     TwilioWhatsAppError,
     digits,
+    error_detail,
+    fetch_twilio_message,
     send_twilio_whatsapp,
+    statuses_that_supersede,
     twilio_whatsapp_configured,
 )
 from app.services.microsoft import teams_notify
@@ -376,8 +379,15 @@ async def deliver_batch(batch: dict[str, Any]) -> None:
             ).scalars().all()
         )
         jobs = [job for job in batch["jobs"] if job["delivery_id"] in still_pending]
-        results = await asyncio.gather(*(_send_one(batch, job) for job in jobs))
-        for job, (status, detail, external_id) in zip(jobs, results):
+
+        async def run(job: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, Optional[str], Optional[str]]]:
+            return job, await _send_one(batch, job)
+
+        # Record each result as soon as its send returns, not when the slowest
+        # one does: Twilio's status callbacks can only find a delivery once its
+        # SID is committed.
+        for finished in asyncio.as_completed([run(job) for job in jobs]):
+            job, (status, detail, external_id) = await finished
             await db.execute(
                 text("""
                 UPDATE core.communication_deliveries
@@ -386,4 +396,38 @@ async def deliver_batch(batch: dict[str, Any]) -> None:
             """),
                 {"id": job["delivery_id"], "status": status, "detail": detail, "external_id": external_id},
             )
-        await db.commit()
+            await db.commit()
+            if job["channel"] == "whatsapp" and external_id:
+                await _reconcile_whatsapp(db, job["delivery_id"], external_id)
+
+
+async def _reconcile_whatsapp(db: AsyncSession, delivery_id: str, sid: str) -> None:
+    """A status callback that landed between Twilio accepting the message and
+    the SID being committed matched nothing; read Twilio's current status
+    once so it is not lost. Later callbacks match on the stored SID."""
+    try:
+        message = await fetch_twilio_message(sid)
+    except TwilioWhatsAppError as exc:
+        logger.warning("communication_whatsapp_reconcile_failed", delivery_id=delivery_id, error=str(exc))
+        return
+    status = str(message.get("status") or "").lower()
+    if not status:
+        return
+    await db.execute(
+        text("""
+        UPDATE core.communication_deliveries
+        SET status = :status, detail = COALESCE(:detail, detail), updated_at = NOW()
+        WHERE id = :id AND external_message_id = :sid
+          AND status <> :unchanged
+          AND NOT (status = ANY(CAST(:later_statuses AS varchar[])))
+    """),
+        {
+            "id": delivery_id,
+            "sid": sid,
+            "status": status,
+            "unchanged": status,
+            "detail": error_detail(message.get("error_code")),
+            "later_statuses": statuses_that_supersede(status),
+        },
+    )
+    await db.commit()

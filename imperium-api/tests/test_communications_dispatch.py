@@ -88,6 +88,17 @@ class FormattingTests(unittest.TestCase):
             self.assertIsNone(dispatch.absolute_link(None))
 
 
+class StatusOrderTests(unittest.TestCase):
+    def test_progress_never_overwrites_failure_or_later_progress(self):
+        from app.services.communications.twilio_whatsapp import statuses_that_supersede
+
+        self.assertEqual(statuses_that_supersede("sent"), ["delivered", "read", "failed", "undelivered"])
+        self.assertIn("failed", statuses_that_supersede("read"))
+        # A failure is final news and always recorded.
+        self.assertEqual(statuses_that_supersede("undelivered"), [])
+        self.assertEqual(statuses_that_supersede("failed"), [])
+
+
 class ValidationTests(unittest.TestCase):
     def test_send_payload_rejects_unknown_channel_and_bad_link(self):
         base = {"recipient_user_ids": ["7b0e7f7e-0000-4000-8000-000000000001"], "subject": "Hi", "body": "Hello"}

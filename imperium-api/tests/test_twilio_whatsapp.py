@@ -274,7 +274,7 @@ class WebhookTests(unittest.TestCase):
         self.assertIn("UPDATE core.communication_deliveries", staff_sql)
         for params in (crm_params, staff_params):
             self.assertEqual(params["status"], "sent")
-            self.assertEqual(params["later_statuses"], ["delivered", "read"])
+            self.assertEqual(params["later_statuses"], ["delivered", "read", "failed", "undelivered"])
         self.assertIsNone(crm_params["outcome"])
         self.assertIsNone(staff_params["detail"])
         self.assertEqual(response.json()["data"]["processed"], 2)

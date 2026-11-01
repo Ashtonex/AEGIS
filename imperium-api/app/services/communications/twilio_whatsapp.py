@@ -15,6 +15,31 @@ from core.config import settings
 
 STATUS_CALLBACK_PATH = "/api/v1/crm-communications/webhooks/twilio/whatsapp/status"
 
+# Twilio message statuses in the order they progress, and the failures that
+# end a message. Callbacks can arrive out of order, so a stored status is
+# only replaced by one that comes after it, and a failure is never replaced
+# by a late progress callback.
+STATUS_ORDER = ("accepted", "scheduled", "queued", "sending", "sent", "delivered", "read")
+FAILED_STATUSES = ("failed", "undelivered")
+
+
+def statuses_that_supersede(status: str) -> list[str]:
+    """Stored statuses that `status` must not overwrite."""
+    if status in STATUS_ORDER:
+        return [*STATUS_ORDER[STATUS_ORDER.index(status) + 1:], *FAILED_STATUSES]
+    return []
+
+
+def error_detail(error_code: Optional[str]) -> Optional[str]:
+    if not error_code:
+        return None
+    if str(error_code) == "63016":
+        return (
+            "Twilio error 63016: outside WhatsApp's 24-hour window - "
+            "this person needs an approved template message"
+        )
+    return f"Twilio error {error_code}"
+
 
 class TwilioWhatsAppError(Exception):
     """Twilio refused or could not be reached. str(exc) is safe to show."""
@@ -80,3 +105,16 @@ async def send_twilio_whatsapp(
         reason = result.get("message") or f"HTTP {response.status_code}"
         raise TwilioWhatsAppError(f"Twilio rejected the WhatsApp message: {reason}")
     return result
+
+
+async def fetch_twilio_message(sid: str) -> dict[str, Any]:
+    """Twilio's current record of a message (status, error_code, ...)."""
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{settings.TWILIO_ACCOUNT_SID}/Messages/{sid}.json"
+    try:
+        async with httpx.AsyncClient(timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS) as client:
+            response = await client.get(url, auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN))
+        response.raise_for_status()
+        result = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise TwilioWhatsAppError(f"Could not read message {sid} from Twilio.") from exc
+    return result if isinstance(result, dict) else {}

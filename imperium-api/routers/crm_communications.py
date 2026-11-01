@@ -26,7 +26,9 @@ from core.security import require_permission
 from app.services.crm.automation_engine import fire_trigger
 from app.services.communications.twilio_whatsapp import (
     TwilioWhatsAppError,
+    error_detail,
     send_twilio_whatsapp,
+    statuses_that_supersede,
     twilio_whatsapp_sender,
 )
 
@@ -171,11 +173,6 @@ def _twilio_status_to_ledger(status_value: Optional[str]) -> str:
         "canceled": "cancelled",
     }
     return status_map.get(str(status_value or "").lower(), "updated")
-
-
-# Twilio message statuses in the order they progress. Callbacks can arrive out
-# of order, so a status never overwrites one that comes after it here.
-_TWILIO_MESSAGE_STATUS_ORDER = ["accepted", "scheduled", "queued", "sending", "sent", "delivered", "read"]
 
 
 async def _verified_twilio_form(request: Request) -> dict[str, str]:
@@ -1044,11 +1041,7 @@ async def receive_twilio_whatsapp_status(
     if not message_sid or not status_value or not org_id:
         return _response({"processed": 0}, "Twilio WhatsApp status ignored.")
 
-    later_statuses = (
-        _TWILIO_MESSAGE_STATUS_ORDER[_TWILIO_MESSAGE_STATUS_ORDER.index(status_value) + 1:]
-        if status_value in _TWILIO_MESSAGE_STATUS_ORDER
-        else []
-    )
+    later_statuses = statuses_that_supersede(status_value)
     error_code = params.get("ErrorCode")
     result = await db.execute(
         text("""
@@ -1088,23 +1081,13 @@ async def receive_twilio_whatsapp_status(
             "org_id": org_id,
             "message_sid": message_sid,
             "status": status_value,
-            "detail": _twilio_error_detail(error_code),
+            "detail": error_detail(error_code),
             "later_statuses": later_statuses,
         },
     )
     await db.commit()
     return _response({"processed": result.rowcount + staff.rowcount}, "Twilio WhatsApp status logged.")
 
-
-def _twilio_error_detail(error_code: Optional[str]) -> Optional[str]:
-    if not error_code:
-        return None
-    if error_code == "63016":
-        return (
-            "Twilio error 63016: outside WhatsApp's 24-hour window - "
-            "this person needs an approved template message"
-        )
-    return f"Twilio error {error_code}"
 
 
 @router.post("/webhooks/whatsapp")
