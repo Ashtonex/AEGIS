@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,20 @@ class ProfileUpdate(BaseModel):
     languages: Optional[list[str]] = Field(default=None, max_length=20)
     theme_preference: Optional[Literal["ink", "paper", "slate", "contrast"]] = None
     onboarding_completed_at: Optional[datetime] = None
+    # International format; AEGIS only messages it once whatsapp_opt_in is
+    # true, which only the person themselves can set (this is /me).
+    whatsapp_number: Optional[str] = Field(default=None, max_length=40)
+    whatsapp_opt_in: Optional[bool] = None
+
+    @field_validator("whatsapp_number")
+    @classmethod
+    def international_number(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if digits.startswith("0") or not 8 <= len(digits) <= 15:
+            raise ValueError("Use the international format with country code, e.g. +263 77 123 4567.")
+        return f"+{digits}"
 
 
 def _url(value: Optional[HttpUrl]) -> Optional[str]:
@@ -55,7 +69,8 @@ async def get_my_profile(
         SELECT u.id AS user_id, u.email, u.full_name, p.preferred_name, p.first_name, p.last_name,
                p.work_phone, p.job_title, p.department, p.location, p.timezone, p.bio,
                p.linkedin_url, p.portfolio_url, p.website_url, p.avatar_path, p.skills, p.languages,
-               p.theme_preference,
+               p.theme_preference, p.whatsapp_number,
+               COALESCE(p.whatsapp_opt_in, false) AS whatsapp_opt_in, p.whatsapp_opt_in_at,
                p.profile_completed_at, p.onboarding_completed_at,
                COALESCE(p.module_tours_completed, '{}'::jsonb) AS module_tours_completed
         FROM core.users u
@@ -93,6 +108,8 @@ async def update_my_profile(
         key: (str(value) if isinstance(value, HttpUrl) else value)
         for key, value in fields.items()
     }
+    if "whatsapp_opt_in" in values and values["whatsapp_opt_in"] is None:
+        del values["whatsapp_opt_in"]  # the column is NOT NULL; null means "unchanged"
     if not values:
         raise HTTPException(status_code=400, detail="No profile changes were supplied.")
     safe_keys = safe_payload_columns(values.keys())
@@ -120,6 +137,8 @@ async def update_my_profile(
                 "skills",
                 "languages",
                 "theme_preference",
+                "whatsapp_number",
+                "whatsapp_opt_in",
                 "profile_completed_at",
                 "onboarding_completed_at",
             ),
@@ -131,10 +150,28 @@ async def update_my_profile(
             "organization_id": user["org_id"],
         },
     )
+    data = dict(result.fetchone()._mapping)
+    if "whatsapp_opt_in" in values:
+        # Consent record: when the person last turned WhatsApp on (cleared on
+        # opt-out). Only moves when the choice actually changes.
+        data["whatsapp_opt_in_at"] = (
+            await db.execute(
+                text("""
+                UPDATE hr.employee_profiles
+                SET whatsapp_opt_in_at = CASE
+                    WHEN NOT whatsapp_opt_in THEN NULL
+                    WHEN whatsapp_opt_in_at IS NULL THEN NOW()
+                    ELSE whatsapp_opt_in_at END
+                WHERE user_id = :user_id AND organization_id = :org_id
+                RETURNING whatsapp_opt_in_at
+            """),
+                {"user_id": user["user_id"], "org_id": user["org_id"]},
+            )
+        ).scalar()
     await db.commit()
     return {
         "success": True,
-        "data": dict(result.fetchone()._mapping),
+        "data": data,
         "message": "Profile updated.",
         "meta": {},
     }

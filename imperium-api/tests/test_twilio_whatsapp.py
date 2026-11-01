@@ -269,11 +269,15 @@ class WebhookTests(unittest.TestCase):
                 {"MessageSid": "SM123", "MessageStatus": "sent", "From": f"whatsapp:{SENDER}"},
             )
         self.assertEqual(response.status_code, 200)
-        sql, params = db.statements[-1]
-        self.assertIn("UPDATE crm.communication_events", sql)
-        self.assertEqual(params["status"], "sent")
-        self.assertEqual(params["later_statuses"], ["delivered", "read"])
-        self.assertIsNone(params["outcome"])
+        (crm_sql, crm_params), (staff_sql, staff_params) = db.statements[-2:]
+        self.assertIn("UPDATE crm.communication_events", crm_sql)
+        self.assertIn("UPDATE core.communication_deliveries", staff_sql)
+        for params in (crm_params, staff_params):
+            self.assertEqual(params["status"], "sent")
+            self.assertEqual(params["later_statuses"], ["delivered", "read"])
+        self.assertIsNone(crm_params["outcome"])
+        self.assertIsNone(staff_params["detail"])
+        self.assertEqual(response.json()["data"]["processed"], 2)
 
     def test_failed_status_records_error_code(self):
         db = FakeDb(rowcount=1)
@@ -284,10 +288,12 @@ class WebhookTests(unittest.TestCase):
                 "/webhooks/twilio/whatsapp/status",
                 {"MessageSid": "SM123", "MessageStatus": "undelivered", "ErrorCode": "63016", "From": SENDER},
             )
-        params = db.statements[-1][1]
-        self.assertEqual(params["status"], "undelivered")
-        self.assertEqual(params["later_statuses"], [])
-        self.assertEqual(params["outcome"], "Twilio error 63016")
+        crm_params, staff_params = db.statements[-2][1], db.statements[-1][1]
+        self.assertEqual(crm_params["status"], "undelivered")
+        self.assertEqual(crm_params["later_statuses"], [])
+        self.assertEqual(crm_params["outcome"], "Twilio error 63016")
+        self.assertEqual(staff_params["status"], "undelivered")
+        self.assertIn("24-hour window", staff_params["detail"])
 
 
 class OrgLookupTests(unittest.TestCase):
