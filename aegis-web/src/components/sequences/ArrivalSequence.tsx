@@ -76,7 +76,7 @@ export function ArrivalSequence() {
     <section
       id="arrival"
       aria-label="SNC arrival sequence — institutional confidence"
-      className="relative min-h-[100dvh] flex flex-col justify-end overflow-hidden bg-ink"
+      className="relative min-h-[100dvh] flex flex-col justify-start md:justify-end overflow-hidden bg-ink"
     >
       {/* ── Cinematic Background Layer ──────────────────────────────────────── */}
       {/* Two-image crossfade — Volume II: crossfades every 6–8 seconds */}
@@ -126,7 +126,7 @@ export function ArrivalSequence() {
 
       {/* ── Content — sits above the image layer ───────────────────────────── */}
       <div className="relative z-10 w-full">
-        <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">
+        <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 pt-36 sm:pt-28 md:pt-0">
 
           {/* ── Sequence identifier — data label ─────────────────────────── */}
           <motion.div
@@ -157,7 +157,7 @@ export function ArrivalSequence() {
           <h1 className="font-black leading-[0.95] tracking-[-0.02em] text-paper mb-6 max-w-[1100px]">
             {/* Line 1 — arrives first */}
             <motion.span
-              className="block text-[clamp(48px,7vw,96px)]"
+              className="block text-[clamp(32px,8.5vw,96px)]"
               custom={0.3}
               variants={arrivalTextVariants}
               initial="hidden"
@@ -167,7 +167,7 @@ export function ArrivalSequence() {
             </motion.span>
             {/* Line 2 — arrives second, slightly delayed */}
             <motion.span
-              className="block text-[clamp(48px,7vw,96px)]"
+              className="block text-[clamp(32px,8.5vw,96px)]"
               custom={0.5}
               variants={arrivalTextVariants}
               initial="hidden"
@@ -177,7 +177,7 @@ export function ArrivalSequence() {
             </motion.span>
             {/* Accent word — signal color, appears last */}
             <motion.span
-              className="block text-[clamp(48px,7vw,96px)] text-signal"
+              className="block text-[clamp(32px,8.5vw,96px)] text-signal"
               custom={0.7}
               variants={arrivalTextVariants}
               initial="hidden"
@@ -245,7 +245,7 @@ export function ArrivalSequence() {
               "ISO 9001:2015",
               "PRAZ Category A",
               "CIFOZ Class A",
-              "15+ Years",
+              "7+ Years",
             ].map((cert, i) => (
               <div key={cert} className="flex items-center gap-6">
                 <span className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate-light">
