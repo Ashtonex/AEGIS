@@ -22,3 +22,16 @@ def test_historical_cash_use_clears_hq_petty_cash_not_suspense():
 
     assert debit["account_id"] == accounts["5960"] and debit["debit_amount"] == Decimal("10000")
     assert credit["account_id"] == accounts[bank_books.HQ_PETTY] and credit["credit_amount"] == Decimal("10000")
+
+
+def test_overhead_categories_map_to_their_own_expense_accounts():
+    assert money_out_account("professional_fees", has_project=False) == "6300"
+    assert money_out_account("travel_accommodation", has_project=False) == "6500"
+    assert money_out_account("office_admin", has_project=False) == "6600"
+    assert money_out_account("marketing", has_project=False) == "6700"
+
+
+def test_loans_lent_out_and_repaid_stay_on_the_balance_sheet():
+    from app.services.finance.bank_books import money_in_account
+    assert money_out_account("loan_advance", has_project=False) == "1500"
+    assert money_in_account("loan_advance", has_project=False) == "1500"

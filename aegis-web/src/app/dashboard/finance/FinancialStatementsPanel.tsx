@@ -5,7 +5,7 @@ import { AlertTriangle, Loader2, RefreshCw, TrendingDown, TrendingUp, Wallet } f
 
 import {
   getFinanceStatements, getIncomeStatement, getBalanceSheet,
-  getCashMovementStatement, getArAging, getApAging, getTrialBalance,
+  getCashMovementStatement, getArAging, getApAging, getTrialBalance, getYearlyHistory,
 } from "@/lib/api";
 import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 
@@ -40,6 +40,135 @@ const PERIODS: { value: PeriodType; label: string }[] = [
 function firstOfMonth() {
   const d = new Date();
   return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+}
+
+type YearRow = { label: string; values: number[]; kind?: "total" | "result" | "heading" };
+
+/** Account lines of one statement section across years. `flip` shows a
+ * credit-normal section (revenue, liabilities, equity) as positive. */
+function accountRows(years: RecordData[], pick: (y: RecordData) => RecordData[], flip: boolean): YearRow[] {
+  const names = new Map<string, string>();
+  years.forEach((y) => pick(y).forEach((r) => names.set(r.account_code, r.account_name)));
+  return [...names.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([code, name]) => ({
+      label: `${code} ${name}`,
+      values: years.map((y) => {
+        const row = pick(y).find((r) => r.account_code === code);
+        const v = Number(row?.net_balance ?? 0);
+        return flip ? -v : v;
+      }),
+    }))
+    .filter((r) => r.values.some((v) => Math.abs(v) >= 0.005));
+}
+
+function YearlyHistoryView() {
+  const [years, setYears] = useState<RecordData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getYearlyHistory();
+      setYears(res.data?.years ?? []);
+    } catch {
+      setError("The yearly history could not be loaded.");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  if (loading) {
+    return (
+      <div className="flex h-40 items-center justify-center rounded-sm border border-ink-mid bg-ink-light">
+        <Loader2 className="h-5 w-5 animate-spin text-signal" />
+      </div>
+    );
+  }
+  if (error || years.length === 0) {
+    return (
+      <div className="rounded-sm border border-ink-mid bg-ink-light p-4 text-sm text-slate-light">
+        {error ?? "No posted journals yet - the yearly history starts with the first posted journal."}
+      </div>
+    );
+  }
+
+  const num = (y: RecordData, path: string[]) => Number(path.reduce<any>((o, k) => o?.[k], y) ?? 0);
+  const rows: YearRow[] = [
+    { label: "Income statement", values: [], kind: "heading" },
+    ...accountRows(years, (y) => y.income.revenue, true),
+    { label: "Total revenue", values: years.map((y) => num(y, ["income", "total_revenue"])), kind: "total" },
+    ...accountRows(years, (y) => y.income.direct_project_cost, false),
+    { label: "Total direct project cost", values: years.map((y) => -num(y, ["income", "total_direct_cost"])), kind: "total" },
+    { label: "Gross profit", values: years.map((y) => num(y, ["income", "gross_profit"])), kind: "result" },
+    ...accountRows(years, (y) => y.income.operating_expense, false),
+    { label: "Total operating expense", values: years.map((y) => -num(y, ["income", "total_operating_expense"])), kind: "total" },
+    ...accountRows(years, (y) => y.income.other_income, true),
+    ...accountRows(years, (y) => y.income.other_expense, false).map((r) => ({ ...r, values: r.values.map((v) => -v) })),
+    { label: "Net profit / (loss)", values: years.map((y) => num(y, ["income", "net_income"])), kind: "result" },
+    { label: "Balance sheet at year end", values: [], kind: "heading" },
+    ...accountRows(years, (y) => y.balance_sheet.assets, false),
+    { label: "Total assets", values: years.map((y) => num(y, ["balance_sheet", "total_assets"])), kind: "total" },
+    ...accountRows(years, (y) => y.balance_sheet.liabilities, true),
+    { label: "Total liabilities", values: years.map((y) => num(y, ["balance_sheet", "total_liabilities"])), kind: "total" },
+    ...accountRows(years, (y) => y.balance_sheet.equity, true),
+    { label: "Profits kept in the business (all years)", values: years.map((y) => num(y, ["balance_sheet", "retained_earnings_current_and_prior"])) },
+    { label: "Total equity", values: years.map((y) => num(y, ["balance_sheet", "total_equity"])), kind: "total" },
+    { label: "Cash and bank (GL 1000)", values: [], kind: "heading" },
+    { label: "Opening balance", values: years.map((y) => num(y, ["cash", "opening_balance"])) },
+    { label: "Money in", values: years.map((y) => num(y, ["cash", "inflows"])) },
+    { label: "Money out", values: years.map((y) => -num(y, ["cash", "outflows"])) },
+    { label: "Closing balance", values: years.map((y) => num(y, ["cash", "closing_balance"])), kind: "result" },
+  ];
+  const cents = new Intl.NumberFormat("en-ZW", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const cell = (v: number) => (Math.abs(v) < 0.005 ? "-" : v < 0 ? `(${cents.format(-v)})` : cents.format(v));
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-light">
+        Every year from the first posted journal, built from the general ledger. Brackets are costs or money out.
+        The last column is the year to date.
+      </p>
+      <div className="overflow-x-auto rounded-sm border border-ink-mid bg-ink-light">
+        <table className="w-full min-w-[720px] text-sm tabular-nums">
+          <thead>
+            <tr className="border-b border-ink-mid">
+              <th className="px-3 py-2 text-left font-mono text-xs uppercase tracking-wider text-slate">Line</th>
+              {years.map((y) => (
+                <th key={y.year} className="px-3 py-2 text-right font-mono text-xs uppercase tracking-wider text-slate">
+                  {y.year}{y.year_to_date ? " YTD" : ""}
+                  <span className={`ml-1.5 rounded-sm border px-1 text-[9px] ${y.balance_sheet?.is_balanced ? "border-emerald-500/40 text-emerald-300" : "border-red-500/40 text-red-300"}`}>
+                    {y.balance_sheet?.is_balanced ? "ties" : "check"}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) =>
+              r.kind === "heading" ? (
+                <tr key={i}>
+                  <td colSpan={years.length + 1} className="px-3 pb-1 pt-4 font-mono text-xs uppercase tracking-wider text-signal">{r.label}</td>
+                </tr>
+              ) : (
+                <tr key={i} className={r.kind ? "border-t border-ink-mid" : ""}>
+                  <td className={`px-3 py-1 ${r.kind ? "font-medium text-paper" : "text-slate-light"}`}>{r.label}</td>
+                  {r.values.map((v, j) => (
+                    <td key={j} className={`px-3 py-1 text-right ${r.kind === "result" ? (v >= 0 ? "font-semibold text-emerald-400" : "font-semibold text-red-400") : r.kind ? "font-medium text-paper" : "text-paper"}`}>
+                      {cell(v)}
+                    </td>
+                  ))}
+                </tr>
+              ),
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function GlStatementsView() {
@@ -222,7 +351,7 @@ function GlStatementsView() {
 }
 
 export function FinancialStatementsPanel() {
-  const [view, setView] = useState<"department" | "gl">("department");
+  const [view, setView] = useState<"department" | "gl" | "years">("department");
   const { departments } = useFinanceDepartments();
   const [statement, setStatement] = useState<RecordData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -271,19 +400,21 @@ export function FinancialStatementsPanel() {
       </div>
 
       <div className="flex overflow-hidden rounded-sm border border-ink-mid w-fit">
-        {(["department", "gl"] as const).map((v) => (
+        {(["department", "gl", "years"] as const).map((v) => (
           <button
             key={v}
             type="button"
             onClick={() => setView(v)}
             className={`px-3 py-2 font-mono text-xs uppercase tracking-wider transition-colors ${view === v ? "bg-signal text-ink" : "bg-ink text-slate hover:text-paper"}`}
           >
-            {v === "department" ? "Department View" : "GL Statements"}
+            {v === "department" ? "Department View" : v === "gl" ? "GL Statements" : "Year by Year"}
           </button>
         ))}
       </div>
 
-      {view === "gl" ? (
+      {view === "years" ? (
+        <YearlyHistoryView />
+      ) : view === "gl" ? (
         <GlStatementsView />
       ) : (
       <>

@@ -5,7 +5,9 @@ from decimal import Decimal
 from pathlib import Path
 import unittest
 
-from app.services.finance.bank_statement_pdf import ParsedStatement, StatementLine, _validate, line_key, plan
+from app.services.finance.bank_statement_pdf import (
+    ParsedStatement, StatementLine, _fix_wrong_column, _validate, line_key, plan,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTER = (ROOT / "routers" / "bank_transactions.py").read_text(encoding="utf-8")
@@ -49,6 +51,24 @@ class ValidationTests(unittest.TestCase):
 
     def test_broken_running_balance_is_caught(self):
         s = statement("1000.00", [ln(1, credit="500.00", balance="1600.00")], "1600.00")
+        self.assertTrue(any("running balance" in p for p in s.problems))
+
+    def test_amount_in_the_wrong_column_is_read_from_the_running_balance(self):
+        # BancABC 10 Apr 2024 "UPL Detail ZERORISING THE ACC": 49.73 printed under Cr, balance 49.73 -> 0.00
+        s = ParsedStatement(opening_balance=D("49.73"), closing_balance=D("0.00"),
+                            lines=[ln(1, credit="49.73", balance="0.00")], debit_count=0, credit_count=1)
+        _fix_wrong_column(s)
+        _validate(s)
+        self.assertEqual(s.problems, [])
+        self.assertEqual(s.lines[0].amount, D("-49.73"))
+        self.assertIn("WRONG COLUMN", s.lines[0].description)
+
+    def test_wrong_column_fix_leaves_real_breaks_alone(self):
+        s = ParsedStatement(opening_balance=D("1000.00"), closing_balance=D("1600.00"),
+                            lines=[ln(1, credit="500.00", balance="1600.00")], debit_count=0, credit_count=1)
+        _fix_wrong_column(s)
+        _validate(s)
+        self.assertEqual(s.lines[0].amount, D("500.00"))
         self.assertTrue(any("running balance" in p for p in s.problems))
 
     def test_closing_balance_and_counts_are_checked(self):

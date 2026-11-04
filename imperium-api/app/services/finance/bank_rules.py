@@ -41,6 +41,7 @@ KNOWN_CATEGORIES = {
     "client_receipt", "capital_injection", "internal_transfer", "cash_withdrawal", "supplier_payment",
     "subcontractor", "equipment_hire", "fuel_transport", "salaries_wages", "tax_statutory", "bank_charges",
     "card_purchase", "owner_drawings", "tithe_donation", "refund", "reversal", "other",
+    "professional_fees", "travel_accommodation", "office_admin", "marketing", "loan_advance",
 }
 RULE_FIELDS = {"set_category": "category", "set_project_id": "project_id",
                "set_counterparty": "counterparty_name", "set_note": "notes"}

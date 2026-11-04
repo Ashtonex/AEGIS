@@ -512,6 +512,12 @@ export async function getBalanceSheet(asOfDate: string): Promise<ApiResponse<any
   return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/balance-sheet?as_of_date=${asOfDate}`, { cache: 'no-store', allowFallback: false });
 }
 
+/** Every calendar year from the first posted journal to `through` (default today). */
+export async function getYearlyHistory(through?: string): Promise<ApiResponse<any>> {
+  const query = through ? `?through=${through}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/yearly-history${query}`, { cache: 'no-store', allowFallback: false });
+}
+
 export async function getCashMovementStatement(periodStart: string, periodEnd: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/cash-movement?period_start=${periodStart}&period_end=${periodEnd}`, { cache: 'no-store', allowFallback: false });
 }

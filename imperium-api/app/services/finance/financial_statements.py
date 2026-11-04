@@ -107,7 +107,9 @@ async def get_balance_sheet(db: AsyncSession, *, org_id: str, as_of_date: date) 
     rows = await get_trial_balance(db, org_id=org_id, as_of_date=as_of_date)
 
     assets = [r for r in rows if r["account_category"] == "asset"]
-    liabilities = [r for r in rows if r["account_category"] == "liability"]
+    # VAT / PAYE / NSSA payable (8000-8200) carry their own "tax" category but
+    # are amounts owed to ZIMRA/NSSA - liabilities, or the sheet can't balance
+    liabilities = [r for r in rows if r["account_category"] in ("liability", "tax")]
     equity = [r for r in rows if r["account_category"] == "equity"]
 
     total_assets = round(sum(float(r["net_balance"]) for r in assets), 2)
@@ -139,6 +141,34 @@ async def get_balance_sheet(db: AsyncSession, *, org_id: str, as_of_date: date) 
         "total_liabilities_and_equity": total_liabilities_and_equity,
         "is_balanced": abs(total_assets - total_liabilities_and_equity) < 0.01,
     }
+
+
+async def get_yearly_history(db: AsyncSession, *, org_id: str, through: date) -> dict:
+    """The company from its first posted journal to `through`, one column
+    per calendar year (the last one year-to-date): each year's income
+    statement by account, its balance sheet at year end and its cash
+    movement - the same functions the single-period statements use, so a
+    year here always equals that year picked on its own."""
+    first = (await db.execute(text("""
+        SELECT min(entry_date) FROM finance.journal_entries
+        WHERE organization_id = :org_id AND status = 'posted'
+    """), {"org_id": org_id})).scalar()
+    if first is None or first > through:
+        return {"through": through, "years": []}
+    years = []
+    for year in range(first.year, through.year + 1):
+        start = max(date(year, 1, 1), first)
+        end = min(date(year, 12, 31), through)
+        income = await get_income_statement(db, org_id=org_id, period_start=start, period_end=end)
+        sheet = await get_balance_sheet(db, org_id=org_id, as_of_date=end)
+        cash = await get_cash_movement_statement(db, org_id=org_id, period_start=start, period_end=end)
+        years.append({
+            "year": year, "period_start": start, "period_end": end, "year_to_date": end < date(year, 12, 31),
+            "income": {k: v for k, v in income.items() if k not in ("period_start", "period_end")},
+            "balance_sheet": {k: v for k, v in sheet.items() if k != "as_of_date"},
+            "cash": {k: v for k, v in cash.items() if k not in ("period_start", "period_end")},
+        })
+    return {"through": through, "years": years}
 
 
 async def get_cash_movement_statement(db: AsyncSession, *, org_id: str, period_start: date, period_end: date) -> dict:

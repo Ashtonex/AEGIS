@@ -22,7 +22,7 @@ class BalanceSheetContractTests(unittest.TestCase):
     def test_never_touches_pnl_categories_as_balance_sheet_lines(self):
         fn_body = self._fn_body()
         self.assertIn('r["account_category"] == "asset"', fn_body)
-        self.assertIn('r["account_category"] == "liability"', fn_body)
+        self.assertIn('r["account_category"] in ("liability", "tax")', fn_body)
         self.assertIn('r["account_category"] == "equity"', fn_body)
         self.assertNotIn('r["account_category"] == "revenue"', fn_body)
 
