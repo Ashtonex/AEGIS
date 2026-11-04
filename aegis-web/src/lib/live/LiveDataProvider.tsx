@@ -163,12 +163,33 @@ function useLiveSubscription(key: string, listener: Listener) {
   }, [ctx, key]);
 }
 
+// The DB trigger fires once per row, so a bulk write (a statement import,
+// a multi-line journal, a stock issue) arrives as a burst of events. Each
+// callback refetches, so collapse a burst into one call after it settles.
+const LIVE_TABLE_DEBOUNCE_MS = 400;
+
 /** Fires `onChange` whenever the given schema.table has an insert/update/
  * delete anywhere in the org - the payload never carries row data, so the
- * callback's job is to refetch, not to read fields off the event. */
+ * callback's job is to refetch, not to read fields off the event. A burst
+ * of changes is collapsed into one call with the last event's op and id.
+ * The table must be listed in TABLE_PERMISSION_MAP in
+ * imperium-api/core/realtime.py, or no events are ever sent for it. */
 export function useLiveTable(table: string, onChange: (op: string, id: string) => void) {
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+  }, []);
+
   useLiveSubscription(`table_change:${table}`, (event) => {
-    if (event.type === "table_change") onChange(event.op, event.id);
+    if (event.type !== "table_change") return;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      onChangeRef.current(event.op, event.id);
+    }, LIVE_TABLE_DEBOUNCE_MS);
   });
 }
 
