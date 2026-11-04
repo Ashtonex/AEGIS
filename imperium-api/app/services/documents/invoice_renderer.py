@@ -112,8 +112,13 @@ def draw_verification_strip(canv: Any, verification: Dict[str, Any], w: float) -
     canv.drawString(44, 66, verification["code"])
     canv.setFont("Helvetica", 7)
     canv.setFillColor(colors.HexColor("#475569"))
-    canv.drawString(44, 55, f"Verify this document: scan the QR code or visit {verification['url']}")
-    canv.drawString(44, 47, "The page confirms the issuer, the details below and that this exact file has not been altered.")
+    # The QR may open a richer page (a PO's procurement notice); the printed
+    # link is always the plain verification page.
+    canv.drawString(44, 55, f"Verify this document: scan the QR code or visit {verification.get('verify_url') or verification['url']}")
+    if verification.get("notice"):
+        canv.drawString(44, 47, f"Procurement notice {verification['notice']}: the QR code also shows its live status on our tender board.")
+    else:
+        canv.drawString(44, 47, "The page confirms the issuer, the details below and that this exact file has not been altered.")
 
 
 class NumberedCanvas(canvas.Canvas):

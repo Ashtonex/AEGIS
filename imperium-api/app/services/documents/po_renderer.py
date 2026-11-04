@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from xml.sax.saxutils import escape
 
-from app.services.documents.branding import company_detail_lines
+from app.services.documents.branding import PROCUREMENT_EMAIL, company_detail_lines
 from app.services.documents.invoice_renderer import NumberedCanvas, number_to_words_usd
 
 LOGO_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "assets", "logo.png"))
@@ -41,6 +41,7 @@ STATUS_STAMPS = {
 }
 
 DEFAULT_TERMS = [
+    f"Send delivery notes, invoices and any query about this order to {PROCUREMENT_EMAIL}.",
     "Quote this purchase order number on every delivery note, invoice and statement. Invoices without it cannot be processed.",
     "Deliver to the address above by the required date. Advise Six Nine Construction immediately of any delay.",
     "Goods are received subject to inspection; items that do not match this order or its specification may be rejected.",
@@ -206,6 +207,8 @@ def render_purchase_order_pdf(
     ]
     if po.get("requisition_number"):
         detail_rows.append(("Requisition", _text(po.get("requisition_number"))))
+    if po.get("notice_reference"):
+        detail_rows.append(("Public notice", _text(po.get("notice_reference"))))
 
     parties = Table([[_box(st, "Supplier", supplier_rows), _box(st, "Order details", detail_rows)]], colWidths=[262, 261])
     parties.setStyle(TableStyle([

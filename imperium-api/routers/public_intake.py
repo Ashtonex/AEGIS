@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -300,33 +300,58 @@ def _receipt(reference: str, message: str) -> dict[str, Any]:
 @limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
 @_public_cache("tenders")
 async def list_public_tenders(request: Request, db: AsyncSession = Depends(get_db)):
-    """Return only live tender details that are suitable for public publication."""
+    """SNC's own procurement notices (RFQs and purchase orders it has issued)
+    with their live status. Title, project, dates and status only - never
+    amounts, supplier names or internal notes."""
+    from app.services import procurement_notices
+
     try:
         org_id = await _public_org_id(db)
-        result = await db.execute(
-            text("""
-            SELECT id, tender_name, stage, submission_deadline
-            FROM crm.tenders
-            WHERE organization_id = :org_id
-              AND is_deleted = false
-              AND lower(trim(COALESCE(stage, ''))) IN ('open', 'published')
-              AND (submission_deadline IS NULL OR submission_deadline >= NOW())
-            ORDER BY submission_deadline ASC NULLS LAST, created_at DESC
-        """),
-            {"org_id": org_id},
-        )
-        tenders = [dict(row._mapping) for row in result]
+        notices = await procurement_notices.list_public(db, org_id)
         return {
             "success": True,
-            "data": tenders,
-            "message": "Published tenders fetched.",
-            "meta": {"total": len(tenders)},
+            "data": notices,
+            "message": "Procurement notices fetched.",
+            "meta": {"total": len(notices)},
         }
     except SQLAlchemyError:
         logger.exception("public_intake_db_error")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Unable to fetch published tenders.",
+            detail="Unable to fetch procurement notices.",
+        )
+
+
+@router.get("/tenders/{reference}")
+@limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
+@_public_cache("tender")
+async def get_public_tender(
+    request: Request,
+    reference: str,
+    code: Optional[str] = Query(default=None, max_length=40),
+    db: AsyncSession = Depends(get_db),
+):
+    """One procurement notice by its public reference (SNC-PN-2026-0001).
+    With ?code= (the AEGIS code on a purchase order, carried by its QR),
+    code_matches says whether that code was issued for an order under this
+    notice."""
+    from app.services import procurement_notices
+
+    if len(reference) > 40:
+        raise HTTPException(status_code=404, detail="Procurement notice not found.")
+    try:
+        org_id = await _public_org_id(db)
+        notice = await procurement_notices.get_public(db, org_id, reference)
+        if not notice:
+            raise HTTPException(status_code=404, detail="Procurement notice not found.")
+        if code:
+            notice["code_matches"] = await procurement_notices.code_belongs_to_notice(db, org_id, reference, code)
+        return {"success": True, "data": notice, "message": "Procurement notice fetched.", "meta": {}}
+    except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to fetch the procurement notice.",
         )
 
 

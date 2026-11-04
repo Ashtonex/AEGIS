@@ -1955,6 +1955,15 @@ export async function updateWebsiteContent(payload: Record<string, unknown>): Pr
   });
 }
 
+/** Show or hide a procurement notice on the public tender board (hiding needs a reason). */
+export async function setProcurementNoticeVisibility(reference: string, published: boolean, reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/notices/${encodeURIComponent(reference)}/visibility`, {
+    method: "POST",
+    body: JSON.stringify({ published, reason: reason || null }),
+    allowFallback: false,
+  });
+}
+
 /** Six Nine branded purchase order PDF (unissued POs carry a DRAFT/APPROVED stamp). */
 export async function downloadPurchaseOrderPdf(poId: string): Promise<Blob> {
   const url = resolveApiUrl(`/api/v1/procurement/purchase-orders/${encodeURIComponent(poId)}/pdf`);

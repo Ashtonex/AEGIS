@@ -1573,6 +1573,7 @@ async def list_rfqs(
     rows = await db.execute(
         text("""
         SELECT rfq.*, pr.requisition_number, p.name AS project_name,
+               notice.reference AS notice_reference, notice.is_published AS notice_published,
                COALESCE((
                  SELECT jsonb_agg(
                    jsonb_build_object(
@@ -1600,6 +1601,7 @@ async def list_rfqs(
         FROM procurement.rfqs rfq
         LEFT JOIN procurement.purchase_requisitions pr ON pr.id=rfq.requisition_id AND pr.organization_id=rfq.organization_id
         LEFT JOIN projects.projects p ON p.id=rfq.project_id AND p.organization_id=rfq.organization_id
+        LEFT JOIN procurement.public_notices notice ON notice.rfq_id=rfq.id AND notice.organization_id=rfq.organization_id
         WHERE rfq.organization_id=:org_id AND rfq.is_deleted=false
           AND (CAST(:status AS varchar) IS NULL OR rfq.status=CAST(:status AS varchar))
           AND (CAST(:project_id AS uuid) IS NULL OR rfq.project_id=CAST(:project_id AS uuid))
@@ -1873,6 +1875,7 @@ async def list_purchase_orders(
     rows = await db.execute(
         text("""
         SELECT po.*, s.supplier_name, p.name AS project_name,
+               notice.reference AS notice_reference, notice.is_published AS notice_published,
                (SELECT u.full_name FROM core.users u WHERE u.id=po.finance_signed_off_by) AS finance_signed_off_by_name,
                (SELECT u.full_name FROM core.users u WHERE u.id=po.director_signed_off_by) AS director_signed_off_by_name,
                COALESCE((
@@ -1898,6 +1901,12 @@ async def list_purchase_orders(
         FROM procurement.purchase_orders po
         JOIN procurement.suppliers s ON s.id=po.supplier_id AND s.organization_id=po.organization_id
         LEFT JOIN projects.projects p ON p.id=po.project_id AND p.organization_id=po.organization_id
+        LEFT JOIN LATERAL (
+          SELECT n.reference, n.is_published FROM procurement.public_notices n
+          WHERE n.organization_id=po.organization_id
+            AND (n.purchase_order_id=po.id OR (po.rfq_id IS NOT NULL AND n.rfq_id=po.rfq_id))
+          LIMIT 1
+        ) notice ON true
         WHERE po.organization_id=:org_id AND po.is_deleted=false
           AND (CAST(:status AS varchar) IS NULL OR po.status=CAST(:status AS varchar))
           AND (CAST(:supplier_id AS uuid) IS NULL OR po.supplier_id=CAST(:supplier_id AS uuid))
@@ -1953,9 +1962,18 @@ async def download_purchase_order_pdf(
     from app.services.documents import attestation
     from app.services.documents.po_renderer import render_purchase_order_pdf
 
+    from app.services import procurement_notices
+
     # Every copy issued is signed and registered, so it can be verified publicly.
+    # Once the order has a public notice, its QR opens that notice (live status
+    # on the tender board, plus the code check).
     verification = attestation.new_verification()
-    pdf = await run_in_threadpool(render_purchase_order_pdf, dict(row), None, verification)
+    po_data = dict(row)
+    notice = await procurement_notices.reference_for_po(db, user["org_id"], row["id"])
+    if notice and notice["is_published"]:
+        verification = attestation.notice_verification(verification, notice["reference"])
+        po_data["notice_reference"] = notice["reference"]
+    pdf = await run_in_threadpool(render_purchase_order_pdf, po_data, None, verification)
     slug = "".join(c for c in str(row["po_number"] or "purchase-order") if c.isalnum() or c in "-_") or "purchase-order"
     filename = f"SNC_Purchase_Order_{slug}.pdf"
     supplier = row["supplier"] or {}
@@ -1968,6 +1986,52 @@ async def download_purchase_order_pdf(
     )
     await db.commit()
     return attestation.signed_pdf_response(pdf, filename, verification)
+
+
+# ─── Public procurement notices ──────────────────────────────────────────────
+# Notices are created by triggers (migration 283) when an RFQ or PO is issued;
+# staff can only take one off the public board, or put it back.
+
+
+class NoticeVisibilityPayload(Payload):
+    published: bool
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/notices/{reference}/visibility")
+async def set_notice_visibility(
+    reference: str,
+    payload: NoticeVisibilityPayload,
+    user: dict = Depends(require_any_permission("procurement.po.issue", "procurement.rfq.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show or hide a procurement notice on the public tender board. Hiding
+    needs a reason; it is kept with the notice."""
+    reason = (payload.reason or "").strip() or None
+    if not payload.published and not reason:
+        raise HTTPException(status_code=422, detail="Say why this notice is being taken off the public board.")
+    row = (
+        await db.execute(
+            text("""
+                UPDATE procurement.public_notices
+                SET is_published = CAST(:published AS boolean),
+                    hidden_reason = CASE WHEN CAST(:hide AS boolean) THEN CAST(:reason AS text) END,
+                    hidden_by = CASE WHEN CAST(:hide AS boolean) THEN CAST(:user_id AS uuid) END,
+                    hidden_at = CASE WHEN CAST(:hide AS boolean) THEN now() END,
+                    updated_at = now()
+                WHERE organization_id = :org_id AND reference = :reference
+                RETURNING reference, is_published, hidden_reason
+            """),
+            {"published": payload.published, "hide": not payload.published, "reason": reason,
+             "user_id": user.get("user_id") or user.get("sub"), "org_id": user["org_id"],
+             "reference": reference.strip().upper()},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Procurement notice not found.")
+    await db.commit()
+    # The public board caches for 60 seconds, so the change shows within a minute.
+    return ok(dict(row), "Notice shown on the tender board." if payload.published else "Notice hidden from the tender board.")
 
 
 # ─── Procurement plans ───────────────────────────────────────────────────────

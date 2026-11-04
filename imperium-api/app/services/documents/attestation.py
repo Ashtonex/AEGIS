@@ -82,6 +82,21 @@ def new_verification() -> Dict[str, str]:
     return {"code": code, "url": verification_url(code)}
 
 
+def notice_verification(verification: Dict[str, str], notice_reference: str) -> Dict[str, str]:
+    """Point a purchase order's QR at its public procurement notice, which
+    shows the order's live status and checks the code; the printed link stays
+    the plain verification page."""
+    from urllib.parse import quote
+
+    base = settings.PUBLIC_APP_URL.strip().rstrip("/")
+    return {
+        **verification,
+        "url": f"{base}/tenders/{quote(notice_reference)}?code={quote(verification['code'])}",
+        "verify_url": verification["url"],
+        "notice": notice_reference,
+    }
+
+
 async def attest_issue(
     db: AsyncSession,
     user: Dict[str, Any],
