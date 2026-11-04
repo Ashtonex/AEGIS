@@ -147,7 +147,6 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
     }
   );
 
-  useLiveTable("procurement.procurement_orders", () => void load());
   useLiveTable("procurement.purchase_requisitions", () => void load());
   useLiveTable("procurement.purchase_orders", () => void load());
   useLiveTable("procurement.rfqs", () => void load());

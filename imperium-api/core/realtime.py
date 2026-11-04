@@ -11,7 +11,7 @@ Two independent signal types share this module:
   pg_notify caps payloads at 8000 bytes and several tables carry
   jsonb/text columns that would blow past that on some rows) delivered to
   every connection whose organization matches and whose granted
-  permissions include that table's mapped `<resource>.read`. The client
+  permissions include any of that table's mapped read keys. The client
   refetches the affected resource itself over the normal REST path it
   already uses - this is an invalidation signal, not a data stream.
 
@@ -36,31 +36,71 @@ from core.logging import logger
 NOTIFICATIONS_CHANNEL = "notifications_channel"
 LIVE_CHANGES_CHANNEL = "live_changes"
 
-# schema.table -> the permission resource prefix that gates read access to
-# it (permission_key = f"{resource}.read", matching require_resource_permission
-# exactly). Only tables listed here participate in the generic broadcast -
-# every entry corresponds to a live_change_notify trigger from migration 075.
-TABLE_PERMISSION_MAP: dict[str, str] = {
-    "finance.quotations": "quotations",
-    "crm.opportunities": "crm.opportunities",
-    "crm.leads": "crm_leads",
-    "crm.contacts": "crm_contacts",
-    "crm.activities": "crm_activities",
-    "crm.organizations": "crm_organizations",
-    "core.internal_messages": "internal_messages",
-    "core.documents": "documents",
-    "core.compliance_items": "compliance_items",
-    "projects.projects": "projects",
-    "projects.hse_incidents": "hse_incidents",
-    "projects.daily_site_reports": "site_operations.daily_report",
-    "fleet.fleet": "fleet",
-    "fleet.equipment_assets": "equipment_assets",
-    "fleet.maintenance_schedules": "maintenance_schedules",
-    "procurement.inventory_items": "inventory_items",
-    "procurement.suppliers": "supplier_records",
-    "finance.budgets": "budgets",
-    "finance.department_transfers": "finance.transfer",
-    "finance.statutory_liabilities": "finance.statutory",
+# schema.table -> the read permission key(s) that gate it: a connection
+# receives that table's events if it holds ANY of them - the same keys the
+# REST endpoints serving that table check with require_permission. Only
+# tables listed here are relayed; every entry needs a live_change_notify
+# trigger (migrations 075 and later), and a table with a trigger but no
+# entry here has its events silently dropped.
+TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
+    "finance.quotations": ("quotations.read",),
+    "crm.opportunities": ("crm.opportunities.read",),
+    "crm.leads": ("crm_leads.read",),
+    "crm.contacts": ("crm_contacts.read",),
+    "crm.activities": ("crm_activities.read",),
+    "crm.organizations": ("crm_organizations.read",),
+    "core.internal_messages": ("internal_messages.read",),
+    "core.documents": ("documents.read",),
+    "core.compliance_items": ("compliance_items.read",),
+    "projects.projects": ("projects.read",),
+    "projects.hse_incidents": ("hse_incidents.read",),
+    "projects.daily_site_reports": ("site_operations.daily_report.read",),
+    "fleet.fleet": ("fleet.read",),
+    "fleet.equipment_assets": ("equipment_assets.read",),
+    "fleet.maintenance_schedules": ("maintenance_schedules.read",),
+    "procurement.inventory_items": ("inventory_items.read",),
+    "procurement.suppliers": ("supplier_records.read",),
+    "finance.budgets": ("budgets.read",),
+    "finance.department_transfers": ("finance.transfer.read",),
+    "finance.statutory_liabilities": ("finance.statutory.read",),
+    # General ledger (triggers from migrations 180-182)
+    "finance.journal_entries": ("finance.gl.read",),
+    "finance.accounting_periods": ("finance.gl.read", "finance.period.read"),
+    "finance.chart_of_accounts": ("finance.gl.read", "finance.coa.read"),
+    # Site day / project hires (site_day.py SITE_DAY_READ)
+    "projects.site_day_attendance": (
+        "site_operations.daily_report.read",
+        "site_operations.labour_register.manage",
+        "site_operations.daily_targets.manage",
+        "workforce.project_hires.manage",
+    ),
+    "projects.site_day_briefings": (
+        "site_operations.daily_report.read",
+        "site_operations.labour_register.manage",
+        "site_operations.daily_targets.manage",
+    ),
+    "finance.site_workers": (
+        "site_operations.daily_report.read",
+        "site_operations.labour_register.manage",
+        "workforce.project_hires.manage",
+        "finance.payroll.read",
+    ),
+    # Fleet, procurement, stores, commitments (triggers from migration 285)
+    "fleet.external_hire_agreements": ("fleet.external_hire.read",),
+    "fleet.fuel_transactions": ("fleet.read",),
+    "fleet.maintenance_work_orders": ("fleet.read",),
+    "fleet.utilization_logs": ("fleet.read",),
+    "fleet.operator_profiles": ("fleet.operator_profiles.read",),
+    "fleet.plant_requests": ("fleet.plant_requests.read", "fleet.read"),
+    "procurement.purchase_orders": ("procurement.po.read",),
+    "procurement.purchase_requisitions": ("procurement.requisition.read",),
+    "procurement.rfqs": ("procurement.rfq.read",),
+    "procurement.goods_received_notes": ("procurement.grn.read",),
+    "procurement.supplier_invoices": ("procurement.invoice.read",),
+    "procurement.stores": ("inventory_items.read",),
+    "procurement.stock_ledger": ("inventory_items.read",),
+    "finance.commitments": ("finance.commitment.read",),
+    "finance.ccb_monitor_findings": ("finance.ccb_findings.read",),
 }
 
 
@@ -99,12 +139,11 @@ class ConnectionManager:
             sockets = list(self._by_user.get(user_id, ()))
         await _send_all(sockets, payload)
 
-    async def broadcast_table_change(self, org_id: str, resource: str, payload: dict[str, Any]) -> None:
-        permission_key = f"{resource}.read"
+    async def broadcast_table_change(self, org_id: str, permission_keys: tuple[str, ...], payload: dict[str, Any]) -> None:
         async with self._lock:
             targets = [
                 ws for ws, meta in self._meta.items()
-                if meta["org_id"] == org_id and permission_key in meta["permissions"]
+                if meta["org_id"] == org_id and not meta["permissions"].isdisjoint(permission_keys)
             ]
         await _send_all(targets, payload)
 
@@ -203,13 +242,13 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
     if channel == LIVE_CHANGES_CHANNEL:
         table = data.get("table")
         org_id = data.get("organization_id")
-        resource = TABLE_PERMISSION_MAP.get(table)
-        if not (table and org_id and resource):
+        permission_keys = TABLE_PERMISSION_MAP.get(table)
+        if not (table and org_id and permission_keys):
             return
         asyncio.ensure_future(
             manager.broadcast_table_change(
                 str(org_id),
-                resource,
+                permission_keys,
                 {"type": "table_change", "table": table, "op": data.get("op"), "id": data.get("id")},
             )
         )
