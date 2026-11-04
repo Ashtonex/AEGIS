@@ -445,6 +445,18 @@ export async function createCashbookEntryFromBankLine(lineId: string, payload: {
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/create-cashbook-entry`, { method: "POST", body: JSON.stringify(payload), allowFallback: false });
 }
 
+/** AEGIS-signed payment receipt PDF for a cashbook receipt (money received). */
+export async function downloadPaymentReceiptPdf(transactionId: string): Promise<Blob> {
+  const url = resolveApiUrl(`/api/v1/financial-performance/cashbook/${encodeURIComponent(transactionId)}/receipt`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: "GET", headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, body?.detail || body?.error?.message || "Could not generate the payment receipt.");
+  }
+  return response.blob();
+}
+
 export async function allocateFinanceReceipt(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/receipts/allocate", {
     method: "POST",

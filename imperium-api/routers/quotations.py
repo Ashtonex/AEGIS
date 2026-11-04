@@ -3761,12 +3761,35 @@ async def download_quotation_revision_document(
         )
         await db.commit()
         return attestation.signed_pdf_response(content, filename, verification)
+    from app.services.documents import attestation
+
     breakdown = qws.commercial_breakdown(item_id, revision["snapshot"])
-    content = render_internal_estimate_xlsx(revision=revision, client_name=quotation.get("client_name"), breakdown=breakdown)
+    verification = attestation.new_verification()
+    content = render_internal_estimate_xlsx(
+        revision=revision, client_name=quotation.get("client_name"), breakdown=breakdown, verification=verification,
+    )
+    snapshot = revision["snapshot"]
+    filename = f"{ref}_Rev{revision['revision_number']}_INTERNAL.xlsx"
+    await attestation.attest_issue(
+        db, user, verification=verification, pdf=content,
+        document_type="internal_estimate_workbook",
+        document_number=f"{snapshot.get('reference_number') or 'QUOTATION'} Rev {revision['revision_number']}",
+        title=f"Internal estimate: {snapshot.get('project_title') or ''}".rstrip(": "),
+        entity_type="finance.quotation", entity_id=quotation["id"],
+        project_id=quotation.get("project_id"),
+        counterparty=quotation.get("client_name"),
+        currency=str(snapshot.get("currency") or revision.get("currency") or "USD").upper(),
+        document_status=quotation.get("status"),
+        filename=filename,
+    )
+    await db.commit()
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{ref}_Rev{revision["revision_number"]}_INTERNAL.xlsx"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-AEGIS-Verification-Code": verification["code"],
+        },
     )
 
 

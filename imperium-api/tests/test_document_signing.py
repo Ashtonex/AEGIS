@@ -87,3 +87,63 @@ def test_every_pdf_route_signs_what_it_issues():
                 if "db=db" not in call or "user=user" not in call:
                     unsigned.append(f"{path.name}: {call}")
     assert unsigned == []
+
+
+RECEIPT = {
+    "transaction_number": "CB-000231", "transaction_date": date(2026, 11, 3), "amount": "73508.31",
+    "currency": "USD", "counterparty_name": "Gold Coast Properties (Pvt) Ltd", "project_name": "Gold Coast Villas",
+    "payment_method": "bank_transfer", "reference": "GCP-TT-8841", "account_name": "BancABC USD Main",
+    "description": "Deposit for Phase 1", "recorded_by_name": "Cosmas", "issued_by_name": "Nyasha", "is_posted": True,
+}
+
+
+def test_payment_receipt_is_signed_and_lists_what_it_settles():
+    from app.services.documents.receipt_renderer import FISCAL_NOTE, render_payment_receipt_pdf
+
+    allocations = [{"claim_number": "PC-007", "allocated_amount": "60000", "fiscal_invoice_number": "FDMS-00012345"}]
+    text = _text(render_payment_receipt_pdf(RECEIPT, allocations, VERIFICATION))
+    _assert_signed(text)
+    _assert_websites(text)
+    assert "PAYMENT RECEIPT" in text and "CB-000231" in text and "$73,508.31" in text
+    assert "Progress claim PC-007" in text and "FDMS-00012345" in text
+    # The part not allocated to a claim is shown, so the lines add up to the amount received.
+    assert "$13,508.31" in text and "held on account" in text
+    assert "not a fiscal tax" in " ".join(text.split()) and FISCAL_NOTE.startswith("This receipt")
+
+
+def test_unallocated_receipt_shows_its_description():
+    from app.services.documents.receipt_renderer import render_payment_receipt_pdf
+
+    text = _text(render_payment_receipt_pdf(RECEIPT, [], VERIFICATION))
+    assert "Deposit for Phase 1" in text and "held on account" not in text
+
+
+def test_unposted_receipt_is_stamped():
+    from app.services.documents.receipt_renderer import UNPOSTED_STAMP, render_payment_receipt_pdf
+
+    assert UNPOSTED_STAMP in _text(render_payment_receipt_pdf({**RECEIPT, "is_posted": False}))
+
+
+def test_receipt_route_requires_cash_read_permission():
+    from fastapi.routing import APIRoute
+
+    from routers import financial_performance
+
+    route = next(r for r in financial_performance.router.routes
+                 if isinstance(r, APIRoute) and r.path == "/cashbook/{transaction_id}/receipt")
+    assert "GET" in route.methods
+    assert any("require_permission" in d.call.__qualname__ for d in route.dependant.dependencies)
+
+
+def test_invoice_notes_match_the_invoice_type():
+    from app.services.documents.invoice_renderer import default_invoice_notes
+
+    tax = default_invoice_notes("TAX INVOICE", "USD230", "SNC-QT-2026-014", 40)
+    assert tax[0] == "This tax invoice covers the 40% deposit on the quoted works, as set out in Quotation SNC-QT-2026-014."
+    assert not any("fiscal tax invoice will be issued" in n for n in tax)
+
+    proforma = default_invoice_notes("PROFORMA INVOICE", "USD231", "—", 0)
+    assert proforma[0] == "This proforma invoice covers the works and services listed above."
+    assert any("fiscal tax invoice will be issued" in n for n in proforma)
+    assert not any("deposit" in n for n in proforma)
+    assert default_invoice_notes("PROFORMA INVOICE", "USD232", "Q1", 12.5)[0].startswith("This proforma invoice covers the 12.5% deposit")

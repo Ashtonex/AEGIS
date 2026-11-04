@@ -67,7 +67,7 @@ export function FileHashCheck({ expectedHash }: { expectedHash: string }) {
         <h3 className="font-bold text-[var(--dxl-paper)]">Check your copy of the file</h3>
       </div>
       <p className="text-sm text-[var(--dxl-slate-light)] mb-4">
-        Choose the PDF you received. It is checked on this device and never uploaded. A match proves the file is exactly
+        Choose the file you received (PDF, or Excel for workbooks). It is checked on this device and never uploaded. A match proves the file is exactly
         the one AEGIS issued, unaltered.
       </p>
       <label
@@ -78,8 +78,8 @@ export function FileHashCheck({ expectedHash }: { expectedHash: string }) {
           check(event.dataTransfer.files?.[0]);
         }}
       >
-        <input type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(event) => check(event.target.files?.[0])} />
-        {busy ? "Checking…" : "Drop the PDF here or click to choose it"}
+        <input type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" className="sr-only" onChange={(event) => check(event.target.files?.[0])} />
+        {busy ? "Checking…" : "Drop the file here or click to choose it"}
       </label>
       {state && (
         <div

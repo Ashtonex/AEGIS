@@ -92,8 +92,9 @@ async def attest_issue(
     document_number: str,
     **record: Any,
 ) -> Dict[str, Any]:
-    """attest() for a PDF the signed-in user is issuing now: records them as
-    the issuer. The caller commits."""
+    """attest() for a document the signed-in user is issuing now: records them
+    as the issuer. ``pdf`` is the exact bytes issued - a PDF, or any other file
+    such as an .xlsx workbook. The caller commits."""
     issued_by = user.get("user_id") or user.get("sub")
     issued_by_name = None
     if issued_by:

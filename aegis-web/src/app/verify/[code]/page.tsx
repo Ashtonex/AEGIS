@@ -46,6 +46,8 @@ const DOCUMENT_TYPES: Record<string, string> = {
   quotation: "Quotation",
   leave_record: "Leave record",
   management_accounts_pack: "Management accounts pack",
+  payment_receipt: "Payment receipt",
+  internal_estimate_workbook: "Internal estimate workbook (Excel)",
 };
 
 // Who the document was issued to: a supplier for orders, a client for sales documents.
@@ -57,6 +59,8 @@ const COUNTERPARTY_LABELS: Record<string, string> = {
   quotation: "Client",
   leave_record: "Employee",
   management_accounts_pack: "Issued to",
+  payment_receipt: "Received from",
+  internal_estimate_workbook: "Client",
 };
 
 async function lookup(code: string): Promise<Verification | null | "error"> {

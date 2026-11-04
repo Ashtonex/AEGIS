@@ -200,6 +200,22 @@ class ClientDocumentTests(unittest.TestCase):
         data = render_internal_estimate_xlsx(revision=rev, client_name="X", breakdown=qws.commercial_breakdown("q", rev["snapshot"]))
         self.assertTrue(data.startswith(b"PK"))
 
+    def test_internal_workbook_carries_the_aegis_code(self):
+        from openpyxl import load_workbook
+
+        verification = {"code": "SNC-ABCD-EFGH-JKMN", "url": "https://sixnineconstruction.com/verify/SNC-ABCD-EFGH-JKMN"}
+        rev = self._revision()
+        data = render_internal_estimate_xlsx(
+            revision=rev, client_name="X", breakdown=qws.commercial_breakdown("q", rev["snapshot"]), verification=verification,
+        )
+        book = load_workbook(io.BytesIO(data))
+        summary = book["Summary"]
+        self.assertEqual(summary["E3"].value, "AEGIS SIGNED DOCUMENT")
+        self.assertEqual(summary["E4"].value, verification["code"])
+        self.assertEqual(summary["E5"].hyperlink.target, verification["url"])
+        self.assertIn(verification["code"], book.properties.description or "")
+        self.assertIn("www.sixnineconstruction.com", summary.oddFooter.left.text)
+
 
 class MaterialsScheduleTests(unittest.TestCase):
     def test_aggregates_only_compatible_units_and_keeps_trace(self):

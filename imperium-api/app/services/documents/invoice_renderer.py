@@ -567,8 +567,9 @@ class SNCInvoicePDFRenderer:
 
         words_formatted = number_to_words_usd(tot_incl)
         banner_right = [
-            Paragraph(f"<b>${tot_incl:,.2f}</b>", ParagraphStyle(name="BnrAmt", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=21, textColor=colors.HexColor("#38BDF8"), alignment=2)),
-            Spacer(1, 1),
+            # leading must clear the 21pt figure, or the amount in words is drawn over it.
+            Paragraph(f"<b>${tot_incl:,.2f}</b>", ParagraphStyle(name="BnrAmt", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=21, leading=25, textColor=colors.HexColor("#38BDF8"), alignment=2)),
+            Spacer(1, 3),
             Paragraph(words_formatted, amount_words_style),
         ]
 
@@ -709,12 +710,9 @@ class SNCInvoicePDFRenderer:
         # -------------------------------------------------------------------------
         # 8. NOTES & CONTACT (EXACT SNC INVOICE FOOTNOTE)
         # -------------------------------------------------------------------------
-        notes_list = data.get("notes") or [
-            f"This proforma invoice covers the {int(deposit_pct) if deposit_pct > 0 else 'full'} deposit on the quoted works, as set out in Quotation {quotation_ref}.",
-            f"Please quote {invoice_number} as the reference on your payment.",
-            "A fiscal tax invoice will be issued on receipt of payment.",
-            "Ordering of materials and mobilisation to site begin on receipt of the full deposit.",
-        ]
+        notes_list = data.get("notes") or default_invoice_notes(
+            invoice_type, invoice_number, quotation_ref, deposit_pct,
+        )
 
         notes_flow = [
             Paragraph("<b>Notes</b>", notes_hdr),
@@ -746,6 +744,27 @@ class SNCInvoicePDFRenderer:
         doc.build(story, canvasmaker=make_canvas)
         self.amount_due = round(tot_incl, 2)
         return True
+
+
+def _pct(value: float) -> str:
+    return f"{int(value)}" if float(value).is_integer() else f"{value:g}"
+
+
+def default_invoice_notes(invoice_type: str, invoice_number: str, quotation_ref: str, deposit_pct: float) -> List[str]:
+    """Standard notes, worded for the kind of invoice actually issued."""
+    kind = str(invoice_type or "invoice").strip().lower()
+    is_proforma = "proforma" in kind
+    covers = f"the {_pct(deposit_pct)}% deposit on the quoted works" if deposit_pct > 0 else "the works and services listed above"
+    source = f", as set out in Quotation {quotation_ref}" if quotation_ref and quotation_ref != "—" else ""
+    notes = [
+        f"This {kind} covers {covers}{source}.",
+        f"Please quote {invoice_number} as the reference on your payment.",
+    ]
+    if is_proforma:
+        notes.append("A fiscal tax invoice will be issued on receipt of payment.")
+    if deposit_pct > 0:
+        notes.append("Ordering of materials and mobilisation to site begin on receipt of the full deposit.")
+    return notes
 
 
 def render_invoice_pdf_bytes(data: Dict[str, Any], verification: Optional[Dict[str, str]] = None) -> bytes:

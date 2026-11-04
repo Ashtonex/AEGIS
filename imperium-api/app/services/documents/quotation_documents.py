@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from app.services.documents.branding import company_detail_lines
+from app.services.documents.branding import WEBSITES_LINE, company_detail_lines
 from app.services.documents.invoice_renderer import NumberedCanvas
 from app.services.documents.po_renderer import NAVY, RULE, ZEBRA, _date, _money, _qty, _styles, _text
 from app.services.quotations.calculator import quotation_item_qty_rate
@@ -313,9 +313,20 @@ def render_client_quotation_pdf(
     return buffer.getvalue()
 
 
-def render_internal_estimate_xlsx(*, revision: Dict[str, Any], client_name: Optional[str], breakdown: Dict[str, Any]) -> bytes:
+def render_internal_estimate_xlsx(
+    *,
+    revision: Dict[str, Any],
+    client_name: Optional[str],
+    breakdown: Dict[str, Any],
+    verification: Optional[Dict[str, str]] = None,
+) -> bytes:
     """INTERNAL estimate workbook: cost rates, build-ups and the commercial
-    build-up with markup and margin. Not for the client."""
+    build-up with markup and margin. Not for the client.
+
+    verification: {"code", "url"} from attestation - the Summary sheet, the
+    printed footer and the file properties carry the AEGIS code and link. The
+    signature covers the exact bytes issued, so a copy re-saved in Excel no
+    longer matches the file check (the code still shows the record)."""
     import xlsxwriter
 
     snapshot = revision["snapshot"]
@@ -356,6 +367,28 @@ def render_internal_estimate_xlsx(*, revision: Dict[str, Any], client_name: Opti
     summary.set_column(0, 0, 58)
     summary.set_column(1, 1, 18)
     summary.set_column(2, 2, 48)
+    reference = f"{snapshot.get('reference_number') or ''} Rev {revision['revision_number']}".strip()
+    footer = f"Six Nine Construction · {WEBSITES_LINE}"
+    if verification:
+        sig_head = book.add_format({"bold": True, "font_color": "#0B2B39", "top": 1, "left": 1, "right": 1})
+        sig_code = book.add_format({"bold": True, "font_size": 13, "font_color": "#0B2B39", "left": 1, "right": 1})
+        sig_note = book.add_format({"font_color": "#475569", "font_size": 8, "text_wrap": True, "bottom": 1, "left": 1, "right": 1})
+        sig_link = book.add_format({"font_color": "#0563C1", "underline": 1, "font_size": 9, "left": 1, "right": 1})
+        summary.set_column(4, 4, 62)
+        summary.write(2, 4, "AEGIS SIGNED DOCUMENT", sig_head)
+        summary.write(3, 4, verification["code"], sig_code)
+        summary.write_url(4, 4, verification["url"], sig_link, string=f"Verify: {verification['url']}")
+        summary.write(5, 4, "Confirms the issuer and the details on record. The file check matches only "
+                            "this workbook exactly as downloaded, not a copy re-saved in Excel.", sig_note)
+        summary.set_row(5, 36)
+        footer = f"{footer} · AEGIS {verification['code']}"
+    book.set_properties({
+        "title": f"Internal estimate {reference}",
+        "author": "Six Nine Construction (Pvt) Ltd",
+        "company": "Six Nine Construction (Pvt) Ltd",
+        "comments": (f"AEGIS signed document {verification['code']}: {verification['url']}" if verification
+                     else "INTERNAL - contains costs and margins."),
+    })
 
     boq = book.add_worksheet("BOQ costs")
     boq.write_row(0, 0, ["Line id", "Section", "Item", "Type", "Description", "Unit", "Qty", "Cost rate", "Cost amount", "Rate source"], head)
@@ -388,5 +421,7 @@ def render_internal_estimate_xlsx(*, revision: Dict[str, Any], client_name: Opti
             r += 1
     build.set_column(1, 1, 50)
     build.set_column(3, 3, 32)
+    for sheet in (summary, boq, build):
+        sheet.set_footer(f"&L&8{footer.replace('&', '&&')}&R&8Page &P of &N")
     book.close()
     return buffer.getvalue()
