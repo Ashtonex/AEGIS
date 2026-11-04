@@ -88,19 +88,30 @@ def derive_status(
     return "dormant" if stale else "evaluating"
 
 
-NOTICE_SQL = """
-    SELECT n.id, n.reference, n.is_published, n.hidden_reason, n.published_at, n.last_activity_at,
-           n.rfq_id, n.purchase_order_id,
+def notice_query(
+    *,
+    where: str = "n.organization_id = :org_id",
+    select: str = "",
+    source: str = "procurement.public_notices n",
+    joins: str = "",
+) -> str:
+    """SELECT of notices with everything serialize() needs. select / source /
+    joins let callers add columns or start from another table joined to n."""
+    return f"""
+    SELECT {select}n.id, n.organization_id, n.reference, n.is_published, n.hidden_reason, n.published_at,
+           n.last_activity_at, n.announce, n.rfq_id, n.purchase_order_id,
            r.status AS rfq_status, r.closing_date, r.title AS rfq_title, r.description AS rfq_description,
+           r.requisition_id,
            po.title AS po_title,
            COALESCE(rp.name, pp.name) AS project_name,
            COALESCE(pos.statuses, ARRAY[]::text[]) AS po_statuses,
            pos.awarded_at
-    FROM procurement.public_notices n
+    FROM {source}
     LEFT JOIN procurement.rfqs r ON r.id = n.rfq_id AND r.is_deleted = false
     LEFT JOIN procurement.purchase_orders po ON po.id = n.purchase_order_id AND po.is_deleted = false
     LEFT JOIN projects.projects rp ON rp.id = r.project_id
     LEFT JOIN projects.projects pp ON pp.id = po.project_id
+    {joins}
     LEFT JOIN LATERAL (
         SELECT array_agg(x.status::text ORDER BY x.issued_at) AS statuses, min(x.issued_at) AS awarded_at
         FROM procurement.purchase_orders x
@@ -108,9 +119,12 @@ NOTICE_SQL = """
           AND x.status NOT IN ('draft', 'approved')
           AND (x.id = n.purchase_order_id OR (n.rfq_id IS NOT NULL AND x.rfq_id = n.rfq_id))
     ) pos ON true
-    WHERE n.organization_id = :org_id
+    WHERE {where}
       AND (r.id IS NOT NULL OR po.id IS NOT NULL)
 """
+
+
+NOTICE_SQL = notice_query()
 
 
 def serialize(row: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -142,6 +156,7 @@ def serialize(row: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, 
         "last_activity_at": row.get("last_activity_at"),
         "accepting_quotations": status == "open",
         "contact_email": PROCUREMENT_EMAIL,
+        "portal_path": f"/portal/supplier?notice={row['reference']}" if is_rfq else None,
     }
 
 
@@ -154,19 +169,41 @@ async def list_public(db: AsyncSession, org_id: str, limit: int = 200) -> list[D
 
 
 async def get_public(db: AsyncSession, org_id: str, reference: str) -> Optional[Dict[str, Any]]:
+    """One published notice, with the items an RFQ asks suppliers to price
+    (description, quantity, unit - never the estimated cost)."""
     row = (
         await db.execute(
             text(NOTICE_SQL + " AND n.is_published = true AND n.reference = :reference"),
             {"org_id": org_id, "reference": reference.strip().upper()},
         )
     ).mappings().first()
-    return serialize(dict(row)) if row else None
+    if not row:
+        return None
+    notice = serialize(dict(row))
+    notice["items"] = []
+    if row["rfq_id"] and row["requisition_id"]:
+        items = await db.execute(
+            text("""
+                SELECT description, quantity, unit_of_measure AS unit, work_package
+                FROM procurement.requisition_lines
+                WHERE requisition_id = :requisition_id AND organization_id = :org_id AND is_deleted = false
+                ORDER BY created_at, id
+                LIMIT 300
+            """),
+            {"requisition_id": row["requisition_id"], "org_id": org_id},
+        )
+        notice["items"] = [
+            {"description": i["description"], "quantity": float(i["quantity"]) if i["quantity"] is not None else None,
+             "unit": i["unit"], "work_package": i["work_package"]}
+            for i in items.mappings()
+        ]
+    return notice
 
 
 async def code_belongs_to_notice(db: AsyncSession, org_id: str, reference: str, code: str) -> bool:
-    """True when an AEGIS verification code was issued for a purchase order
-    under this notice - so a valid code from an unrelated document is not
-    shown as vouching for it."""
+    """True when an AEGIS verification code was issued for this notice's RFQ
+    document or for a purchase order under it - so a valid code from an
+    unrelated document is not shown as vouching for it."""
     from app.services.documents.attestation import normalize_code
 
     normalized = normalize_code(code)
@@ -178,14 +215,19 @@ async def code_belongs_to_notice(db: AsyncSession, org_id: str, reference: str, 
                 text("""
                     SELECT 1
                     FROM core.document_attestations a
-                    JOIN procurement.purchase_orders po ON po.id = a.entity_id
-                    JOIN procurement.public_notices n
-                      ON n.organization_id = po.organization_id
-                     AND (n.purchase_order_id = po.id OR (po.rfq_id IS NOT NULL AND n.rfq_id = po.rfq_id))
+                    JOIN procurement.public_notices n ON n.organization_id = a.organization_id
+                    LEFT JOIN procurement.purchase_orders po
+                      ON a.entity_type = 'procurement.purchase_order' AND po.id = a.entity_id
                     WHERE a.verification_code = :code
-                      AND a.entity_type = 'procurement.purchase_order'
                       AND a.organization_id = CAST(:org_id AS uuid)
                       AND n.reference = :reference
+                      AND (
+                            -- the RFQ document itself
+                            (a.entity_type = 'procurement.rfq' AND a.entity_id = n.rfq_id)
+                            -- or a purchase order under the notice
+                         OR (po.id IS NOT NULL AND (n.purchase_order_id = po.id
+                                                    OR (po.rfq_id IS NOT NULL AND n.rfq_id = po.rfq_id)))
+                      )
                     LIMIT 1
                 """),
                 {"code": normalized, "org_id": org_id, "reference": reference.strip().upper()},

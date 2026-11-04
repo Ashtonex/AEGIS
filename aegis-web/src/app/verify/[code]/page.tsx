@@ -47,6 +47,8 @@ const DOCUMENT_TYPES: Record<string, string> = {
   leave_record: "Leave record",
   management_accounts_pack: "Management accounts pack",
   payment_receipt: "Payment receipt",
+  request_for_quotation: "Request for quotation",
+  draft_request_for_quotation: "Draft request for quotation (not yet issued)",
   internal_estimate_workbook: "Internal estimate workbook (Excel)",
 };
 
@@ -60,6 +62,8 @@ const COUNTERPARTY_LABELS: Record<string, string> = {
   leave_record: "Employee",
   management_accounts_pack: "Issued to",
   payment_receipt: "Received from",
+  request_for_quotation: "Sent to",
+  draft_request_for_quotation: "Sent to",
   internal_estimate_workbook: "Client",
 };
 

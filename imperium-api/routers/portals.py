@@ -1463,6 +1463,8 @@ async def list_supplier_rfqs(
             rfq.status,
             rfq.issued_at,
             p.name AS project_name,
+            notice.reference AS notice_reference,
+            (rfq.closing_date IS NOT NULL AND rfq.closing_date <= NOW()) AS is_closed,
             COALESCE(
               (
                 SELECT jsonb_agg(
@@ -1524,6 +1526,8 @@ async def list_supplier_rfqs(
         FROM procurement.rfqs rfq
         LEFT JOIN projects.projects p ON p.id = rfq.project_id
          AND p.organization_id = rfq.organization_id
+        LEFT JOIN procurement.public_notices notice ON notice.rfq_id = rfq.id
+         AND notice.organization_id = rfq.organization_id AND notice.is_published = true
         WHERE rfq.organization_id = :org_id
           AND rfq.status = 'issued'
           AND rfq.is_deleted = false
@@ -1550,11 +1554,15 @@ async def submit_supplier_rfq_response(
     rfq = (
         await db.execute(
             text("""
-            SELECT id, project_id, status, title
-            FROM procurement.rfqs
-            WHERE id = :id
-              AND organization_id = :org_id
-              AND is_deleted = false
+            SELECT rfq.id, rfq.project_id, rfq.status, rfq.title, rfq.rfq_number, rfq.closing_date,
+                   (rfq.closing_date IS NOT NULL AND rfq.closing_date <= NOW()) AS is_closed,
+                   notice.reference AS notice_reference
+            FROM procurement.rfqs rfq
+            LEFT JOIN procurement.public_notices notice ON notice.rfq_id = rfq.id
+             AND notice.organization_id = rfq.organization_id
+            WHERE rfq.id = :id
+              AND rfq.organization_id = :org_id
+              AND rfq.is_deleted = false
         """),
             {"id": str(rfq_id), "org_id": user["org_id"]},
         )
@@ -1563,6 +1571,11 @@ async def submit_supplier_rfq_response(
         raise HTTPException(status_code=404, detail="RFQ not found.")
     if rfq.status != "issued":
         raise HTTPException(status_code=409, detail="This RFQ is not open for supplier responses.")
+    if rfq.is_closed:
+        raise HTTPException(
+            status_code=409,
+            detail="This RFQ closed for quotations at its closing date. Contact procurement@sixnineconstruction.com.",
+        )
     if not payload.line_items and payload.quote_document_id is None:
         raise HTTPException(status_code=422, detail="Add line rates or upload a formal quotation before submitting.")
 
@@ -1628,6 +1641,13 @@ async def submit_supplier_rfq_response(
         action_url="/dashboard/procurement?tab=rfqs",
     )
     await db.commit()
+    from app.services.procurement_notice_emails import email_procurement_on_quote
+
+    # Best effort, after the quote is safely saved: procurement@ hears of it too.
+    await email_procurement_on_quote(
+        supplier_name=str(vendor["name"]), rfq_number=str(rfq.rfq_number), rfq_title=str(rfq.title),
+        notice_reference=rfq.notice_reference, total_amount=total_amount,
+    )
     return {"success": True, "data": {"id": str(response_id), "total_amount": total_amount}, "message": "RFQ response submitted.", "meta": {}}
 
 

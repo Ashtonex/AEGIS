@@ -7,7 +7,7 @@ Needs a local database holding the production definitions of core.organizations,
 core.users, projects.projects, procurement.{rfqs, rfq_responses, purchase_orders,
 purchase_order_lines, goods_received_notes, suppliers} and
 core.document_{attestations, signing_keys} (pg_dump --schema-only -t ...), with
-migration 283 NOT yet applied. Refuses to run unless DATABASE_URL is local.
+migrations 283 and 284 NOT yet applied. Refuses to run unless DATABASE_URL is local.
 
     set DATABASE_URL=postgresql://postgres@127.0.0.1:55433/notices_test
     set PSQL=<path to psql.exe>
@@ -115,6 +115,7 @@ async def main() -> None:
 
     # ── Backfill ────────────────────────────────────────────────────────────
     psql_file(MIGRATION)
+    psql_file(ROOT / "migrations" / "284_procurement_notice_emails.sql")  # the notice query reads n.announce
     async with AsyncSessionLocal() as db:
         rows = (await run(db, "SELECT * FROM procurement.public_notices WHERE organization_id = :o ORDER BY published_at", o=ORG)).mappings().all()
         check("backfill: one notice per issued RFQ and direct PO (6)", len(rows) == 6, len(rows))

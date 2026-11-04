@@ -111,7 +111,9 @@ def _styles() -> Dict[str, ParagraphStyle]:
     }
 
 
-def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) -> Table:
+def letterhead(st, title: str, number: str, date_line: str, subtitle: Optional[str] = None) -> Table:
+    """SNC letterhead used by the PO, RFQ and receipt: logo, company details
+    and the document title, number and date on the right."""
     logo: Any = Paragraph("", st["body"])
     if os.path.exists(LOGO_PATH):
         from reportlab.platypus import Image as RLImage
@@ -123,14 +125,14 @@ def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) ->
         Spacer(1, 2),
         *[Paragraph(line, st["co_details"]) for line in company_detail_lines()],
     ]
-    title = [
-        Paragraph("PURCHASE ORDER", st["title"]),
+    heading = [
+        Paragraph(escape(title), st["title"]),
         *([Paragraph(escape(subtitle), st["subtitle"])] if subtitle else []),
         Spacer(1, 3),
-        Paragraph(f"No. {_text(po_number)}", st["number"]),
-        Paragraph(po_date, st["date"]),
+        Paragraph(f"No. {_text(number)}", st["number"]),
+        Paragraph(date_line, st["date"]),
     ]
-    table = Table([[logo, company, title]], colWidths=[52, 300, 171])
+    table = Table([[logo, company, heading]], colWidths=[52, 300, 171])
     table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -139,6 +141,10 @@ def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) ->
         ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
     ]))
     return table
+
+
+def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) -> Table:
+    return letterhead(st, "PURCHASE ORDER", po_number, po_date, subtitle)
 
 
 def _box(st, title: str, rows: List[tuple]) -> List[Any]:

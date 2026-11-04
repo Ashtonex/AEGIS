@@ -119,3 +119,79 @@ def test_routes_are_wired():
     assert {"/tenders", "/tenders/{reference}"} <= public
     route = next(r for r in procurement.router.routes if isinstance(r, APIRoute) and r.path == "/notices/{reference}/visibility")
     assert any("require_any_permission" in d.call.__qualname__ for d in route.dependant.dependencies)
+
+
+# ── Phase 3: supplier emails, RFQ document, portal ─────────────────────────
+NOTICE = {"reference": "SNC-PN-2026-0009", "title": "Willowton PH2", "project": "Willowton Civil",
+          "closing_date": datetime(2026, 11, 11, 22, 0, tzinfo=timezone.utc)}
+
+
+def test_invitation_email_has_portal_link_closing_time_and_no_prices():
+    from app.services.procurement_notice_emails import compose
+
+    subject, html, body = compose("new_notice", None, NOTICE, "Beta Cement")
+    assert "SNC-PN-2026-0009" in subject
+    assert "Dear Beta Cement," in body
+    assert "12 November 2026, 00:00" in body  # closing time in Harare time
+    assert "/portal/supplier?notice=SNC-PN-2026-0009" in body and "/tenders/SNC-PN-2026-0009" in body
+    assert "procurement@sixnineconstruction.com" in html
+
+
+@pytest.mark.parametrize("outcome, phrase", [
+    ("selected", "has been selected"),
+    ("not_selected", "was not selected"),
+    ("cancelled", "has been cancelled"),
+    ("closed", "closed without an award"),
+])
+def test_outcome_emails(outcome, phrase):
+    from app.services.procurement_notice_emails import compose
+
+    subject, html, body = compose("outcome", outcome, NOTICE, None)
+    assert phrase in body and "Dear supplier," in body
+    assert "$" not in body and "USD" not in body  # never an amount
+
+
+def test_supplier_html_escapes_names():
+    from app.services.procurement_notice_emails import compose
+
+    _, html, _ = compose("new_notice", None, {**NOTICE, "title": "<script>x</script>"}, "A & B <Ltd>")
+    assert "<script>" not in html and "A &amp; B &lt;Ltd&gt;" in html
+
+
+def test_rfq_pdf_prints_items_but_never_costs():
+    from app.services.documents.rfq_renderer import STATUS_STAMPS, render_rfq_pdf
+
+    rfq = {"rfq_number": "RFQ-000002", "status": "issued", "title": "Willowton PH2", "notice_reference": "SNC-PN-2026-0009",
+           "closing_date": NOTICE["closing_date"], "project_name": "Willowton Civil"}
+    lines = [{"description": "Cement 42.5N", "quantity": 80, "unit_of_measure": "bag", "estimated_unit_cost": 11.11}]
+    text = " ".join(p.extract_text() for p in pypdf.PdfReader(io.BytesIO(render_rfq_pdf(rfq, lines))).pages)
+    flat = " ".join(text.split())
+    assert "REQUEST FOR QUOTATION" in flat and "Cement 42.5N" in flat and "12 November 2026, 00:00" in flat
+    assert "11.11" not in flat
+    assert "procurement@sixnineconstruction.com" in flat and "/tenders/SNC-PN-2026-0009" in flat
+    closed = " ".join(p.extract_text() for p in pypdf.PdfReader(io.BytesIO(render_rfq_pdf({**rfq, "status": "closed"}, lines))).pages)
+    assert STATUS_STAMPS["closed"] in closed
+
+
+def test_migration_284_does_not_announce_existing_notices():
+    sql = (ROOT / "migrations" / "284_procurement_notice_emails.sql").read_text(encoding="utf-8")
+    assert "UPDATE procurement.public_notices SET announce = false" in sql
+    assert "UNIQUE (notice_id, kind, recipient_email)" in sql
+
+
+def test_notice_email_job_is_scheduled():
+    from app.workers.arq_worker import WorkerSettings, procurement_notice_emails_job
+
+    assert procurement_notice_emails_job in WorkerSettings.functions
+    assert any(getattr(job, "coroutine", None) is procurement_notice_emails_job for job in WorkerSettings.cron_jobs)
+
+
+def test_portal_enforces_the_closing_date_and_rfq_pdf_route_exists():
+    from fastapi.routing import APIRoute
+
+    from routers import procurement
+
+    source = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
+    assert "closed for quotations at its closing date" in source
+    route = next(r for r in procurement.router.routes if isinstance(r, APIRoute) and r.path == "/rfqs/{rfq_id}/pdf")
+    assert any("require_permission" in d.call.__qualname__ for d in route.dependant.dependencies)

@@ -141,17 +141,22 @@ class EmailResult:
     error: Optional[str] = None
 
 
-async def send_email_exact(to: str, subject: str, html: str, text: Optional[str] = None) -> EmailResult:
+async def send_email_exact(
+    to: str, subject: str, html: str, text: Optional[str] = None, reply_to: Optional[str] = None,
+) -> EmailResult:
     """Send to exactly `to` - no redirect or mailbox substitution. For callers
     that already resolved each address on purpose (e.g. a person's company
     AND private mailbox) and need to know whether a failure is worth
     retrying: Resend 429/5xx and network errors are retryable, other 4xx
-    (bad address, rejected sender) are not."""
+    (bad address, rejected sender) are not. reply_to: where the recipient's
+    reply goes (e.g. procurement@ for supplier emails)."""
     if not settings.RESEND_API_KEY or not settings.EMAIL_FROM_ADDRESS:
         return EmailResult(False, True, "Email is not configured on the server (RESEND_API_KEY / EMAIL_FROM_ADDRESS).")
     payload = {"from": settings.EMAIL_FROM_ADDRESS, "to": [to], "subject": subject, "html": html}
     if text:
         payload["text"] = text
+    if reply_to:
+        payload["reply_to"] = reply_to
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(

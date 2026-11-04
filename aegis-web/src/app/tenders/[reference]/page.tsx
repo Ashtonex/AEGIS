@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { AlertTriangle, ArrowLeft, Mail, ShieldCheck, ShieldX } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Laptop, Mail, ShieldCheck, ShieldX } from "lucide-react";
 import { constructMetadata } from "@/lib/metadata";
 import { PageWrapper } from "@/components/layout/PageWrapper";
 import { PageHero } from "@/components/ui/PageHero";
@@ -16,8 +16,15 @@ type Props = {
 
 type CodeCheck = {
   status: "valid" | "revoked" | "invalid";
+  document_type: string;
   document_number: string;
   issued_at: string | null;
+};
+
+const DOCUMENT_NAMES: Record<string, string> = {
+  purchase_order: "purchase order",
+  request_for_quotation: "request for quotation",
+  draft_request_for_quotation: "draft request for quotation",
 };
 
 export async function generateMetadata(props: Props): Promise<Metadata> {
@@ -88,15 +95,16 @@ function CodePanel({ code, notice, result }: { code: string; notice: Procurement
     );
   }
   const valid = result.status === "valid";
+  const name = DOCUMENT_NAMES[result.document_type] ?? "document";
   return (
     <div className={`border p-6 flex gap-3 ${valid ? "border-success/50 bg-success/10" : "border-danger/50 bg-danger/10"}`}>
       {valid ? <ShieldCheck className="w-6 h-6 text-success shrink-0" /> : <ShieldX className="w-6 h-6 text-danger shrink-0" />}
       <div className="text-sm min-w-0">
         <p className="font-bold text-paper">
           {valid
-            ? `Genuine purchase order ${result.document_number}, issued by Six Nine Construction through AEGIS`
+            ? `Genuine ${name} ${result.document_number}, issued by Six Nine Construction through AEGIS`
             : result.status === "revoked"
-              ? `Purchase order ${result.document_number} has been revoked`
+              ? `This ${name} (${result.document_number}) has been revoked`
               : "Signature check failed: do not rely on this document"}
         </p>
         <p className="text-slate-light mt-1">
@@ -157,10 +165,39 @@ export default async function NoticePage(props: Props) {
 
               <Timeline notice={notice} />
 
-              {notice.description && (
-                <div>
-                  <h2 className="text-headline-sm text-paper mb-3">What is required</h2>
-                  <p className="text-body text-slate-light whitespace-pre-line break-words">{notice.description}</p>
+              {(notice.description || (notice.items?.length ?? 0) > 0) && (
+                <div className="space-y-4">
+                  <h2 className="text-headline-sm text-paper">What is required</h2>
+                  {notice.description && (
+                    <p className="text-body text-slate-light whitespace-pre-line break-words">{notice.description}</p>
+                  )}
+                  {(notice.items?.length ?? 0) > 0 && (
+                    <div className="overflow-x-auto border border-ink-mid">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-ink-mid text-[11px] uppercase tracking-widest text-slate">
+                          <tr>
+                            <th className="p-3 font-semibold">Item</th>
+                            <th className="p-3 font-semibold text-right">Quantity</th>
+                            <th className="p-3 font-semibold">Unit</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-ink-mid">
+                          {notice.items!.map((item, index) => (
+                            <tr key={index}>
+                              <td className="p-3 text-paper break-words">
+                                {item.description}
+                                {item.work_package && <span className="block text-xs text-slate">{item.work_package}</span>}
+                              </td>
+                              <td className="p-3 text-paper text-right whitespace-nowrap">
+                                {item.quantity === null ? "—" : item.quantity.toLocaleString("en-GB")}
+                              </td>
+                              <td className="p-3 text-slate-light">{item.unit || "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -170,9 +207,23 @@ export default async function NoticePage(props: Props) {
                 </h2>
                 <p className="text-sm text-slate-light mb-4">
                   {notice.accepting_quotations
-                    ? `Email your quotation to our procurement team before the closing date, quoting ${notice.reference}.`
+                    ? `Quote online through the supplier portal, or email your quotation before the closing date quoting ${notice.reference}.`
                     : `Contact our procurement team, quoting ${notice.reference}.`}
                 </p>
+                {notice.accepting_quotations && notice.portal_path && (
+                  <Link
+                    href={notice.portal_path}
+                    className="mb-4 inline-flex items-center gap-2 bg-signal px-4 py-2 text-sm font-semibold text-ink hover:bg-signal/90"
+                  >
+                    <Laptop className="w-4 h-4" /> Quote online
+                  </Link>
+                )}
+                {notice.accepting_quotations && (
+                  <p className="mb-4 text-xs text-slate">
+                    The portal is for registered suppliers.{" "}
+                    <Link href="/suppliers/register" className="text-signal underline">Register as a supplier</Link>
+                  </p>
+                )}
                 <a
                   href={`mailto:${notice.contact_email}?subject=${encodeURIComponent(`${notice.reference}: ${notice.title}`)}`}
                   className="inline-flex items-center gap-2 text-signal hover:text-paper break-all"

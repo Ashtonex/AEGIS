@@ -117,7 +117,11 @@ export interface ProcurementNotice {
   last_activity_at: string | null;
   accepting_quotations: boolean;
   contact_email: string;
-  /** Only with ?code=: whether that AEGIS code belongs to an order under this notice. */
+  /** Supplier portal link for quoting online (RFQ notices only). */
+  portal_path: string | null;
+  /** Detail only: what an RFQ asks suppliers to price (never costs). */
+  items?: { description: string; quantity: number | null; unit: string | null; work_package: string | null }[];
+  /** Only with ?code=: whether that AEGIS code belongs to this notice's RFQ or an order under it. */
   code_matches?: boolean;
 }
 

@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import settings
 from core.database import get_db
 from core.security import SUPERADMIN_ROLE, require_any_permission, require_permission, user_has_permission
 from core.project_scope import project_scope_sql, visible_project_ids
@@ -1983,6 +1984,75 @@ async def download_purchase_order_pdf(
         entity_id=row["id"], project_id=row["project_id"], project_name=row["project_name"],
         counterparty=supplier.get("supplier_name"), amount=row["total_amount"], currency=row["currency"],
         document_status=row["status"], filename=filename,
+    )
+    await db.commit()
+    return attestation.signed_pdf_response(pdf, filename, verification)
+
+
+@router.get("/rfqs/{rfq_id}/pdf")
+async def download_rfq_pdf(
+    rfq_id: UUID,
+    user: dict = Depends(require_permission("procurement.rfq.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """AEGIS-signed request for quotation to send to suppliers: the requested
+    items with blank price columns, the closing date and how to respond. Its QR
+    opens the RFQ's public notice. Estimated costs are never printed."""
+    rfq = (
+        await db.execute(
+            text("""
+            SELECT rfq.*, p.name AS project_name, pr.requisition_number, pr.required_by_date,
+                   issuer.full_name AS issued_by_name,
+                   notice.reference AS notice_reference, notice.is_published AS notice_published
+            FROM procurement.rfqs rfq
+            LEFT JOIN projects.projects p ON p.id=rfq.project_id AND p.organization_id=rfq.organization_id
+            LEFT JOIN procurement.purchase_requisitions pr ON pr.id=rfq.requisition_id AND pr.organization_id=rfq.organization_id
+            LEFT JOIN core.users issuer ON issuer.id=rfq.issued_by
+            LEFT JOIN procurement.public_notices notice ON notice.rfq_id=rfq.id AND notice.organization_id=rfq.organization_id
+            WHERE rfq.id=:id AND rfq.organization_id=:org_id AND rfq.is_deleted=false
+        """),
+            {"id": rfq_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not rfq:
+        raise HTTPException(status_code=404, detail="RFQ not found")
+    lines = [
+        dict(row)
+        for row in (
+            await db.execute(
+                text("""
+                SELECT description, quantity, unit_of_measure, work_package, notes
+                FROM procurement.requisition_lines
+                WHERE requisition_id=:requisition_id AND organization_id=:org_id AND is_deleted=false
+                ORDER BY created_at, id
+            """),
+                {"requisition_id": rfq["requisition_id"], "org_id": user["org_id"]},
+            )
+        ).mappings()
+    ] if rfq["requisition_id"] else []
+
+    from fastapi.concurrency import run_in_threadpool
+    from app.services.documents import attestation
+    from app.services.documents.rfq_renderer import render_rfq_pdf
+
+    data = dict(rfq)
+    verification = attestation.new_verification()
+    if rfq["notice_reference"] and rfq["notice_published"]:
+        verification = attestation.notice_verification(verification, rfq["notice_reference"])
+    else:
+        data["notice_reference"] = None
+    pdf = await run_in_threadpool(
+        lambda: render_rfq_pdf(data, lines, verification, public_site=settings.PUBLIC_APP_URL)
+    )
+    slug = "".join(c for c in str(rfq["rfq_number"] or "rfq") if c.isalnum() or c in "-_") or "rfq"
+    filename = f"SNC_Request_for_Quotation_{slug}.pdf"
+    await attestation.attest_issue(
+        db, user, verification=verification, pdf=pdf,
+        document_type="request_for_quotation" if rfq["status"] != "draft" else "draft_request_for_quotation",
+        document_number=str(rfq["rfq_number"]), title=rfq["title"],
+        entity_type="procurement.rfq", entity_id=rfq["id"],
+        project_id=rfq["project_id"], project_name=rfq["project_name"],
+        document_status=rfq["status"], filename=filename,
     )
     await db.commit()
     return attestation.signed_pdf_response(pdf, filename, verification)

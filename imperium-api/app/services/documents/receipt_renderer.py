@@ -20,9 +20,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from app.services.documents.branding import company_detail_lines
 from app.services.documents.invoice_renderer import NumberedCanvas, number_to_words_usd
-from app.services.documents.po_renderer import LOGO_PATH, NAVY, RULE, ZEBRA, _date, _money, _styles, _text
+from app.services.documents.po_renderer import NAVY, RULE, ZEBRA, _date, _money, _styles, _text, letterhead
 
 UNPOSTED_STAMP = "NOT POSTED - NOT A VALID RECEIPT"
 
@@ -46,37 +45,6 @@ FISCAL_NOTE = (
 def payment_method_label(method: Any) -> str:
     key = str(method or "").strip().lower()
     return PAYMENT_METHODS.get(key, key.replace("_", " ").capitalize() or "—")
-
-
-def _header(st, receipt_number: str, receipt_date: str) -> Table:
-    import os
-
-    logo: Any = Paragraph("", st["body"])
-    if os.path.exists(LOGO_PATH):
-        from reportlab.platypus import Image as RLImage
-
-        logo = RLImage(LOGO_PATH, width=44, height=44)
-    company = [
-        Paragraph("SIX NINE CONSTRUCTION", st["co_name"]),
-        Paragraph("Building Zimbabwe’s Future", st["co_tag"]),
-        Spacer(1, 2),
-        *[Paragraph(line, st["co_details"]) for line in company_detail_lines()],
-    ]
-    title = [
-        Paragraph("PAYMENT RECEIPT", st["title"]),
-        Spacer(1, 3),
-        Paragraph(f"No. {_text(receipt_number)}", st["number"]),
-        Paragraph(receipt_date, st["date"]),
-    ]
-    table = Table([[logo, company, title]], colWidths=[52, 300, 171])
-    table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("LINEBELOW", (0, 0), (-1, 0), 1.2, NAVY),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-    ]))
-    return table
 
 
 def _box(st, title: str, rows: List[tuple]) -> List[Any]:
@@ -107,7 +75,7 @@ def render_payment_receipt_pdf(
     received_on = _date(receipt.get("transaction_date"))
     payer = receipt.get("counterparty_name")
 
-    story: List[Any] = [_header(st, number, received_on), Spacer(1, 12)]
+    story: List[Any] = [letterhead(st, "PAYMENT RECEIPT", number, received_on), Spacer(1, 12)]
 
     payer_rows = [("", f"<b>{_text(payer)}</b>")]
     if receipt.get("project_name"):
