@@ -3421,11 +3421,12 @@ from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, 
 async def generate_quotation_invoice_pdf(
     payload: Dict[str, Any],
     user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Generates an official SNC Proforma / Tax invoice from Quotation data.
     """
-    return await invoice_pdf_response(payload, "SNC_Invoice")
+    return await invoice_pdf_response(payload, "SNC_Invoice", db=db, user=user)
 
 
 # -----------------------------------------------------------------------------
@@ -3731,12 +3732,35 @@ async def download_quotation_revision_document(
         raise HTTPException(status_code=404, detail="Revision not found.")
     ref = "".join(ch for ch in str(revision["snapshot"].get("reference_number") or "quotation") if ch.isalnum() or ch in "-_")[:60]
     if document_kind == "client-pdf":
-        content = render_client_quotation_pdf(revision=revision, client_name=quotation.get("client_name"))
-        return Response(
-            content=content,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{ref}_Rev{revision["revision_number"]}.pdf"'},
+        from fastapi.concurrency import run_in_threadpool
+
+        from app.services.documents import attestation
+        from app.services.documents.quotation_documents import client_schedule
+
+        verification = attestation.new_verification()
+        content = await run_in_threadpool(
+            lambda: render_client_quotation_pdf(
+                revision=revision, client_name=quotation.get("client_name"), verification=verification,
+            )
         )
+        snapshot = revision["snapshot"]
+        filename = f"{ref}_Rev{revision['revision_number']}.pdf"
+        grand_total = client_schedule(snapshot, revision["calculation"])["grand_total"]
+        await attestation.attest_issue(
+            db, user, verification=verification, pdf=content,
+            document_type="quotation",
+            document_number=f"{snapshot.get('reference_number') or 'QUOTATION'} Rev {revision['revision_number']}",
+            title=snapshot.get("project_title"),
+            entity_type="finance.quotation", entity_id=quotation["id"],
+            project_id=quotation.get("project_id"),
+            counterparty=quotation.get("client_name"),
+            amount=grand_total,
+            currency=str(snapshot.get("currency") or revision.get("currency") or "USD").upper(),
+            document_status=quotation.get("status"),
+            filename=filename,
+        )
+        await db.commit()
+        return attestation.signed_pdf_response(content, filename, verification)
     breakdown = qws.commercial_breakdown(item_id, revision["snapshot"])
     content = render_internal_estimate_xlsx(revision=revision, client_name=quotation.get("client_name"), breakdown=breakdown)
     return Response(

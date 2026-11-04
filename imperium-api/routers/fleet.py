@@ -4358,9 +4358,10 @@ from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, 
 async def generate_fleet_invoice_pdf(
     payload: Dict[str, Any],
     user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Renders official Six Nine Construction Plant & Equipment commercial invoice PDF
     with watermark, duty hours, standing hours, logistics breakdown, and storytelling notes.
     """
-    return await invoice_pdf_response(payload, "SNC_Plant_Invoice")
+    return await invoice_pdf_response(payload, "SNC_Plant_Invoice", db=db, user=user)

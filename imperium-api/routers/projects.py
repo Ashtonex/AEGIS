@@ -6031,8 +6031,9 @@ from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, 
 async def generate_project_invoice_pdf(
     payload: Dict[str, Any],
     user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Generates an official SNC Proforma / Tax invoice for project billing, deposit, or claims.
     """
-    return await invoice_pdf_response(payload, "SNC_Invoice")
+    return await invoice_pdf_response(payload, "SNC_Invoice", db=db, user=user)

@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.documents.branding import company_detail_lines
 from app.services.documents.invoice_renderer import NumberedCanvas
 from app.services.documents.po_renderer import NAVY, RULE, ZEBRA, _date, _money, _qty, _styles, _text
 from app.services.quotations.calculator import quotation_item_qty_rate
@@ -127,7 +128,10 @@ def render_client_quotation_pdf(
     *,
     revision: Dict[str, Any],
     client_name: Optional[str],
+    verification: Optional[Dict[str, str]] = None,
 ) -> bytes:
+    """Client quotation for a frozen revision. verification: {"code", "url"}
+    from attestation - prints the AEGIS signed-document strip and QR."""
     snapshot = revision["snapshot"]
     calculation = revision["calculation"]
     schedule = client_schedule(snapshot, calculation)
@@ -145,10 +149,7 @@ def render_client_quotation_pdf(
         Paragraph("SIX NINE CONSTRUCTION", st["co_name"]),
         Paragraph("Building Zimbabwe’s Future", st["co_tag"]),
         Spacer(1, 2),
-        Paragraph("No. 4 Kariba Road, Nyakamete Industrial Area, Mutare, Manicaland, Zimbabwe", st["co_details"]),
-        Paragraph("+263 77 100 1750 · +263 77 100 1577 · 0202 065 845", st["co_details"]),
-        Paragraph("info@snc.co.zw · snc.co.zw · Incorporation 11284/2019", st["co_details"]),
-        Paragraph("VAT reg. 220116087 · TIN 2001309644 · ZIMRA tax clearance ITF263", st["co_details"]),
+        *[Paragraph(line, st["co_details"]) for line in company_detail_lines()],
     ]
     title = [
         Paragraph("QUOTATION", st["title"]),
@@ -301,10 +302,12 @@ def render_client_quotation_pdf(
         canv.client_name = str(client_name or "Client")
         canv.project_title = str(snapshot.get("project_title") or "")
         canv.status_stamp = None
+        canv.verification = verification
         return canv
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=48,
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36,
+                            bottomMargin=104 if verification else 48,
                             title=f"Quotation {ref} {rev_label}", author="Six Nine Construction (Pvt) Ltd")
     doc.build(story, canvasmaker=make_canvas)
     return buffer.getvalue()

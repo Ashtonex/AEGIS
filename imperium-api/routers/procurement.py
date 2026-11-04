@@ -1950,34 +1950,24 @@ async def download_purchase_order_pdf(
         raise HTTPException(status_code=404, detail="Purchase order not found.")
 
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import Response
     from app.services.documents import attestation
     from app.services.documents.po_renderer import render_purchase_order_pdf
 
     # Every copy issued is signed and registered, so it can be verified publicly.
-    code = attestation.new_verification_code()
-    verification = {"code": code, "url": attestation.verification_url(code)}
+    verification = attestation.new_verification()
     pdf = await run_in_threadpool(render_purchase_order_pdf, dict(row), None, verification)
-    filename = "".join(c for c in str(row["po_number"] or "purchase-order") if c.isalnum() or c in "-_") or "purchase-order"
+    slug = "".join(c for c in str(row["po_number"] or "purchase-order") if c.isalnum() or c in "-_") or "purchase-order"
+    filename = f"SNC_Purchase_Order_{slug}.pdf"
     supplier = row["supplier"] or {}
-    issuer = (await db.execute(text("SELECT full_name FROM core.users WHERE id=:id"), {"id": user.get("user_id") or user.get("sub")})).scalar()
-    await attestation.attest(
-        db, code=code, pdf=pdf, organization_id=user["org_id"], document_type="purchase_order",
+    await attestation.attest_issue(
+        db, user, verification=verification, pdf=pdf, document_type="purchase_order",
         document_number=str(row["po_number"]), title=row["title"], entity_type="procurement.purchase_order",
         entity_id=row["id"], project_id=row["project_id"], project_name=row["project_name"],
         counterparty=supplier.get("supplier_name"), amount=row["total_amount"], currency=row["currency"],
-        document_status=row["status"], filename=f"SNC_Purchase_Order_{filename}.pdf",
-        issued_by=user.get("user_id") or user.get("sub"), issued_by_name=issuer,
+        document_status=row["status"], filename=filename,
     )
     await db.commit()
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="SNC_Purchase_Order_{filename}.pdf"',
-            "X-AEGIS-Verification-Code": code,
-        },
-    )
+    return attestation.signed_pdf_response(pdf, filename, verification)
 
 
 # ─── Procurement plans ───────────────────────────────────────────────────────
