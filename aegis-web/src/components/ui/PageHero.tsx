@@ -22,6 +22,24 @@ interface PageHeroProps {
   className?: string;
 }
 
+// Inner pages that don't specify their own photography still get real SNC
+// imagery instead of a flat void — deterministic per-title so a given page
+// always renders the same image rather than flickering between reloads.
+const DEFAULT_BACKGROUND_IMAGES = [
+  "/snc_civil_yard.png",
+  "/snc_commercial_office.png",
+  "/snc_industrial_warehouse.png",
+  "/hero_cinematic.png",
+] as const;
+
+function pickDefaultBackground(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return DEFAULT_BACKGROUND_IMAGES[hash % DEFAULT_BACKGROUND_IMAGES.length];
+}
+
 export function PageHero({ 
   variant = "half", 
   title, 
@@ -159,14 +177,17 @@ export function PageHero({
   }
 
   // HALF VARIANT (INNER PAGES)
+  const resolvedBackground =
+    backgroundImage ?? pickDefaultBackground(typeof title === "string" ? title : subtitle ?? "page");
+
   return (
-    <section 
-      className={cn("relative min-h-[50vh] flex flex-col justify-end pt-32 pb-16 bg-ink overflow-hidden", className)}
-      style={backgroundImage ? { 
-        backgroundImage: `linear-gradient(to bottom, rgba(10,22,40,0.8), rgba(4,8,16,1)), url(${backgroundImage})`,
+    <section
+      className={cn("relative min-h-[40vh] md:min-h-[46vh] flex flex-col justify-end pt-32 pb-16 bg-ink overflow-hidden", className)}
+      style={{
+        backgroundImage: `linear-gradient(to bottom, rgba(10,22,40,0.82), rgba(4,8,16,1)), url(${resolvedBackground})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center'
-      } : {}}
+      }}
     >
       <div className="absolute inset-0 blueprint-grid opacity-30" />
       

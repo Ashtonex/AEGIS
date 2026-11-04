@@ -8,12 +8,10 @@ apply everywhere this could ever be called from.
 """
 
 from datetime import date
-from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +20,6 @@ from app.services.finance import management_accounts_pack as packs
 from app.services.finance import project_portfolio
 from app.services.finance.management_accounts_pack import ManagementAccountsError
 from app.shared.pagination import ok
-from core.config import settings
 from core.database import get_db
 from core.security import require_permission
 
@@ -173,15 +170,33 @@ async def export_pack_pdf(
     except ManagementAccountsError as exc:
         _handle(exc)
 
-    output_dir = Path(settings.GENERATED_DOCUMENT_DIR) / "management-accounts"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{pack_id}.pdf"
-    ManagementAccountsPackPDFRenderer().render_pdf(pack, str(output_path))
-    return FileResponse(
-        path=str(output_path),
-        media_type="application/pdf",
-        filename=f"management-accounts-{pack['period_start']}-to-{pack['period_end']}.pdf",
+    import io
+
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.services.documents import attestation
+
+    verification = attestation.new_verification()
+
+    def render() -> bytes:
+        buffer = io.BytesIO()
+        ManagementAccountsPackPDFRenderer().render_pdf(pack, buffer, verification)
+        return buffer.getvalue()
+
+    pdf = await run_in_threadpool(render)
+    period = f"{pack['period_start']} to {pack['period_end']}"
+    filename = f"management-accounts-{pack['period_start']}-to-{pack['period_end']}.pdf"
+    await attestation.attest_issue(
+        db, user, verification=verification, pdf=pdf,
+        document_type="management_accounts_pack",
+        document_number=f"MA {period}",
+        title=f"Management accounts pack, {period}",
+        entity_type="finance.management_accounts_pack", entity_id=pack_id,
+        document_status=pack.get("status"),
+        filename=filename,
     )
+    await db.commit()
+    return attestation.signed_pdf_response(pdf, filename, verification)
 
 
 @router.get("/portfolio")

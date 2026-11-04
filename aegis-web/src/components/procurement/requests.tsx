@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { BadgeCheck, CheckCircle2, FileText, FileUp, Loader2, Paperclip, Pencil, Plus, Search, Send, ShieldAlert, ShoppingCart, Warehouse, X, XCircle } from "lucide-react";
 import { amendProcurementRequisition, createDocument, createProcurementRequisition, getDocumentSignedUrl, recordProcurementRfqResponse } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
+import { NoticeChip } from "@/components/procurement/NoticeChip";
+import { RfqPdfButton } from "@/components/procurement/RfqPdfButton";
 import { Banner, EmptyState, InfoCard, type LineItem, type Rec, type Tab, dt, money, normalizeActionError, num, poStatusClass, prStatusClass, priorityClass, qty, supplierStatusClass, tx } from "@/components/procurement/shared";
 
 
@@ -168,9 +170,11 @@ export function RfqsTab({ rows, saving, onQuote, onDecideQuote, onCreatePO, onUp
                 <p className="font-mono text-xs uppercase tracking-wider text-signal">{tx(rfq.rfq_number, rfq.id.slice(0, 8).toUpperCase())}</p>
                 <h3 className="mt-1 text-lg font-semibold text-paper">{tx(rfq.title, tx(rfq.requisition_number, "RFQ"))}</h3>
                 <p className="mt-1 text-xs text-slate-light">{tx(rfq.project_name)} · PR {tx(rfq.requisition_number)} · closes {dt(rfq.closing_date)}</p>
+                <div className="mt-1"><NoticeChip row={rfq} /></div>
               </div>
               <div className="flex items-center gap-2">
                 <span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${poStatusClass(rfq.status)}`}>{tx(rfq.status, "draft")}</span>
+                <RfqPdfButton rfq={rfq} />
                 {onUploadQuotes && (
                   <button onClick={() => onUploadQuotes(rfq)} title="Upload every supplier quotation gathered for this request in one go"
                     className="inline-flex items-center gap-1 border border-signal bg-signal/15 px-2 py-1 font-mono text-[10px] uppercase text-signal hover:bg-signal/25">

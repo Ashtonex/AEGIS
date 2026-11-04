@@ -171,6 +171,17 @@ class ClientDocumentTests(unittest.TestCase):
         total = Decimal(rev["calculation"]["grand_total"])
         self.assertIn(f"{total:,.2f}", text)
 
+    def test_client_pdf_is_aegis_signed_with_both_websites(self):
+        verification = {"code": "SNC-ABCD-EFGH-JKMN", "url": "https://sixnineconstruction.com/verify/SNC-ABCD-EFGH-JKMN"}
+        pdf = render_client_quotation_pdf(revision=self._revision(), client_name="Test Client", verification=verification)
+        from pypdf import PdfReader
+
+        text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf)).pages)
+        self.assertIn("AEGIS SIGNED DOCUMENT", text)
+        self.assertIn(verification["code"], text)
+        self.assertIn("www.snc.co.zw", text)
+        self.assertIn("www.sixnineconstruction.com", text)
+
     def test_long_bill_paginates(self):
         long_items = [
             {"line_id": str(i), "section": f"Bill {i // 100}", "item_no": str(i), "description": "Long description " * 12,
@@ -188,6 +199,22 @@ class ClientDocumentTests(unittest.TestCase):
         rev = self._revision()
         data = render_internal_estimate_xlsx(revision=rev, client_name="X", breakdown=qws.commercial_breakdown("q", rev["snapshot"]))
         self.assertTrue(data.startswith(b"PK"))
+
+    def test_internal_workbook_carries_the_aegis_code(self):
+        from openpyxl import load_workbook
+
+        verification = {"code": "SNC-ABCD-EFGH-JKMN", "url": "https://sixnineconstruction.com/verify/SNC-ABCD-EFGH-JKMN"}
+        rev = self._revision()
+        data = render_internal_estimate_xlsx(
+            revision=rev, client_name="X", breakdown=qws.commercial_breakdown("q", rev["snapshot"]), verification=verification,
+        )
+        book = load_workbook(io.BytesIO(data))
+        summary = book["Summary"]
+        self.assertEqual(summary["E3"].value, "AEGIS SIGNED DOCUMENT")
+        self.assertEqual(summary["E4"].value, verification["code"])
+        self.assertEqual(summary["E5"].hyperlink.target, verification["url"])
+        self.assertIn(verification["code"], book.properties.description or "")
+        self.assertIn("www.sixnineconstruction.com", summary.oddFooter.left.text)
 
 
 class MaterialsScheduleTests(unittest.TestCase):

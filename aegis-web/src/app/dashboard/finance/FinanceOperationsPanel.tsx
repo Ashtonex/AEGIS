@@ -2,12 +2,13 @@
 
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BadgeCheck, Banknote, Check, CheckCircle2, CreditCard, Loader2, LockOpen, Plus, RefreshCw, Upload, Users, X } from "lucide-react";
+import { BadgeCheck, Banknote, Check, CheckCircle2, CreditCard, FileText, Loader2, LockOpen, Plus, RefreshCw, Upload, Users, X } from "lucide-react";
 import {
   allocateFinanceReceipt,
   confirmBankStatementMatch,
   createCashbookEntryFromBankLine,
   createFinanceCashAccount,
+  downloadPaymentReceiptPdf,
   getBankStatementImports,
   getBankStatementLines,
   getFinanceCashAccounts,
@@ -190,7 +191,7 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
             </form>
           </Panel>
           <Panel title="Cashbook Ledger">
-            <SimpleTable rows={cashbook} maxRows={cashbook.length} columns={["transaction_date", "transaction_number", "transaction_type", "counterparty_name", "amount", "current_balance"]} />
+            <SimpleTable rows={cashbook} maxRows={cashbook.length} columns={["transaction_date", "transaction_number", "transaction_type", "counterparty_name", "amount", "current_balance"]} action={row => (row.transaction_type === "receipt" && row.direction === "inflow" ? <ReceiptPdfButton row={row} /> : null)} />
             <ShowMoreFooter shown={cashbook.length} total={cashbookTotal} noun="transactions" loading={cashbookLoadingMore} onShowMore={() => void showMoreCashbook()} />
           </Panel>
         </section>
@@ -529,8 +530,42 @@ function ShowMoreFooter({ shown, total, noun, loading, onShowMore }: { shown: nu
   );
 }
 
-function SimpleTable({ rows, columns, maxRows = 20 }: { rows: RecordData[]; columns: string[]; maxRows?: number }) {
-  return <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-ink-mid text-slate uppercase font-mono">{columns.map(col => <th key={col} className="p-2">{col.replaceAll("_", " ")}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid">{rows.length === 0 ? <tr><td className="p-3 text-slate" colSpan={columns.length}>No records.</td></tr> : rows.slice(0, maxRows).map((row, index) => <tr key={row.id || index}>{columns.map(col => <td key={col} className="p-2 text-paper">{col.includes("amount") || col.includes("balance") || col.includes("rate") || col === "net_pay" ? money(row[col]) : String(row[col] ?? "-")}</td>)}</tr>)}</tbody></table></div>;
+function SimpleTable({ rows, columns, maxRows = 20, action }: { rows: RecordData[]; columns: string[]; maxRows?: number; action?: (row: RecordData) => React.ReactNode }) {
+  const span = columns.length + (action ? 1 : 0);
+  return <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-ink-mid text-slate uppercase font-mono">{columns.map(col => <th key={col} className="p-2">{col.replaceAll("_", " ")}</th>)}{action && <th className="p-2"><span className="sr-only">Actions</span></th>}</tr></thead><tbody className="divide-y divide-ink-mid">{rows.length === 0 ? <tr><td className="p-3 text-slate" colSpan={span}>No records.</td></tr> : rows.slice(0, maxRows).map((row, index) => <tr key={row.id || index}>{columns.map(col => <td key={col} className="p-2 text-paper">{col.includes("amount") || col.includes("balance") || col.includes("rate") || col === "net_pay" ? money(row[col]) : String(row[col] ?? "-")}</td>)}{action && <td className="p-2 text-right whitespace-nowrap">{action(row)}</td>}</tr>)}</tbody></table></div>;
+}
+
+/** Downloads the AEGIS-signed payment receipt for money received. */
+function ReceiptPdfButton({ row }: { row: RecordData }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const download = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const blob = await downloadPaymentReceiptPdf(String(row.id));
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `SNC_Payment_Receipt_${String(row.transaction_number || row.id).replace(/[^A-Za-z0-9_-]/g, "")}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not generate the payment receipt.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="inline-flex flex-col items-end">
+      <button type="button" onClick={() => void download()} disabled={busy} title="Download the signed payment receipt" className="inline-flex items-center gap-1 rounded-sm border border-ink-mid px-2 py-1 text-[11px] text-slate-light hover:border-signal/50 hover:text-paper disabled:opacity-50">
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}Receipt
+      </button>
+      {error && <span className="mt-1 max-w-[16rem] text-[10px] text-red-400 whitespace-normal">{error}</span>}
+    </span>
+  );
 }
 
 

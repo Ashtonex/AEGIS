@@ -166,6 +166,49 @@ def build_payload(
     }
 
 
+def build_message_payload(
+    *,
+    recipient_email: str,
+    recipient_name: Optional[str],
+    title: str,
+    body: str,
+    sent_by: Optional[str],
+    link: str,
+) -> dict[str, Any]:
+    """A plain announcement card (staff communications), same envelope as
+    build_payload so the org's existing Workflows flow delivers it."""
+    intro = f"Hi {recipient_name.split()[0]}," if recipient_name else "Hi,"
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": [
+            {"type": "TextBlock", "text": title, "size": "Large", "weight": "Bolder", "wrap": True},
+            {"type": "TextBlock", "text": intro, "wrap": True, "spacing": "Small"},
+            {"type": "TextBlock", "text": body, "wrap": True},
+            {
+                "type": "TextBlock",
+                "text": f"Sent by {sent_by} via AEGIS" if sent_by else "Sent by AEGIS",
+                "isSubtle": True,
+                "wrap": True,
+                "spacing": "Medium",
+            },
+        ],
+        "actions": [{"type": "Action.OpenUrl", "title": "Open in AEGIS", "url": link}],
+    }
+    return {
+        "type": "message",
+        "recipient": recipient_email,
+        "recipientName": recipient_name,
+        "summary": title,
+        "link": link,
+        "card": card,
+        "attachments": [
+            {"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}
+        ],
+    }
+
+
 async def post_to_webhook(webhook_url: str, payload: dict[str, Any]) -> tuple[bool, str]:
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:

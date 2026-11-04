@@ -2209,6 +2209,82 @@ async def get_cashbook(
     return limited(rows, limit=limit, offset=offset, message="Cashbook transactions retrieved.")
 
 
+@router.get("/cashbook/{transaction_id}/receipt")
+async def download_payment_receipt(
+    transaction_id: UUID,
+    user: dict = Depends(require_permission("finance.cash.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """AEGIS-signed payment receipt for money received (a cashbook receipt),
+    listing the progress claims it settles and their fiscal invoice numbers."""
+    receipt = (
+        await db.execute(
+            text("""
+                SELECT ct.*, ca.account_name, ca.bank_name,
+                       p.name AS project_name, p.project_code,
+                       poster.full_name AS recorded_by_name
+                FROM finance.cashbook_transactions ct
+                JOIN finance.cash_accounts ca ON ca.id = ct.cash_account_id AND ca.organization_id = ct.organization_id
+                LEFT JOIN projects.projects p ON p.id = ct.project_id AND p.organization_id = ct.organization_id
+                LEFT JOIN core.users poster ON poster.id = ct.posted_by
+                WHERE ct.id = :id AND ct.organization_id = :org_id AND ct.is_deleted = false
+            """),
+            {"id": transaction_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Cashbook transaction not found.")
+    if receipt["transaction_type"] != "receipt" or receipt["direction"] != "inflow":
+        raise HTTPException(
+            status_code=422,
+            detail="A receipt can only be issued for money received (a cashbook receipt), not for payments or transfers.",
+        )
+    allocations = [
+        dict(row)
+        for row in (
+            await db.execute(
+                text("""
+                    SELECT pc.claim_number, pc.claim_period_start, pc.claim_period_end,
+                           pc.fiscal_invoice_number, ra.allocated_amount
+                    FROM finance.receipt_allocations ra
+                    JOIN finance.progress_claims pc ON pc.id = ra.progress_claim_id AND pc.organization_id = ra.organization_id
+                    WHERE ra.cashbook_transaction_id = :id AND ra.organization_id = :org_id
+                    ORDER BY ra.allocated_at, pc.claim_number
+                """),
+                {"id": transaction_id, "org_id": user["org_id"]},
+            )
+        ).mappings()
+    ]
+
+    from fastapi.concurrency import run_in_threadpool
+
+    from app.services.documents import attestation
+    from app.services.documents.receipt_renderer import render_payment_receipt_pdf
+
+    issued_by_name = (
+        await db.execute(text("SELECT full_name FROM core.users WHERE id = CAST(:id AS uuid)"), {"id": str(user["sub"])})
+    ).scalar()
+    data = {**dict(receipt), "issued_by_name": issued_by_name}
+    verification = attestation.new_verification()
+    pdf = await run_in_threadpool(render_payment_receipt_pdf, data, allocations, verification)
+    slug = "".join(c for c in str(receipt["transaction_number"] or "receipt") if c.isalnum() or c in "-_") or "receipt"
+    filename = f"SNC_Payment_Receipt_{slug}.pdf"
+    await attestation.attest_issue(
+        db, user, verification=verification, pdf=pdf,
+        document_type="payment_receipt",
+        document_number=str(receipt["transaction_number"]),
+        title=receipt["description"],
+        entity_type="finance.cashbook_transaction", entity_id=receipt["id"],
+        project_id=receipt["project_id"], project_name=receipt["project_name"],
+        counterparty=receipt["counterparty_name"],
+        amount=receipt["amount"], currency=receipt["currency"],
+        document_status="posted" if receipt["is_posted"] else "not posted",
+        filename=filename,
+    )
+    await db.commit()
+    return attestation.signed_pdf_response(pdf, filename, verification)
+
+
 @router.post("/cashbook", status_code=status.HTTP_201_CREATED)
 async def post_cashbook_transaction(
     payload: CashbookTransactionCreate,

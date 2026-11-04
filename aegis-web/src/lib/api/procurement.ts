@@ -1199,6 +1199,10 @@ export interface SupplierPortalRfqResponse {
 export interface SupplierPortalRfq {
   id: string;
   rfq_number: string;
+  /** Public tender-board notice (SNC-PN-...), when the RFQ is published. */
+  notice_reference?: string | null;
+  /** The closing date has passed; quotations are no longer accepted. */
+  is_closed?: boolean;
   title: string;
   description?: string;
   closing_date?: string;
@@ -1951,6 +1955,27 @@ export async function updateWebsiteContent(payload: Record<string, unknown>): Pr
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/website-content`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** AEGIS-signed request for quotation PDF to send to suppliers. */
+export async function downloadRfqPdf(rfqId: string): Promise<Blob> {
+  const url = resolveApiUrl(`/api/v1/procurement/rfqs/${encodeURIComponent(rfqId)}/pdf`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: "GET", headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, body?.detail || body?.error?.message || "Could not generate the RFQ document.");
+  }
+  return response.blob();
+}
+
+/** Show or hide a procurement notice on the public tender board (hiding needs a reason). */
+export async function setProcurementNoticeVisibility(reference: string, published: boolean, reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/notices/${encodeURIComponent(reference)}/visibility`, {
+    method: "POST",
+    body: JSON.stringify({ published, reason: reason || null }),
     allowFallback: false,
   });
 }

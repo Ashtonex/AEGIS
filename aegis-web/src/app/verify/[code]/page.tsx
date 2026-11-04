@@ -39,6 +39,32 @@ const DOCUMENT_TYPES: Record<string, string> = {
   purchase_order: "Purchase order",
   purchase_order_extract: "Purchase order extract",
   draft_purchase_order: "Draft purchase order (not a valid order)",
+  proforma_invoice: "Proforma invoice",
+  tax_invoice: "Tax invoice",
+  invoice: "Invoice",
+  draft_invoice: "Draft invoice (no invoice number)",
+  quotation: "Quotation",
+  leave_record: "Leave record",
+  management_accounts_pack: "Management accounts pack",
+  payment_receipt: "Payment receipt",
+  request_for_quotation: "Request for quotation",
+  draft_request_for_quotation: "Draft request for quotation (not yet issued)",
+  internal_estimate_workbook: "Internal estimate workbook (Excel)",
+};
+
+// Who the document was issued to: a supplier for orders, a client for sales documents.
+const COUNTERPARTY_LABELS: Record<string, string> = {
+  proforma_invoice: "Client",
+  tax_invoice: "Client",
+  invoice: "Client",
+  draft_invoice: "Client",
+  quotation: "Client",
+  leave_record: "Employee",
+  management_accounts_pack: "Issued to",
+  payment_receipt: "Received from",
+  request_for_quotation: "Sent to",
+  draft_request_for_quotation: "Sent to",
+  internal_estimate_workbook: "Client",
 };
 
 async function lookup(code: string): Promise<Verification | null | "error"> {
@@ -131,6 +157,12 @@ export default async function VerifyResultPage(props: { params: Promise<{ code: 
                       nothing.
                     </p>
                   )}
+                  {result.document_type === "draft_invoice" && (
+                    <p className="text-sm text-amber-300 mt-2 font-semibold">
+                      This invoice was issued without an invoice number. Ask Six Nine Construction for the numbered invoice
+                      before paying.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -140,7 +172,7 @@ export default async function VerifyResultPage(props: { params: Promise<{ code: 
                   ["Document", DOCUMENT_TYPES[result.document_type] || result.document_type],
                   ["Number", result.document_number],
                   ["Status when issued", result.document_status || "—"],
-                  ["Supplier", result.counterparty || "—"],
+                  [COUNTERPARTY_LABELS[result.document_type] || "Supplier", result.counterparty || "—"],
                   ["Project", result.project_name || "—"],
                   ["Amount", formatAmount(result.amount, result.currency)],
                   ["Issued", formatDate(result.issued_at)],

@@ -19,6 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from xml.sax.saxutils import escape
 
+from app.services.documents.branding import PROCUREMENT_EMAIL, company_detail_lines
 from app.services.documents.invoice_renderer import NumberedCanvas, number_to_words_usd
 
 LOGO_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "assets", "logo.png"))
@@ -40,6 +41,7 @@ STATUS_STAMPS = {
 }
 
 DEFAULT_TERMS = [
+    f"Send delivery notes, invoices and any query about this order to {PROCUREMENT_EMAIL}.",
     "Quote this purchase order number on every delivery note, invoice and statement. Invoices without it cannot be processed.",
     "Deliver to the address above by the required date. Advise Six Nine Construction immediately of any delay.",
     "Goods are received subject to inspection; items that do not match this order or its specification may be rejected.",
@@ -109,7 +111,9 @@ def _styles() -> Dict[str, ParagraphStyle]:
     }
 
 
-def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) -> Table:
+def letterhead(st, title: str, number: str, date_line: str, subtitle: Optional[str] = None) -> Table:
+    """SNC letterhead used by the PO, RFQ and receipt: logo, company details
+    and the document title, number and date on the right."""
     logo: Any = Paragraph("", st["body"])
     if os.path.exists(LOGO_PATH):
         from reportlab.platypus import Image as RLImage
@@ -119,19 +123,16 @@ def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) ->
         Paragraph("SIX NINE CONSTRUCTION", st["co_name"]),
         Paragraph("Building Zimbabwe’s Future", st["co_tag"]),
         Spacer(1, 2),
-        Paragraph("No. 4 Kariba Road, Nyakamete Industrial Area, Mutare, Manicaland, Zimbabwe", st["co_details"]),
-        Paragraph("+263 77 100 1750 · +263 77 100 1577 · 0202 065 845", st["co_details"]),
-        Paragraph("info@snc.co.zw · snc.co.zw · Incorporation 11284/2019", st["co_details"]),
-        Paragraph("VAT reg. 220116087 · TIN 2001309644 · ZIMRA tax clearance ITF263", st["co_details"]),
+        *[Paragraph(line, st["co_details"]) for line in company_detail_lines()],
     ]
-    title = [
-        Paragraph("PURCHASE ORDER", st["title"]),
+    heading = [
+        Paragraph(escape(title), st["title"]),
         *([Paragraph(escape(subtitle), st["subtitle"])] if subtitle else []),
         Spacer(1, 3),
-        Paragraph(f"No. {_text(po_number)}", st["number"]),
-        Paragraph(po_date, st["date"]),
+        Paragraph(f"No. {_text(number)}", st["number"]),
+        Paragraph(date_line, st["date"]),
     ]
-    table = Table([[logo, company, title]], colWidths=[52, 300, 171])
+    table = Table([[logo, company, heading]], colWidths=[52, 300, 171])
     table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -140,6 +141,10 @@ def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) ->
         ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
     ]))
     return table
+
+
+def _header(st, po_number: str, po_date: str, subtitle: Optional[str] = None) -> Table:
+    return letterhead(st, "PURCHASE ORDER", po_number, po_date, subtitle)
 
 
 def _box(st, title: str, rows: List[tuple]) -> List[Any]:
@@ -208,6 +213,8 @@ def render_purchase_order_pdf(
     ]
     if po.get("requisition_number"):
         detail_rows.append(("Requisition", _text(po.get("requisition_number"))))
+    if po.get("notice_reference"):
+        detail_rows.append(("Public notice", _text(po.get("notice_reference"))))
 
     parties = Table([[_box(st, "Supplier", supplier_rows), _box(st, "Order details", detail_rows)]], colWidths=[262, 261])
     parties.setStyle(TableStyle([

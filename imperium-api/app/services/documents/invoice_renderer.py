@@ -32,6 +32,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 
+from app.services.documents.branding import FOOTER_LINE, company_detail_lines
+
 
 def number_to_words_usd(amount: float) -> str:
     """Converts a dollar amount to words in English (e.g. 88371.46 -> Eighty-eight thousand, three hundred and seventy-one United States Dollars and forty-six cents)."""
@@ -83,6 +85,40 @@ def number_to_words_usd(amount: float) -> str:
 
     cents_str = _convert_group(cents) if cents > 0 else "zero"
     return f"{dollars_str} United States Dollars and {cents_str} cents"
+
+
+def draw_verification_strip(canv: Any, verification: Dict[str, Any], w: float) -> None:
+    """AEGIS signed-document band above the footer (y 42-94): QR + code.
+    Needs a bottom margin of at least 100. Shared by every AEGIS PDF."""
+    from reportlab.graphics import renderPDF
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+
+    size = 50
+    x_qr, y_qr = w - 36 - size, 42
+    widget = QrCodeWidget(verification["url"], barLevel="M")
+    x0, y0, x1, y1 = widget.getBounds()
+    drawing = Drawing(size, size, transform=[size / (x1 - x0), 0, 0, size / (y1 - y0), 0, 0])
+    drawing.add(widget)
+    renderPDF.draw(drawing, canv, x_qr, y_qr)
+
+    canv.setStrokeColor(colors.HexColor("#0B2B39"))
+    canv.setLineWidth(0.6)
+    canv.roundRect(36, 42, w - 72 - size - 8, size, 4, stroke=1, fill=0)
+    canv.setFillColor(colors.HexColor("#0B2B39"))
+    canv.setFont("Helvetica-Bold", 8)
+    canv.drawString(44, 80, "AEGIS SIGNED DOCUMENT")
+    canv.setFont("Helvetica-Bold", 11)
+    canv.drawString(44, 66, verification["code"])
+    canv.setFont("Helvetica", 7)
+    canv.setFillColor(colors.HexColor("#475569"))
+    # The QR may open a richer page (a PO's procurement notice); the printed
+    # link is always the plain verification page.
+    canv.drawString(44, 55, f"Verify this document: scan the QR code or visit {verification.get('verify_url') or verification['url']}")
+    if verification.get("notice"):
+        canv.drawString(44, 47, f"Procurement notice {verification['notice']}: the QR code also shows its live status on our tender board.")
+    else:
+        canv.drawString(44, 47, "The page confirms the issuer, the details below and that this exact file has not been altered.")
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -162,7 +198,7 @@ class NumberedCanvas(canvas.Canvas):
         # Running footer (all pages)
         self.setFont("Helvetica", 7.5)
         self.setFillColor(colors.HexColor("#64748B"))
-        footer_line = "No. 4 Kariba Road, Nyakamete Industrial Area, Mutare · +263 77 100 1750 · info@snc.co.zw · snc.co.zw · VAT reg. 220116087"
+        footer_line = FOOTER_LINE
         page_str = f"Page {self._pageNumber} of {total_pages}"
         self.drawString(36, 26, footer_line)
         self.drawRightString(w - 36, 26, page_str)
@@ -173,44 +209,30 @@ class NumberedCanvas(canvas.Canvas):
         self.restoreState()
 
     def draw_verification(self, verification: Dict[str, Any], w: float):
-        """Band above the footer (y 42-94): needs a bottom margin of at least 100."""
-        from reportlab.graphics import renderPDF
-        from reportlab.graphics.barcode.qr import QrCodeWidget
-        from reportlab.graphics.shapes import Drawing
-
-        size = 50
-        x_qr, y_qr = w - 36 - size, 42
-        widget = QrCodeWidget(verification["url"], barLevel="M")
-        x0, y0, x1, y1 = widget.getBounds()
-        drawing = Drawing(size, size, transform=[size / (x1 - x0), 0, 0, size / (y1 - y0), 0, 0])
-        drawing.add(widget)
-        renderPDF.draw(drawing, self, x_qr, y_qr)
-
-        self.setStrokeColor(colors.HexColor("#0B2B39"))
-        self.setLineWidth(0.6)
-        self.roundRect(36, 42, w - 72 - size - 8, size, 4, stroke=1, fill=0)
-        self.setFillColor(colors.HexColor("#0B2B39"))
-        self.setFont("Helvetica-Bold", 8)
-        self.drawString(44, 80, "AEGIS SIGNED DOCUMENT")
-        self.setFont("Helvetica-Bold", 11)
-        self.drawString(44, 66, verification["code"])
-        self.setFont("Helvetica", 7)
-        self.setFillColor(colors.HexColor("#475569"))
-        self.drawString(44, 55, f"Verify this document: scan the QR code or visit {verification['url']}")
-        self.drawString(44, 47, "The page confirms the issuer, the details below and that this exact file has not been altered.")
+        draw_verification_strip(self, verification, w)
 
 
 class SNCInvoicePDFRenderer:
     """Renderer for Six Nine Construction Proforma and Tax Invoices."""
 
-    def render_invoice_pdf(self, data: Dict[str, Any], output_path: Union[str, BinaryIO]) -> bool:
+    # Set by render_invoice_pdf: the amount due printed on the invoice.
+    amount_due: Optional[float] = None
+
+    def render_invoice_pdf(
+        self,
+        data: Dict[str, Any],
+        output_path: Union[str, BinaryIO],
+        verification: Optional[Dict[str, str]] = None,
+    ) -> bool:
+        """verification: {"code", "url"} from attestation - prints the AEGIS
+        signed-document strip and QR on every page."""
         doc = SimpleDocTemplate(
             output_path,
             pagesize=A4,
             leftMargin=36,
             rightMargin=36,
             topMargin=36,
-            bottomMargin=48,
+            bottomMargin=104 if verification else 48,
         )
 
         styles = getSampleStyleSheet()
@@ -398,10 +420,7 @@ class SNCInvoicePDFRenderer:
             Paragraph("SIX NINE CONSTRUCTION", co_name_style),
             Paragraph("Building Zimbabwe’s Future", co_tag_style),
             Spacer(1, 2),
-            Paragraph("No. 4 Kariba Road, Nyakamete Industrial Area, Mutare, Manicaland, Zimbabwe", co_details_style),
-            Paragraph("+263 77 100 1750 · +263 77 100 1577 · 0202 065 845", co_details_style),
-            Paragraph("info@snc.co.zw · snc.co.zw · Incorporation 11284/2019", co_details_style),
-            Paragraph("VAT reg. 220116087 · TIN 2001309644 · ZIMRA tax clearance ITF263", co_details_style),
+            *[Paragraph(line, co_details_style) for line in company_detail_lines()],
         ]
 
         title_info = [
@@ -450,7 +469,7 @@ class SNCInvoicePDFRenderer:
         details_content = [
             Paragraph("INVOICE DETAILS", meta_label),
             Spacer(1, 2),
-            Paragraph(f"Proforma invoice: <b>{invoice_number}</b>", meta_body),
+            Paragraph(f"{invoice_type.capitalize()}: <b>{invoice_number}</b>", meta_body),
             Paragraph(f"Date: <b>{invoice_date_raw}</b>", meta_body),
             Paragraph(f"Quotation: <b>{quotation_ref}</b>", meta_body),
             Paragraph(f"Client PO: <b>{client_po}</b> · Currency: <b>{currency}</b>", meta_body),
@@ -553,8 +572,9 @@ class SNCInvoicePDFRenderer:
 
         words_formatted = number_to_words_usd(tot_incl)
         banner_right = [
-            Paragraph(f"<b>${tot_incl:,.2f}</b>", ParagraphStyle(name="BnrAmt", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=21, textColor=colors.HexColor("#38BDF8"), alignment=2)),
-            Spacer(1, 1),
+            # leading must clear the 21pt figure, or the amount in words is drawn over it.
+            Paragraph(f"<b>${tot_incl:,.2f}</b>", ParagraphStyle(name="BnrAmt", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=21, leading=25, textColor=colors.HexColor("#38BDF8"), alignment=2)),
+            Spacer(1, 3),
             Paragraph(words_formatted, amount_words_style),
         ]
 
@@ -695,12 +715,9 @@ class SNCInvoicePDFRenderer:
         # -------------------------------------------------------------------------
         # 8. NOTES & CONTACT (EXACT SNC INVOICE FOOTNOTE)
         # -------------------------------------------------------------------------
-        notes_list = data.get("notes") or [
-            f"This proforma invoice covers the {int(deposit_pct) if deposit_pct > 0 else 'full'} deposit on the quoted works, as set out in Quotation {quotation_ref}.",
-            f"Please quote {invoice_number} as the reference on your payment.",
-            "A fiscal tax invoice will be issued on receipt of payment.",
-            "Ordering of materials and mobilisation to site begin on receipt of the full deposit.",
-        ]
+        notes_list = data.get("notes") or default_invoice_notes(
+            invoice_type, invoice_number, quotation_ref, deposit_pct,
+        )
 
         notes_flow = [
             Paragraph("<b>Notes</b>", notes_hdr),
@@ -725,17 +742,53 @@ class SNCInvoicePDFRenderer:
             canv.invoice_ref = invoice_number
             canv.client_name = client_name
             canv.project_title = subject
+            canv.doc_label = invoice_type.title()
+            canv.verification = verification
             return canv
 
         doc.build(story, canvasmaker=make_canvas)
+        self.amount_due = round(tot_incl, 2)
         return True
 
 
-def render_invoice_pdf_bytes(data: Dict[str, Any]) -> bytes:
+def _pct(value: float) -> str:
+    return f"{int(value)}" if float(value).is_integer() else f"{value:g}"
+
+
+def default_invoice_notes(invoice_type: str, invoice_number: str, quotation_ref: str, deposit_pct: float) -> List[str]:
+    """Standard notes, worded for the kind of invoice actually issued."""
+    kind = str(invoice_type or "invoice").strip().lower()
+    is_proforma = "proforma" in kind
+    covers = f"the {_pct(deposit_pct)}% deposit on the quoted works" if deposit_pct > 0 else "the works and services listed above"
+    source = f", as set out in Quotation {quotation_ref}" if quotation_ref and quotation_ref != "—" else ""
+    notes = [
+        f"This {kind} covers {covers}{source}.",
+        f"Please quote {invoice_number} as the reference on your payment.",
+    ]
+    if is_proforma:
+        notes.append("A fiscal tax invoice will be issued on receipt of payment.")
+    if deposit_pct > 0:
+        notes.append("Ordering of materials and mobilisation to site begin on receipt of the full deposit.")
+    return notes
+
+
+def render_invoice_pdf_bytes(data: Dict[str, Any], verification: Optional[Dict[str, str]] = None) -> bytes:
     """Render an invoice in memory. Raises ValueError/TypeError on bad input."""
     buffer = io.BytesIO()
-    SNCInvoicePDFRenderer().render_invoice_pdf(data, buffer)
+    SNCInvoicePDFRenderer().render_invoice_pdf(data, buffer, verification)
     return buffer.getvalue()
+
+
+def invoice_document_type(data: Dict[str, Any]) -> str:
+    """Attestation document_type for an invoice payload."""
+    if not (data.get("invoice_number") or data.get("invoice_reference")):
+        return "draft_invoice"
+    kind = str(data.get("invoice_type") or "PROFORMA INVOICE").upper()
+    if "PROFORMA" in kind:
+        return "proforma_invoice"
+    if "TAX" in kind:
+        return "tax_invoice"
+    return "invoice"
 
 
 def invoice_pdf_filename(data: Dict[str, Any], prefix: str = "SNC_Invoice") -> str:
@@ -744,29 +797,48 @@ def invoice_pdf_filename(data: Dict[str, Any], prefix: str = "SNC_Invoice") -> s
     return f"{prefix}_{clean}.pdf"
 
 
-async def invoice_pdf_response(data: Dict[str, Any], prefix: str = "SNC_Invoice"):
+async def invoice_pdf_response(data: Dict[str, Any], prefix: str = "SNC_Invoice", *, db, user: Dict[str, Any]):
     """Shared HTTP handler body for every ``/invoices/generate-pdf`` route.
 
     Renders in memory (no shared temp files that concurrent requests could
-    clobber) and off the event loop, since ReportLab is CPU-bound.
+    clobber) and off the event loop, since ReportLab is CPU-bound. Every copy
+    is AEGIS-signed: QR strip on each page, attestation recorded as issued by
+    ``user``.
     """
     from fastapi import HTTPException, status
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import Response
+
+    from app.services.documents import attestation
 
     items = data.get("items")
     if items is not None and not isinstance(items, list):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invoice items must be a list.")
     filename = invoice_pdf_filename(data, prefix)
+    verification = attestation.new_verification()
+    renderer = SNCInvoicePDFRenderer()
+
+    def render() -> bytes:
+        buffer = io.BytesIO()
+        renderer.render_invoice_pdf(data, buffer, verification)
+        return buffer.getvalue()
+
     try:
-        pdf = await run_in_threadpool(render_invoice_pdf_bytes, data)
+        pdf = await run_in_threadpool(render)
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Invalid invoice data: {exc}") from exc
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    await attestation.attest_issue(
+        db, user, verification=verification, pdf=pdf,
+        document_type=invoice_document_type(data),
+        document_number=str(data.get("invoice_number") or data.get("invoice_reference") or "DRAFT"),
+        title=data.get("subject") or data.get("title"),
+        counterparty=data.get("client_name") or data.get("customer_name"),
+        amount=renderer.amount_due,
+        currency=str(data.get("currency") or "USD"),
+        document_status=str(data.get("invoice_type") or "PROFORMA INVOICE").lower(),
+        filename=filename,
     )
+    await db.commit()
+    return attestation.signed_pdf_response(pdf, filename, verification)
 
 
 # Roles holding any of these may issue official SNC invoices (Executive, Finance,
