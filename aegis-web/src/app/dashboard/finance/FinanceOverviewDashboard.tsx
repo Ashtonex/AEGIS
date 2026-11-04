@@ -53,6 +53,11 @@ function monthLabel(month: string) {
   return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 }
 
+function dateShort(iso: string) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
 function ChartTip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
   if (!active || !payload?.length) return null;
   return (
@@ -329,7 +334,7 @@ export function FinanceOverviewDashboard({
       <FinanceActionInbox items={actionItems} loading={loading} onRefresh={fetchDashboard} />
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-        <Section title="Cash in vs cash out" hint="Cashbook, last 12 months (transfers between accounts excluded)" href="/dashboard/finance/cashbook" className="xl:col-span-2">
+        <Section title="Cash in vs cash out" hint="Bank statement and petty cash, last 12 months (transfers and bank reversals excluded)" href="/dashboard/finance/cashbook" className="xl:col-span-2">
           <div className="h-64">
             {loading ? <ChartLoading /> : (
               <ResponsiveContainer width="100%" height="100%">
@@ -417,7 +422,7 @@ export function FinanceOverviewDashboard({
           </div>
         </Section>
 
-        <Section title="Cash by account" hint="Current balances" href="/dashboard/finance/banking">
+        <Section title="Cash by account" hint="Bank accounts: latest statement balance" href="/dashboard/finance/banking">
           {loading ? <ChartLoading /> : (data?.cash_accounts || []).length === 0 ? <Empty text="No cash accounts." /> : (
             <ul className="space-y-2 max-h-56 overflow-y-auto pr-1">
               {(data?.cash_accounts || []).map((a: RecordData) => {
@@ -426,7 +431,11 @@ export function FinanceOverviewDashboard({
                 return (
                   <li key={a.account_name} className="text-xs">
                     <div className="flex justify-between gap-2">
-                      <span className="text-paper truncate">{a.account_name}{a.is_petty_cash && <span className="ml-1.5 text-[9px] uppercase font-mono text-slate">petty</span>}</span>
+                      <span className="text-paper truncate">
+                        {a.account_name}
+                        {a.is_petty_cash && <span className="ml-1.5 text-[9px] uppercase font-mono text-slate">petty</span>}
+                        {a.bank_as_of && <span className="ml-1.5 text-[9px] uppercase font-mono text-slate">bank {dateShort(a.bank_as_of)}</span>}
+                      </span>
                       <span className={`tabular-nums ${Number(a.balance) < 0 ? "text-red-400" : "text-paper"}`}>{money(a.balance)}</span>
                     </div>
                     <div className="mt-1 h-1.5 rounded-full bg-ink overflow-hidden">

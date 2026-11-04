@@ -185,8 +185,29 @@ def parse(pdf_bytes: bytes) -> ParsedStatement:
         statement.lines.append(StatementLine(
             transaction_date=_date(r["date"]), reference=r["reference"][:160], description=description,
             debit=r["debit"], credit=r["credit"], balance=r["balance"], reversal=r["reversal"], page=r["page"]))
+    _fix_wrong_column(statement)
     _validate(statement)
     return statement
+
+
+def _fix_wrong_column(s: ParsedStatement) -> None:
+    """The bank sometimes prints a line in the wrong column without its "R"
+    marker - e.g. 10 Apr 2024 "UPL Detail ZERORISING THE ACC": 49.73 under Cr
+    while the balance falls from 49.73 to 0.00. The printed running balance
+    is the bank's own arithmetic, so when a line only ties out with its sign
+    flipped (and does not tie out as printed) it is read as the reverse
+    column. Anything else that breaks the balance is still reported."""
+    if s.opening_balance is None:
+        return
+    running = s.opening_balance
+    for line in s.lines:
+        if line.balance is None or (line.debit is None and line.credit is None):
+            running = line.balance if line.balance is not None else running
+            continue
+        if running + line.amount != line.balance and running - line.amount == line.balance:
+            line.reversal = not line.reversal
+            line.description = "[WRONG COLUMN ON STATEMENT] " + line.description
+        running = line.balance
 
 
 def _validate(s: ParsedStatement) -> None:

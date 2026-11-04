@@ -43,6 +43,18 @@ async def balance_sheet(
     return ok(result, "Balance sheet computed.")
 
 
+@router.get("/yearly-history")
+async def yearly_history(
+    through: date = Query(default=None),
+    user: dict = Depends(require_permission("finance.gl.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every calendar year from the first posted journal to `through`
+    (default today): income statement, year-end balance sheet, cash movement."""
+    result = await financial_statements.get_yearly_history(db, org_id=user["org_id"], through=through or date.today())
+    return ok(result, "Yearly history computed.", total=len(result["years"]))
+
+
 @router.get("/cash-movement")
 async def cash_movement(
     period_start: date = Query(...),

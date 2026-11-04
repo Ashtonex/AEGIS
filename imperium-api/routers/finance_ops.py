@@ -93,15 +93,33 @@ async def finance_dashboard(
                     date_trunc('month', CURRENT_DATE) - make_interval(months => CAST(:months AS int) - 1),
                     date_trunc('month', CURRENT_DATE), interval '1 month')::date AS month
             )
+            -- A bank account with an imported statement is read from the statement (what the bank
+            -- says); the cashbook only covers accounts with no statement (petty cash). Cash taken
+            -- out of the bank is a move into petty cash, and bank reversals cancel in pairs, so
+            -- neither counts as money in or out.
+            , stmt_accounts AS (
+                SELECT DISTINCT cash_account_id FROM finance.bank_statement_lines WHERE organization_id = :org_id
+            ), moves AS (
+                SELECT l.transaction_date AS on_date, l.amount
+                FROM finance.bank_statement_lines l
+                LEFT JOIN projects.projects p ON p.id = l.project_id
+                WHERE l.organization_id = :org_id
+                  AND COALESCE(l.category, '') NOT IN ('reversal', 'cash_withdrawal')
+                  AND (CAST(:department_id AS uuid) IS NULL OR p.department_id = CAST(:department_id AS uuid))
+                UNION ALL
+                SELECT ct.transaction_date,
+                       CASE WHEN ct.direction = 'inflow' THEN ct.amount ELSE -ct.amount END
+                FROM finance.cashbook_transactions ct
+                WHERE ct.organization_id = :org_id AND ct.is_deleted = false
+                  AND ct.transaction_type NOT IN ('transfer_in', 'transfer_out')
+                  AND ct.cash_account_id NOT IN (SELECT cash_account_id FROM stmt_accounts)
+                  AND (CAST(:department_id AS uuid) IS NULL OR ct.department_id = CAST(:department_id AS uuid))
+            )
             SELECT to_char(m.month, 'YYYY-MM') AS month,
-                   COALESCE(SUM(ct.amount) FILTER (WHERE ct.direction = 'inflow'), 0) AS inflow,
-                   COALESCE(SUM(ct.amount) FILTER (WHERE ct.direction = 'outflow'), 0) AS outflow
+                   COALESCE(SUM(mv.amount) FILTER (WHERE mv.amount > 0), 0) AS inflow,
+                   COALESCE(-SUM(mv.amount) FILTER (WHERE mv.amount < 0), 0) AS outflow
             FROM m
-            LEFT JOIN finance.cashbook_transactions ct
-              ON date_trunc('month', ct.transaction_date) = m.month
-             AND ct.organization_id = :org_id AND ct.is_deleted = false
-             AND ct.transaction_type NOT IN ('transfer_in', 'transfer_out')
-             AND (CAST(:department_id AS uuid) IS NULL OR ct.department_id = CAST(:department_id AS uuid))
+            LEFT JOIN moves mv ON date_trunc('month', mv.on_date) = m.month
             GROUP BY m.month ORDER BY m.month
         """),
         params,
@@ -143,16 +161,27 @@ async def finance_dashboard(
 
     accounts = await db.execute(
         text("""
-            SELECT account_name, account_type, is_petty_cash, current_balance
-            FROM finance.cash_accounts
-            WHERE organization_id = :org_id AND is_deleted = false AND is_active = true
-            ORDER BY current_balance DESC
+            -- an account with an imported statement shows the bank's own latest balance
+            SELECT ca.account_name, ca.account_type, ca.is_petty_cash,
+                   COALESCE(last.bank_balance, ca.current_balance) AS balance, last.transaction_date AS bank_as_of
+            FROM finance.cash_accounts ca
+            LEFT JOIN LATERAL (
+                SELECT l.bank_balance, l.transaction_date
+                FROM finance.bank_statement_lines l
+                JOIN finance.bank_statement_imports i ON i.id = l.import_id
+                WHERE l.cash_account_id = ca.id AND l.organization_id = :org_id AND l.bank_balance IS NOT NULL
+                ORDER BY l.transaction_date DESC, i.uploaded_at DESC, l.line_number DESC
+                LIMIT 1
+            ) last ON true
+            WHERE ca.organization_id = :org_id AND ca.is_deleted = false AND ca.is_active = true
+            ORDER BY 4 DESC
         """),
         params,
     )
     cash_accounts = [
         {"account_name": r.account_name, "account_type": r.account_type, "is_petty_cash": r.is_petty_cash,
-         "balance": float(r.current_balance or 0)}
+         "balance": float(r.balance or 0),
+         "bank_as_of": r.bank_as_of.isoformat() if r.bank_as_of else None}
         for r in accounts
     ]
 

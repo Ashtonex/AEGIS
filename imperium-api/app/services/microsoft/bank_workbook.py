@@ -90,6 +90,10 @@ CATEGORY_LABELS = {
     "bank_charges": "Bank charges & IMTT", "card_purchase": "Card / POS purchase",
     "owner_drawings": "Owner drawings", "tithe_donation": "Tithe / donation", "refund": "Refund",
     "reversal": "Bank reversal", "site_petty_cash": "Handed to site petty cash", "other": "Other",
+    "professional_fees": "Professional fees (accounting, tax, legal)",
+    "travel_accommodation": "Travel, accommodation & conferences",
+    "office_admin": "Office, software & admin", "marketing": "Marketing & website",
+    "loan_advance": "Loan / advance (lent out or repaid)",
 }
 # What a person can pick for a whole bank line (site petty cash is only a use of cash)
 EDITABLE_CATEGORIES = [c for c in CATEGORY_LABELS if c != "site_petty_cash"]

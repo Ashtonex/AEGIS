@@ -50,7 +50,7 @@ from app.services.finance.general_ledger import GeneralLedgerError
 
 CASH_WITHDRAWAL = "cash_withdrawal"
 SITE_PETTY_CASH = "site_petty_cash"   # a use of HQ cash: handed to a project's petty cash float
-EXCLUDED_FROM_PROJECT_BOOKS = ("reversal", "internal_transfer", SITE_PETTY_CASH)
+EXCLUDED_FROM_PROJECT_BOOKS = ("reversal", "internal_transfer", SITE_PETTY_CASH, "loan_advance")
 HQ_PETTY_CASH_CODE = "HQPC"
 HQ_PETTY_CASH_NAME = "Cash"  # renamed from "HQ Petty Cash" 2026-10-29; found by code, not name
 
@@ -60,6 +60,12 @@ AWAITING_BANK = "1070"   # money recorded on a project, not yet on a statement (
 DIRECTORS, SHAREHOLDERS, REVENUE, OTHER_INCOME = "3200", "3300", "4100", "4900"
 UNCLASSIFIED_PROJECT_COST = "5950"
 HISTORICAL_CASH_USE = "historical_cash_use"   # pre-Sept 2026 cash spent without vouchers (migration 245)
+# Money lent out of the business (to staff or others) and its repayment: an
+# asset, never income or expense.
+LOAN_ADVANCE, ADVANCES = "loan_advance", "1500"
+# The bank balance a statement history starts from, posted once against
+# Retained Earnings so GL 1000 equals the bank (see post_opening_balance).
+OPENING_BALANCE_SOURCE, RETAINED_EARNINGS = "bank_opening_balance", "3100"
 
 _MONEY_OUT_ACCOUNTS = {
     HISTORICAL_CASH_USE: "5960",
@@ -75,6 +81,11 @@ _MONEY_OUT_ACCOUNTS = {
     "reversal": SUSPENSE,
     "refund": "7900",
     "other": "7900",
+    "professional_fees": "6300",
+    "travel_accommodation": "6500",
+    "office_admin": "6600",
+    "marketing": "6700",
+    LOAN_ADVANCE: ADVANCES,
     CASH_WITHDRAWAL: HQ_PETTY,
     SITE_PETTY_CASH: HQ_PETTY,
     "client_receipt": SUSPENSE,
@@ -108,6 +119,8 @@ def money_in_account(category: Optional[str], has_project: bool) -> str:
         return SUSPENSE
     if category == "internal_transfer":
         return INTER_ACCOUNT
+    if category == LOAN_ADVANCE:
+        return ADVANCES
     if category == "capital_injection":
         return SHAREHOLDERS
     if category in ("refund", "other"):
@@ -1092,6 +1105,31 @@ async def project_workspace(db: AsyncSession, *, org_id: str, project_id: UUID) 
 # Completeness audit
 # ---------------------------------------------------------------------------
 
+async def post_opening_balance(db: AsyncSession, *, org_id: str, user_id: str, import_id: UUID,
+                               on: date, amount: Decimal) -> Optional[UUID]:
+    """The balance the account held before the first statement line AEGIS
+    has (money from before the history starts), posted once:
+    Cash and Bank (1000) against Retained Earnings (3100). Idempotent per
+    import; a zero balance posts nothing."""
+    amount = Decimal(str(amount))
+    if amount == 0:
+        return None
+    existing = (await db.execute(text("""
+        SELECT id FROM finance.journal_entries
+        WHERE organization_id = :org_id AND source_type = :src AND source_id = :import_id
+          AND status = 'posted' AND reversed_by_journal_id IS NULL
+    """), {"org_id": org_id, "src": OPENING_BALANCE_SOURCE, "import_id": import_id})).scalar()
+    if existing:
+        return existing
+    accounts = await _account_ids(db, org_id)
+    desc = f"Bank balance brought forward at {on:%d %b %Y} (before the first statement line)"
+    debit, credit = (BANK, RETAINED_EARNINGS) if amount > 0 else (RETAINED_EARNINGS, BANK)
+    gl = _resolve([{"code": debit, "debit_amount": abs(amount), "description": desc},
+                   {"code": credit, "credit_amount": abs(amount), "description": desc}], accounts)
+    return await _post_journal(db, org_id=org_id, user_id=user_id, entry_date=on, description=desc, lines=gl,
+                               source_type=OPENING_BALANCE_SOURCE, source_id=import_id, periods={})
+
+
 async def audit(db: AsyncSession, *, org_id: str) -> dict:
     """Proves the bank statement is fully carried into the books, and lists
     what still needs attention. Every check is a number that should be 0 /
@@ -1119,13 +1157,24 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
         JOIN finance.journal_lines jl ON jl.account_id = a.id
         JOIN finance.journal_entries je ON je.id = jl.journal_entry_id AND je.status = 'posted'
         WHERE a.organization_id = :org_id
-          AND (je.source_type IN ('bank_statement_line', 'bank_line_allocation', 'project_money_entry')
+          AND (je.source_type IN ('bank_statement_line', 'bank_line_allocation', 'project_money_entry',
+                                  'bank_opening_balance')
                OR je.reverses_journal_id IN (SELECT id FROM finance.journal_entries
                                              WHERE source_type IN ('bank_statement_line', 'bank_line_allocation',
-                                                                   'project_money_entry')))
+                                                                   'project_money_entry', 'bank_opening_balance')))
         GROUP BY a.account_code, a.account_name
     """)).mappings()}
-    net = sum((Decimal(str(i["net_movement"])) for i in imports), Decimal("0"))
+    # A statement history that starts from a non-zero balance carries that
+    # balance as a posted opening journal (post_opening_balance)
+    openings = (await q("""
+        SELECT COALESCE(sum(jl.debit_amount - jl.credit_amount), 0)
+        FROM finance.journal_entries je
+        JOIN finance.journal_lines jl ON jl.journal_entry_id = je.id
+        JOIN finance.chart_of_accounts a ON a.id = jl.account_id AND a.account_code = :bank
+        WHERE je.organization_id = :org_id AND je.source_type = :src AND je.status = 'posted'
+          AND je.reversed_by_journal_id IS NULL
+    """, bank=BANK, src=OPENING_BALANCE_SOURCE)).scalar() or 0
+    net = sum((Decimal(str(i["net_movement"])) for i in imports), Decimal("0")) + Decimal(str(openings))
     stale = (await q("""
         SELECT count(*) FROM finance.journal_entries je
         JOIN finance.bank_statement_lines l ON l.gl_journal_id = je.id
@@ -1176,7 +1225,8 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
          "ok": lines["missing_journal"] == 0 and stale == 0,
          "detail": f"{lines['missing_journal']} missing, {stale} out of date"},
         {"check": "Ledger Cash and Bank from the statement equals the statement",
-         "ok": bal(BANK) == net, "detail": f"GL {bal(BANK)} vs statement {net}"},
+         "ok": bal(BANK) == net,
+         "detail": f"GL {bal(BANK)} vs statement {net}" + (f" (incl. opening balance {openings})" if openings else "")},
         {"check": "Money recorded on projects and still awaiting the bank equals the 1070 clearing balance",
          "ok": bal(AWAITING_BANK) == Decimal(str(awaiting["money_in"])) - Decimal(str(awaiting["money_out"])),
          "detail": f"GL {bal(AWAITING_BANK)} vs awaiting in {awaiting['money_in']} less out {awaiting['money_out']}"},
