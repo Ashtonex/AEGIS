@@ -60,6 +60,15 @@ export default function ProfilePage() {
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    const whatsappDigits = String(profile.whatsapp_number || "").replace(/\D/g, "");
+    if (whatsappDigits && (whatsappDigits.startsWith("0") || whatsappDigits.length < 8 || whatsappDigits.length > 15)) {
+      setMessage("WhatsApp number needs the country code, e.g. +263 77 123 4567.");
+      return;
+    }
+    if (profile.whatsapp_opt_in && !whatsappDigits) {
+      setMessage("Add your WhatsApp number to receive AEGIS messages on WhatsApp.");
+      return;
+    }
     setSaving(true);
     setMessage("");
 
@@ -79,6 +88,8 @@ export default function ProfilePage() {
         website_url: profile.website_url ?? null,
         bio: profile.bio ?? null,
         theme_preference: theme,
+        whatsapp_number: whatsappDigits ? `+${whatsappDigits}` : null,
+        whatsapp_opt_in: Boolean(profile.whatsapp_opt_in),
       });
       const response = await updateMyProfile(payload);
       const nextProfile = response.data || {};
@@ -182,6 +193,42 @@ export default function ProfilePage() {
               className="mt-1 w-full rounded-sm border border-ink-mid bg-ink-light p-2 text-paper focus:border-signal focus:outline-none"
             />
           </label>
+        </section>
+
+        <section className="rounded-sm border border-ink-mid bg-ink p-5">
+          <h2 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">WhatsApp</h2>
+          <p className="mb-4 text-sm text-slate-light">
+            AEGIS can send you announcements, meeting details and reports on WhatsApp. Only you can turn this on, and you can turn it off at any time.
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="text-sm text-slate-light">
+              WhatsApp number
+              <input
+                type="tel"
+                inputMode="tel"
+                placeholder="+263 77 123 4567"
+                value={profile.whatsapp_number || ""}
+                onChange={(event) => setProfile({ ...profile, whatsapp_number: event.target.value })}
+                className="mt-1 w-full rounded-sm border border-ink-mid bg-ink-light p-2 text-paper focus:border-signal focus:outline-none"
+              />
+            </label>
+            <label className="flex items-start gap-3 self-end border border-ink-mid bg-ink-light p-3 text-sm text-paper">
+              <input
+                type="checkbox"
+                checked={Boolean(profile.whatsapp_opt_in)}
+                onChange={(event) => setProfile({ ...profile, whatsapp_opt_in: event.target.checked })}
+                className="mt-0.5 h-4 w-4 accent-signal"
+              />
+              <span>
+                Send me AEGIS messages on WhatsApp
+                {profile.whatsapp_opt_in && profile.whatsapp_opt_in_at ? (
+                  <span className="block text-xs text-slate-light">
+                    On since {new Date(profile.whatsapp_opt_in_at).toLocaleDateString()}
+                  </span>
+                ) : null}
+              </span>
+            </label>
+          </div>
         </section>
 
         <section className="rounded-sm border border-ink-mid bg-ink p-5">

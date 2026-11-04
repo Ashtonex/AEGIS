@@ -37,6 +37,7 @@ from app.services.finance.ccb_monitor import (
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
 from app.services.finance import draft_budget_reminders
 from app.services.hr import expiry_alerts as hr_expiry_alerts
+from app.services import procurement_notice_emails
 from app.services.hr import time_tracking as hr_time_tracking
 from app.services.hr import performance as hr_performance
 from app.services.hr import performance_delivery as hr_performance_delivery
@@ -1041,6 +1042,23 @@ async def hr_expiry_alerts_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def procurement_notice_emails_job(ctx):
+    """Every 15 minutes: invite active suppliers to quote on newly opened
+    procurement notices, and tell suppliers who quoted how each RFQ ended.
+    procurement.notice_email_log makes each email go out once; a failed send
+    is retried on the next run."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            return await procurement_notice_emails.run(db)
+    except Exception as exc:
+        logger.exception(f"Procurement notice email job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 async def close_attendance_day_job(ctx):
     """Daily 17:05 Harare: stops the clock at each person's day end (17:00 at
     the latest, for site staff Mon-Thu) for everyone checked in by signing in
@@ -1139,6 +1157,7 @@ class WorkerSettings:
         draft_budget_reminder_job,
         hr_expiry_alerts_job,
         close_attendance_day_job,
+        procurement_notice_emails_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -1148,6 +1167,9 @@ class WorkerSettings:
         ),
         cron(
             auto_close_overdue_tenders_job, minute={0, 15, 30, 45}, run_at_startup=False
+        ),
+        cron(
+            procurement_notice_emails_job, minute={7, 22, 37, 52}, run_at_startup=False
         ),
         cron(notify_stale_pipeline_items_job, hour=6, minute=0, run_at_startup=False),
         cron(

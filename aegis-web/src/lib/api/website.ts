@@ -1,5 +1,5 @@
 import { ApiResponse, PaginatedResponse, EnquiryPayload, TenderInterestPayload, JobApplicationPayload, SupplierRegistrationPayload } from "@/types/api";
-import { Project, Tender, Article, JobPosition, LeadershipProfile } from "@/types/website";
+import { Project, ProcurementNotice, Article, JobPosition, LeadershipProfile } from "@/types/website";
 import { API_BASE_URL } from "../constants";
 import { resolveBackendOrigin } from "../backend-url";
 import { getSupabase, getCachedAccessToken } from "../supabase";
@@ -57,14 +57,34 @@ export async function getProject(slug: string): Promise<ApiResponse<Project>> {
 }
 
 // --- TENDERS ---
-export async function getTenders(params?: { limit?: number; status?: string }): Promise<PaginatedResponse<Tender>> {
+/** SNC's procurement notices (RFQs and purchase orders it has issued) for the tender board. */
+export async function getTenders(params?: { limit?: number; status?: string }): Promise<PaginatedResponse<ProcurementNotice>> {
   const searchParams = new URLSearchParams();
   if (params?.limit) searchParams.set("limit", params.limit.toString());
   if (params?.status) searchParams.set("status", params.status);
 
-  return fetchApi<PaginatedResponse<Tender>>(`/api/tenders?${searchParams.toString()}`, {
+  return fetchApi<PaginatedResponse<ProcurementNotice>>(`/api/tenders?${searchParams.toString()}`, {
     next: { revalidate: 300 }
   });
+}
+
+/** One procurement notice, server side. With code (from a purchase order's QR)
+ * the backend says whether that code belongs to an order under this notice.
+ * null = not found; "error" = the service could not be reached. */
+export async function getProcurementNotice(reference: string, code?: string): Promise<ProcurementNotice | null | "error"> {
+  const query = code ? `?code=${encodeURIComponent(code)}` : "";
+  try {
+    const res = await fetch(
+      `${resolveBackendOrigin()}/api/v1/public/intake/tenders/${encodeURIComponent(reference)}${query}`,
+      { next: { revalidate: 60 } },
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) return "error";
+    const body = await res.json();
+    return (body?.data as ProcurementNotice) ?? "error";
+  } catch {
+    return "error";
+  }
 }
 
 export async function submitTenderInterest(id: string, payload: TenderInterestPayload): Promise<ApiResponse<void>> {

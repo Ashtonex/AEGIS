@@ -259,6 +259,17 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     ],
   },
   {
+    name: "Finance Guide",
+    href: "/dashboard/finance/guide",
+    icon: BookOpen,
+    domain: "finance",
+    requiredPermission: "finance.cost.read",
+    directLink: true,
+    subItems: [
+      { name: "Finance Guide", href: "/dashboard/finance/guide", icon: BookOpen },
+    ],
+  },
+  {
     name: "Project Commercials",
     href: "/dashboard/finance/projects",
     icon: FolderKanban,

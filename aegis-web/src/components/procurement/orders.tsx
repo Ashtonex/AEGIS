@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { ArrowRight, CheckCircle2, FileText, Loader2, PackageCheck, Send, ShieldAlert, Truck, X, Download } from "lucide-react";
 import { downloadPurchaseOrderPdf } from "@/lib/api";
 import { poReadyToIssue, poSignoffStep } from "@/components/procurement/journey";
+import { NoticeChip } from "@/components/procurement/NoticeChip";
 import { EmptyState, InfoCard, type Rec, dt, isPoOverdue, matchStatusClass, money, num, pct, poStatusClass, prStatusClass, tx } from "@/components/procurement/shared";
 
 
@@ -366,6 +367,7 @@ export function PODetailDrawer({ po, saving, can = () => false, isSuperAdmin = f
               {tx(po.supplier_name)} · {tx(po.project_name ?? po.project)} ·{" "}
               <span className={`border px-1.5 py-0.5 font-mono text-[10px] uppercase ${poStatusClass(po.status)}`}>{tx(po.status).replace(/_/g, " ")}</span>
             </p>
+            <div className="mt-2"><NoticeChip row={po} /></div>
           </div>
           <button onClick={onClose} className="border border-ink-mid p-2 text-slate-light hover:border-signal hover:text-paper"><X className="h-5 w-5" /></button>
         </header>

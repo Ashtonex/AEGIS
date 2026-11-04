@@ -1,7 +1,7 @@
 import os
 import logging
 import math
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from xml.sax.saxutils import escape as xml_escape
 from reportlab.lib import colors
 from reportlab.platypus import Flowable
@@ -1358,12 +1358,17 @@ class ManagementAccountsPackPDFRenderer(DocumentRenderer):
     pack's PDF always matches exactly what was locked, regardless of
     what has happened in the GL since."""
 
-    def render_pdf(self, data: Dict[str, Any], output_path: str) -> bool:
-        logging.info(f"Rendering Management Accounts pack PDF to {output_path}")
+    def render_pdf(self, data: Dict[str, Any], output_path: Any, verification: Optional[Dict[str, str]] = None) -> bool:
+        """output_path: a file path or a binary buffer. verification: {"code", "url"}
+        from attestation - prints the AEGIS signed-document strip and QR."""
+        logging.info("Rendering Management Accounts pack PDF")
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+            from app.services.documents.branding import FOOTER_LINE
+            from app.services.documents.invoice_renderer import draw_verification_strip
 
             def money(value: Any) -> str:
                 try:
@@ -1372,7 +1377,8 @@ class ManagementAccountsPackPDFRenderer(DocumentRenderer):
                     return "$0.00"
 
             doc = SimpleDocTemplate(
-                output_path, pagesize=A4, rightMargin=36, leftMargin=36, topMargin=54, bottomMargin=45
+                output_path, pagesize=A4, rightMargin=36, leftMargin=36, topMargin=54,
+                bottomMargin=104 if verification else 45,
             )
             styles = getSampleStyleSheet()
             title_style = ParagraphStyle(name="MAPTitle", parent=styles["Heading1"], fontSize=18, spaceAfter=6)
@@ -1390,6 +1396,11 @@ class ManagementAccountsPackPDFRenderer(DocumentRenderer):
                 canvas.drawString(36, height - 24, "MANAGEMENT ACCOUNTS PACK")
                 canvas.setFont("Helvetica", 7)
                 canvas.drawRightString(width - 36, height - 24, f"{data.get('period_start', '')} to {data.get('period_end', '')} | Page {doc_obj.page}")
+                canvas.setFont("Helvetica", 7.5)
+                canvas.setFillColor(colors.HexColor("#64748B"))
+                canvas.drawString(36, 26, FOOTER_LINE)
+                if verification:
+                    draw_verification_strip(canvas, verification, width)
                 canvas.restoreState()
 
             def build_table(rows, col_widths):

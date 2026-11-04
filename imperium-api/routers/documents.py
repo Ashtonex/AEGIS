@@ -1095,9 +1095,10 @@ async def reserve_invoice_number(
 async def generate_invoice_pdf(
     payload: Dict[str, Any],
     user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Renders official Six Nine Construction Proforma or Tax Invoice PDF
     with watermark, corporate layout, and accurate financial alignment.
     """
-    return await invoice_pdf_response(payload, "SNC_Invoice")
+    return await invoice_pdf_response(payload, "SNC_Invoice", db=db, user=user)

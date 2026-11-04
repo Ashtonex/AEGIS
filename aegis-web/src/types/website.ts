@@ -91,6 +91,40 @@ export interface Tender {
   contactEmail: string;
 }
 
+export type ProcurementNoticeStatus =
+  | "open"
+  | "evaluating"
+  | "awarded"
+  | "in_delivery"
+  | "fulfilled"
+  | "dormant"
+  | "cancelled";
+
+/** A request for quotation or purchase order SNC has issued, as published on
+ * the tender board. Carries no amounts or supplier names by design. */
+export interface ProcurementNotice {
+  reference: string;
+  title: string;
+  description: string | null;
+  type: "Request for quotation" | "Direct purchase order";
+  project: string | null;
+  status: ProcurementNoticeStatus;
+  status_label: string;
+  status_description: string;
+  published_at: string | null;
+  closing_date: string | null;
+  awarded_at: string | null;
+  last_activity_at: string | null;
+  accepting_quotations: boolean;
+  contact_email: string;
+  /** Supplier portal link for quoting online (RFQ notices only). */
+  portal_path: string | null;
+  /** Detail only: what an RFQ asks suppliers to price (never costs). */
+  items?: { description: string; quantity: number | null; unit: string | null; work_package: string | null }[];
+  /** Only with ?code=: whether that AEGIS code belongs to this notice's RFQ or an order under it. */
+  code_matches?: boolean;
+}
+
 export interface Article {
   id: string;
   slug: string;

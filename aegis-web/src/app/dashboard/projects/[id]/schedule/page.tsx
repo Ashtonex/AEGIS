@@ -42,6 +42,7 @@ import {
   calculateProjectScheduleCPM,
   generateProjectMilestonesFromBOQ,
   getProjectScheduleSiteSync,
+  rerunProgrammeRollout,
   syncScheduleFromSiteReports,
 } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
@@ -79,6 +80,7 @@ export default function ProjectSchedulePage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [calculatingCPM, setCalculatingCPM] = useState(false);
   const [generatingBOQ, setGeneratingBOQ] = useState(false);
+  const [rollingOut, setRollingOut] = useState(false);
   const [cpmFeedback, setCpmFeedback] = useState<string | null>(null);
 
   // Load site sync data
@@ -366,6 +368,20 @@ export default function ProjectSchedulePage() {
     }
   };
 
+  const handleRolloutWeeks = async () => {
+    setRollingOut(true);
+    setCpmFeedback(null);
+    try {
+      const res = await rerunProgrammeRollout(projectId);
+      setCpmFeedback(res?.message || "Weekly budgets and daily targets generated from the programme.");
+      await refetch();
+    } catch (err) {
+      setCpmFeedback(err instanceof Error ? err.message : "Could not generate weekly budgets from the programme.");
+    } finally {
+      setRollingOut(false);
+    }
+  };
+
   const handleGenerateBOQMilestones = async () => {
     setGeneratingBOQ(true);
     try {
@@ -538,6 +554,19 @@ export default function ProjectSchedulePage() {
               {calculatingCPM ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Flame className="h-3.5 w-3.5" />}
               <span>{calculatingCPM ? "Computing..." : "Run CPM Float"}</span>
             </button>
+
+            {String(project?.status ?? "").toLowerCase() === "active" && (
+              <button
+                type="button"
+                onClick={handleRolloutWeeks}
+                disabled={rollingOut}
+                title="Create weekly budgets and Mon-Fri daily targets for programme weeks that don't have one yet"
+                className="inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 border border-emerald-500/50 bg-emerald-950/30 px-3 py-2 font-mono text-xs font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500 hover:text-ink transition-all disabled:opacity-50 min-h-[40px]"
+              >
+                {rollingOut ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CalendarDays className="h-3.5 w-3.5" />}
+                <span>Weekly budgets</span>
+              </button>
+            )}
 
             <button
               type="button"

@@ -240,6 +240,23 @@ export function SupplierPortalHome() {
     void load();
   }, [load]);
 
+  // Arriving from a tender-board notice (/portal/supplier?notice=SNC-PN-...):
+  // bring that RFQ into view once the list has loaded.
+  const [focusNotice, setFocusNotice] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const value = new URLSearchParams(window.location.search).get("notice");
+      if (value) setFocusNotice(value.trim().toUpperCase());
+    } catch {
+      /* no query string */
+    }
+  }, []);
+  useEffect(() => {
+    if (!focusNotice || rfqs.length === 0) return;
+    const target = rfqs.find((rfq) => (rfq.notice_reference || "").toUpperCase() === focusNotice);
+    if (target) document.getElementById(`rfq-${target.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [focusNotice, rfqs]);
+
   const ratesByType = useMemo(() => {
     const groups: Record<string, VendorRateItem[]> = { material: [], transport: [], service: [] };
     for (const item of rateItems) groups[item.rate_type]?.push(item);
@@ -719,17 +736,25 @@ export function SupplierPortalHome() {
                   {rfqs.map((rfq) => {
                     const form = rfqForms[rfq.id] ?? { reference: "", delivery_days: "", validity_days: "30", notes: "", prices: {} };
                     const quoteDocument = rfqQuoteDocuments[rfq.id];
+                    const focused = !!focusNotice && (rfq.notice_reference || "").toUpperCase() === focusNotice;
                     return (
-                      <article key={rfq.id} className="p-4">
+                      <article key={rfq.id} id={`rfq-${rfq.id}`} className={`scroll-mt-24 p-4 ${focused ? "border-l-2 border-signal bg-signal/5" : ""}`}>
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                           <div>
-                            <p className="font-mono text-[10px] uppercase tracking-widest text-slate-light">{rfq.rfq_number}</p>
+                            <p className="font-mono text-[10px] uppercase tracking-widest text-slate-light">
+                              {rfq.rfq_number}{rfq.notice_reference ? ` · notice ${rfq.notice_reference}` : ""}
+                            </p>
                             <h3 className="mt-1 text-lg font-semibold">{rfq.title}</h3>
                             <p className="mt-1 text-sm text-slate-light">{rfq.description || "No description supplied."}</p>
                             <p className="mt-2 font-mono text-[10px] uppercase text-slate-light">
                               {rfq.project_name || "Project not linked"} {rfq.closing_date ? `· closes ${formatDate(rfq.closing_date)}` : ""}
                             </p>
                           </div>
+                          {rfq.is_closed ? (
+                            <span className="shrink-0 border border-ink-mid px-3 py-2 font-mono text-[10px] uppercase text-slate-light">
+                              Closed for quotations
+                            </span>
+                          ) : null}
                           {rfq.response ? (
                             <span className="shrink-0 border border-emerald-500/30 bg-emerald-950/20 px-3 py-2 font-mono text-[10px] uppercase text-emerald-300">
                               Submitted · {money(Number(rfq.response.total_amount || 0), "USD")}
@@ -832,7 +857,8 @@ export function SupplierPortalHome() {
                           <button
                             type="button"
                             onClick={() => void submitRfqResponse(rfq)}
-                            disabled={saving === `rfq-${rfq.id}`}
+                            disabled={saving === `rfq-${rfq.id}` || !!rfq.is_closed}
+                            title={rfq.is_closed ? "The closing date has passed" : undefined}
                             className="inline-flex h-10 items-center justify-center gap-2 bg-signal px-4 font-mono text-xs uppercase tracking-widest text-ink disabled:opacity-50"
                           >
                             {saving === `rfq-${rfq.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardList className="h-4 w-4" />}

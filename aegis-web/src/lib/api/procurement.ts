@@ -104,6 +104,24 @@ export async function submitProcurementRequisition(id: string, overrideReason?: 
   });
 }
 
+export type RequisitionAmendment = {
+  required_by_date?: string;
+  priority?: "low" | "normal" | "urgent" | "emergency";
+  justification?: string | null;
+  /** The full set of lines; existing lines keep their id, lines left out are removed. */
+  lines?: { id?: string; item_id?: string | null; description: string; qty: number; uom: string; unit_cost: number; work_package?: string | null; notes?: string | null; is_price_confirmed?: boolean }[];
+  /** Required once the requisition has been submitted, approved or ordered. */
+  reason?: string;
+};
+
+export async function amendProcurementRequisition(id: string, payload: RequisitionAmendment): Promise<ApiResponse<{ id: string; status: string; total_estimated: number; amendment_count: number }>> {
+  return fetchApi<ApiResponse<{ id: string; status: string; total_estimated: number; amendment_count: number }>>(`/api/v1/procurement/requisitions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function approveProcurementRequisition(id: string, decision: "approved" | "rejected", reason?: string, overrideReason?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/procurement/requisitions/${id}/decision`, {
     method: "POST",
@@ -536,6 +554,16 @@ export async function generateProjectMilestonesFromBOQ(
       allowFallback: false,
     }
   );
+}
+
+export type ProgrammeRolloutSummary = { rebaselined_days?: number; site_id?: string; weeks_created?: number; weeks_skipped?: number; daily_targets?: number; message?: string };
+
+/** Fills any programme weeks of an active project that have no weekly budget yet (weekly budget + daily targets). */
+export async function rerunProgrammeRollout(projectId: string): Promise<ApiResponse<ProgrammeRolloutSummary>> {
+  return fetchApi<ApiResponse<ProgrammeRolloutSummary>>(`/api/v1/projects/${projectId}/programme/rollout`, {
+    method: 'POST',
+    allowFallback: false,
+  });
 }
 
 /** Links an existing project to a CRM opportunity deal. */
@@ -1171,6 +1199,10 @@ export interface SupplierPortalRfqResponse {
 export interface SupplierPortalRfq {
   id: string;
   rfq_number: string;
+  /** Public tender-board notice (SNC-PN-...), when the RFQ is published. */
+  notice_reference?: string | null;
+  /** The closing date has passed; quotations are no longer accepted. */
+  is_closed?: boolean;
   title: string;
   description?: string;
   closing_date?: string;
@@ -1923,6 +1955,27 @@ export async function updateWebsiteContent(payload: Record<string, unknown>): Pr
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/website-content`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** AEGIS-signed request for quotation PDF to send to suppliers. */
+export async function downloadRfqPdf(rfqId: string): Promise<Blob> {
+  const url = resolveApiUrl(`/api/v1/procurement/rfqs/${encodeURIComponent(rfqId)}/pdf`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: "GET", headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, body?.detail || body?.error?.message || "Could not generate the RFQ document.");
+  }
+  return response.blob();
+}
+
+/** Show or hide a procurement notice on the public tender board (hiding needs a reason). */
+export async function setProcurementNoticeVisibility(reference: string, published: boolean, reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/notices/${encodeURIComponent(reference)}/visibility`, {
+    method: "POST",
+    body: JSON.stringify({ published, reason: reason || null }),
     allowFallback: false,
   });
 }

@@ -18,7 +18,7 @@ import { PURCHASE_FILTERS, PurchasesView, matchesPurchaseFilter } from "@/compon
 import { MyTasks } from "@/components/procurement/tasks";
 import { ImportListModal, ProjectMaterialsModal } from "@/components/procurement/import";
 import { PlanDrawer, PlansView } from "@/components/procurement/plans";
-import { ApproveModal, CreatePOModal, CreatePRModal, CreateRfqModal, PendingPricingTable, RequisitionsTable, RfqResponseModal, RfqsTab } from "@/components/procurement/requests";
+import { ApproveModal, CreatePOModal, CreatePRModal, CreateRfqModal, EditPRModal, PendingPricingTable, RequisitionsTable, RfqResponseModal, RfqsTab, UploadQuotesModal } from "@/components/procurement/requests";
 import { Banner, LoadingState, type PaymentEvidencePayload, type Rec, StatusChips, type Tab, isPoOverdue, loadFailureMessage, normalizeActionError, num, tx } from "@/components/procurement/shared";
 import { AddSupplierModal, CredentialsIssuedModal, Supplier360Modal, SuppliersTable } from "@/components/procurement/suppliers";
 
@@ -95,6 +95,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const [creatingRfqFromPR, setCreatingRfqFromPR] = useState<Rec | null>(null);
   const [creatingPOFromPR, setCreatingPOFromPR] = useState<Rec | null>(null);
   const [quotingRfq, setQuotingRfq] = useState<Rec | null>(null);
+  const [editingPR, setEditingPR] = useState<Rec | null>(null);
+  const [uploadingQuotesRfq, setUploadingQuotesRfq] = useState<Rec | null>(null);
   const [receivingPO, setReceivingPO] = useState<Rec | null>(null);
   const [invoicingPO, setInvoicingPO] = useState<Rec | null>(null);
   const [paymentEvidenceInvoice, setPaymentEvidenceInvoice] = useState<Rec | null>(null);
@@ -583,14 +585,14 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
               expandedId={expandedPurchase}
               onToggle={setExpandedPurchase}
               saving={saving}
-              requestHandlers={{ onSubmit: submitPR, onApprove: setApprovingPR, onCreateRFQ: setCreatingRfqFromPR, onCreatePO: setCreatingPOFromPR }}
-              rfqHandlers={{ onQuote: setQuotingRfq, onDecideQuote: decideQuote, onCreatePO: createPOFromQuote }}
+              requestHandlers={{ onSubmit: submitPR, onApprove: setApprovingPR, onCreateRFQ: setCreatingRfqFromPR, onCreatePO: setCreatingPOFromPR, onEdit: setEditingPR }}
+              rfqHandlers={{ onQuote: setQuotingRfq, onDecideQuote: decideQuote, onCreatePO: createPOFromQuote, onUploadQuotes: setUploadingQuotesRfq }}
               onViewOrder={setSelectedPO}
               invoiceHandlers={{ onMatch: matchInvoice, onInspect: (inv) => setInspectingMatchInvoice(inv), onApprovePayment: setPaymentEvidenceInvoice }}
             />
           ) :
-          tab === "requisitions" ? <RequisitionsTable rows={filteredPRs} saving={saving} onSubmit={submitPR} onApprove={setApprovingPR} onCreateRFQ={setCreatingRfqFromPR} onCreatePO={setCreatingPOFromPR} /> :
-          tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} /> :
+          tab === "requisitions" ? <RequisitionsTable rows={filteredPRs} saving={saving} onSubmit={submitPR} onApprove={setApprovingPR} onCreateRFQ={setCreatingRfqFromPR} onCreatePO={setCreatingPOFromPR} onEdit={setEditingPR} /> :
+          tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} onUploadQuotes={setUploadingQuotesRfq} /> :
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
           tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} onView={setViewingSupplier} /> :
           tab === "pricing" ? <PendingPricingTable rows={filteredPricing} saving={saving} onConfirm={confirmPricing} /> :
@@ -686,6 +688,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
       )}
       {creatingRfqFromPR && <CreateRfqModal pr={creatingRfqFromPR} saving={saving === `rfq-${creatingRfqFromPR.id}`} onCreate={(payload) => void createRfq(creatingRfqFromPR, payload)} onClose={() => setCreatingRfqFromPR(null)} />}
       {creatingPOFromPR && <CreatePOModal pr={creatingPOFromPR} suppliers={suppliers} saving={saving === `po-${creatingPOFromPR.id}`} onCreate={(supplierId, supplierSelectionReason) => void createPO(creatingPOFromPR, supplierId, supplierSelectionReason)} onClose={() => setCreatingPOFromPR(null)} />}
+      {editingPR && <EditPRModal pr={editingPR} onClose={() => setEditingPR(null)} onSaved={(message) => { setEditingPR(null); setNotice(message); void load(); }} />}
+      {uploadingQuotesRfq && <UploadQuotesModal rfq={uploadingQuotesRfq} suppliers={suppliers} onClose={() => { setUploadingQuotesRfq(null); void load(); }} onDone={(message) => { setUploadingQuotesRfq(null); setNotice(message); void load(); }} />}
       {quotingRfq && <RfqResponseModal rfq={quotingRfq} suppliers={suppliers} saving={saving === `quote-${quotingRfq.id}`} onSubmit={(payload) => void recordQuote(quotingRfq, payload)} onClose={() => setQuotingRfq(null)} />}
       {receivingPO && <ReceiveGoodsModal po={receivingPO} stores={stores} saving={saving === "receive-po"} onSubmit={receivePO} onClose={() => setReceivingPO(null)} />}
       {invoicingPO && <SupplierInvoiceModal po={invoicingPO} saving={saving === "invoice-po"} onSubmit={registerInvoice} onClose={() => setInvoicingPO(null)} />}

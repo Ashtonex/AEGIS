@@ -20,6 +20,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from xml.sax.saxutils import escape
 
+from app.services.documents.branding import company_detail_lines
 from app.services.documents.invoice_renderer import NumberedCanvas
 
 LOGO_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "assets", "logo.png"))
@@ -119,9 +120,7 @@ def _header(st, reference: str, generated: str, subtitle: str) -> Table:
         Paragraph("SIX NINE CONSTRUCTION", st["co_name"]),
         Paragraph("Building Zimbabwe’s Future", st["co_tag"]),
         Spacer(1, 2),
-        Paragraph("No. 4 Kariba Road, Nyakamete Industrial Area, Mutare, Manicaland, Zimbabwe", st["co_details"]),
-        Paragraph("+263 77 100 1750 · +263 77 100 1577 · 0202 065 845", st["co_details"]),
-        Paragraph("info@snc.co.zw · snc.co.zw · Human Resources", st["co_details"]),
+        *[Paragraph(line, st["co_details"]) for line in company_detail_lines("Human Resources")[:4]],
     ]
     title = [
         Paragraph("LEAVE RECORD", st["title"]),
@@ -160,13 +159,16 @@ def render_leave_record_pdf(
     balance_year: int,
     annual_taken: float,
     generated_by: Optional[str] = None,
+    verification: Optional[Dict[str, str]] = None,
 ) -> bytes:
     """Render one employee's leave record to PDF bytes.
 
     requests: hr.leave_requests rows (oldest first) with approved_by_name.
     year: when set, the history is limited to leave starting in that year.
     balance_year / annual_taken: approved annual leave in the balance year,
-    printed against the employee's annual_leave_days entitlement."""
+    printed against the employee's annual_leave_days entitlement.
+    verification: {"code", "url"} from attestation - prints the AEGIS
+    signed-document strip and QR on every page."""
     st = _styles()
     name = str(employee.get("employee_name") or "Employee")
     reference = str(employee.get("employee_number") or "") or name
@@ -338,11 +340,12 @@ def render_leave_record_pdf(
         canv.client_name = name
         canv.project_title = period
         canv.status_stamp = None
-        canv.verification = None
+        canv.verification = verification
         return canv
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=48,
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36,
+                            bottomMargin=104 if verification else 48,
                             title=f"Leave Record - {name}", author="Six Nine Construction (Pvt) Ltd")
     doc.build(story, canvasmaker=make_canvas)
     return buffer.getvalue()

@@ -299,22 +299,29 @@ async def download_employee_leave_record(
     ).scalar()
 
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import Response
+    from app.services.documents import attestation
     from app.services.documents.leave_renderer import render_leave_record_pdf
 
+    verification = attestation.new_verification()
     pdf = await run_in_threadpool(
         lambda: render_leave_record_pdf(
             dict(employee), requests, year=year, balance_year=balance_year,
-            annual_taken=float(annual_taken or 0), generated_by=generated_by,
+            annual_taken=float(annual_taken or 0), generated_by=generated_by, verification=verification,
         )
     )
     slug = "".join(c if c.isalnum() else "_" for c in str(employee["employee_name"] or "employee")).strip("_") or "employee"
     filename = f"SNC_Leave_Record_{slug}{f'_{year}' if year else ''}.pdf"
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    await attestation.attest_issue(
+        db, user, verification=verification, pdf=pdf,
+        document_type="leave_record",
+        document_number=str(employee.get("employee_number") or employee["employee_name"] or "LEAVE"),
+        title=f"Leave record {year}" if year else "Leave record (full history)",
+        entity_type="hr.employee", entity_id=employee_id,
+        counterparty=employee["employee_name"],
+        filename=filename,
     )
+    await db.commit()
+    return attestation.signed_pdf_response(pdf, filename, verification)
 
 
 # --- Self-service ("me") endpoints ---
