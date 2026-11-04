@@ -115,10 +115,12 @@ export function FinanceOverviewDashboard({
   projectSummaries,
   departmentId,
   unassignedBankOut,
+  cashWithoutUse = 0,
 }: {
   projectSummaries: RecordData[];
   departmentId: string;
   unassignedBankOut: number;
+  cashWithoutUse?: number;
 }) {
   const [data, setData] = useState<RecordData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -191,11 +193,24 @@ export function FinanceOverviewDashboard({
         id: "bank-unassigned",
         category: "banking",
         severity: "attention",
-        title: `${money(unassignedBankOut)} unassigned bank withdrawals`,
-        description: "Bank statement withdrawals have not been allocated to a project code or cost category.",
+        title: `${money(unassignedBankOut)} of bank payments not classified`,
+        description: "Bank statement payments with neither a project nor a category.",
         amount: unassignedBankOut,
         href: "/dashboard/finance/bank-review",
         actionLabel: "Review & Tag",
+      });
+    }
+
+    if (cashWithoutUse > 0) {
+      list.push({
+        id: "bank-cash-unvouched",
+        category: "banking",
+        severity: "attention",
+        title: `${money(cashWithoutUse)} cash withdrawn with no recorded use`,
+        description: "Cash taken out of the bank and held as petty cash until its uses are recorded against the withdrawal.",
+        amount: cashWithoutUse,
+        href: "/dashboard/finance/bank-review",
+        actionLabel: "Record uses",
       });
     }
 
@@ -294,7 +309,7 @@ export function FinanceOverviewDashboard({
     }
 
     return list;
-  }, [unassignedBankOut, overduePayables, position, draftBudgets, claims, data]);
+  }, [unassignedBankOut, cashWithoutUse, overduePayables, position, draftBudgets, claims, data]);
 
   const fetchDashboard = () => {
     setLoading(true);

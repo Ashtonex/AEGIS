@@ -11,6 +11,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+
+from app.services.finance.bank_books import EFFECTIVE_BALANCE_SQL
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.pagination import ok, page_offset, paginated
@@ -119,7 +121,7 @@ async def list_cash_accounts(
         text(f"""
             SELECT
                 ca.*,
-                ca.current_balance AS running_balance,
+                {EFFECTIVE_BALANCE_SQL} AS running_balance,
                 COUNT(*) OVER() AS _total_count
             FROM finance.cash_accounts ca
             WHERE {where}
@@ -197,8 +199,8 @@ async def get_cash_account(
 ):
     org_id = _require_org(user)
     result = await db.execute(
-        text("""
-            SELECT ca.*, ca.current_balance AS running_balance
+        text(f"""
+            SELECT ca.*, {EFFECTIVE_BALANCE_SQL} AS running_balance
             FROM finance.cash_accounts ca
             WHERE ca.id = :account_id AND ca.organization_id = :org_id AND ca.is_deleted = false
         """),

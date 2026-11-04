@@ -692,8 +692,29 @@ async def allocation_summary(db: AsyncSession, *, org_id: str, cash_account_id: 
         """),
         params,
     )
+    # What genuinely still needs a tag: money out with neither a project nor a
+    # category (an overhead with a category - salaries, ZIMRA, bank charges -
+    # is accounted for), and cash withdrawn into HQ cash whose spending is not
+    # recorded yet (the HQ cash balance, which the ledger's 1010 matches).
+    unassigned = (await db.execute(
+        text(f"""
+            SELECT COUNT(*) AS unassigned_lines, COALESCE(-SUM(bsl.amount), 0) AS unassigned_out
+            FROM finance.bank_statement_lines bsl
+            WHERE bsl.organization_id = :org_id {account_clause}
+              AND bsl.amount < 0 AND bsl.project_id IS NULL AND bsl.category IS NULL
+        """),
+        params,
+    )).mappings().one()
+    cash_held = (await db.execute(
+        text("""
+            SELECT COALESCE(current_balance, 0) FROM finance.cash_accounts
+            WHERE organization_id = :org_id AND account_code = 'HQPC' AND is_deleted = false
+        """),
+        {"org_id": org_id},
+    )).scalar() or 0
     return {
         "progress": dict(progress.mappings().one()),
+        "open_items": {**dict(unassigned), "cash_without_use": max(cash_held, 0)},
         "by_project": [dict(r._mapping) for r in by_project],
         "by_category": [dict(r._mapping) for r in by_category],
     }

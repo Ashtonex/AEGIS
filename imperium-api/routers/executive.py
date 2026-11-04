@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+
+from app.services.finance.bank_books import EFFECTIVE_BALANCE_SQL
 from datetime import date, datetime, timedelta
 from typing import Dict, Any, List
 
@@ -224,7 +226,7 @@ async def _compute_cash_runway(
     # Four independent reads; the payroll tiers below depend on burn_res.
     cash_res, burn_res, fleet_res, po_res = await gather_reads(
         db,
-        rows("SELECT COALESCE(SUM(current_balance), 0) as total FROM finance.cash_accounts WHERE organization_id = :org_id AND is_active = true AND is_deleted = false", "finance.cash_accounts"),
+        rows(f"SELECT COALESCE(SUM({EFFECTIVE_BALANCE_SQL}), 0) as total FROM finance.cash_accounts ca WHERE ca.organization_id = :org_id AND ca.is_active = true AND ca.is_deleted = false", "finance.cash_accounts"),
         rows(
             """
         SELECT COALESCE(SUM(amount), 0) as total

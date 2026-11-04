@@ -35,3 +35,14 @@ def test_loans_lent_out_and_repaid_stay_on_the_balance_sheet():
     from app.services.finance.bank_books import money_in_account
     assert money_out_account("loan_advance", has_project=False) == "1500"
     assert money_in_account("loan_advance", has_project=False) == "1500"
+
+
+def test_receipt_already_entered_as_a_hand_claim_creates_no_second_claim():
+    from app.services.finance.bank_books import _claim_wanted
+    row = {"id": uuid4(), "amount": Decimal("102344.55"), "category": "client_receipt", "project_id": uuid4(),
+           "description": "RTGS Receipts AFRICAN SUN", "books_claim_id": None, "project_entry_id": None,
+           "receipt_already_in_books": False, "claim_entered_by_hand": True}
+    line = Line(row)
+    assert _claim_wanted(line, line.parts()[0]) is False
+    row["claim_entered_by_hand"] = False
+    assert _claim_wanted(line, line.parts()[0]) is True

@@ -60,6 +60,21 @@ AWAITING_BANK = "1070"   # money recorded on a project, not yet on a statement (
 DIRECTORS, SHAREHOLDERS, REVENUE, OTHER_INCOME = "3200", "3300", "4100", "4900"
 UNCLASSIFIED_PROJECT_COST = "5950"
 HISTORICAL_CASH_USE = "historical_cash_use"   # pre-Sept 2026 cash spent without vouchers (migration 245)
+# The balance to show for a cash account aliased `ca`: a bank account with an
+# imported statement shows the bank's own latest running balance (the cashbook
+# side, current_balance, also holds receipts and payments typed into AEGIS that
+# never went through that account); any other account shows current_balance.
+EFFECTIVE_BALANCE_SQL = """COALESCE((
+    SELECT bsl.bank_balance FROM finance.bank_statement_lines bsl
+    JOIN finance.bank_statement_imports bsi ON bsi.id = bsl.import_id
+    WHERE bsl.cash_account_id = ca.id AND bsl.organization_id = ca.organization_id AND bsl.bank_balance IS NOT NULL
+    ORDER BY bsl.transaction_date DESC, bsi.uploaded_at DESC, bsl.line_number DESC LIMIT 1
+), ca.current_balance)"""
+STATEMENT_DATE_SQL = """(
+    SELECT max(bsl.transaction_date) FROM finance.bank_statement_lines bsl
+    WHERE bsl.cash_account_id = ca.id AND bsl.organization_id = ca.organization_id
+)"""
+
 # Money lent out of the business (to staff or others) and its repayment: an
 # asset, never income or expense.
 LOAN_ADVANCE, ADVANCES = "loan_advance", "1500"
@@ -224,7 +239,14 @@ async def _load_lines(db: AsyncSession, org_id: str, line_ids: Optional[list[UUI
                        WHERE ct.id = bsl.matched_cashbook_transaction_id
                          AND (ct.source_type = 'progress_claim' OR EXISTS (
                              SELECT 1 FROM finance.receipt_allocations ra WHERE ra.cashbook_transaction_id = ct.id))
-                   ) AS receipt_already_in_books
+                   ) AS receipt_already_in_books,
+                   -- the same receipt already entered by hand as a paid claim on this project
+                   (bsl.amount > 0 AND bsl.project_id IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM finance.progress_claims pc
+                       WHERE pc.organization_id = bsl.organization_id AND pc.project_id = bsl.project_id
+                         AND pc.claim_number NOT LIKE 'BANK-%' AND COALESCE(pc.is_deleted, false) = false
+                         AND pc.status = 'paid' AND pc.net_claim_amount = bsl.amount
+                   )) AS claim_entered_by_hand
             FROM finance.bank_statement_lines bsl
             WHERE {where}
             ORDER BY bsl.transaction_date, bsl.line_number
@@ -315,6 +337,8 @@ def _claim_wanted(line: Line, part: Part) -> bool:
         line.amount > 0 and part.project_id is not None and not line.settles_entry
         and (part.category or "") not in EXCLUDED_FROM_PROJECT_BOOKS
         and not line.row["receipt_already_in_books"]
+        # a hand-entered paid claim already stands for this whole receipt
+        and not (part.allocation_id is None and line.row.get("claim_entered_by_hand"))
     )
 
 
@@ -1158,10 +1182,11 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
         JOIN finance.journal_entries je ON je.id = jl.journal_entry_id AND je.status = 'posted'
         WHERE a.organization_id = :org_id
           AND (je.source_type IN ('bank_statement_line', 'bank_line_allocation', 'project_money_entry',
-                                  'bank_opening_balance')
+                                  'bank_opening_balance', 'cashbook_transaction')
                OR je.reverses_journal_id IN (SELECT id FROM finance.journal_entries
                                              WHERE source_type IN ('bank_statement_line', 'bank_line_allocation',
-                                                                   'project_money_entry', 'bank_opening_balance')))
+                                                                   'project_money_entry', 'bank_opening_balance',
+                                                                   'cashbook_transaction')))
         GROUP BY a.account_code, a.account_name
     """)).mappings()}
     # A statement history that starts from a non-zero balance carries that
