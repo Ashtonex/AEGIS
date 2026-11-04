@@ -5,6 +5,8 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+
+from app.services.finance.bank_books import EFFECTIVE_BALANCE_SQL, STATEMENT_DATE_SQL
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Any, Dict
 from uuid import UUID, uuid4
@@ -2104,10 +2106,21 @@ async def get_cash_accounts(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        text("SELECT * FROM finance.cash_accounts WHERE organization_id = :org_id AND is_deleted = false ORDER BY account_code"),
+        text(f"""
+            SELECT ca.*, ca.current_balance AS cashbook_balance,
+                   {EFFECTIVE_BALANCE_SQL} AS effective_balance, {STATEMENT_DATE_SQL} AS statement_date
+            FROM finance.cash_accounts ca
+            WHERE ca.organization_id = :org_id AND ca.is_deleted = false ORDER BY ca.account_code
+        """),
         {"org_id": user["org_id"]},
     )
-    items = [dict(row._mapping) for row in result]
+    # current_balance is what every screen totals: for a bank account with an
+    # imported statement that is the bank's balance (cashbook_balance keeps the book side)
+    items = []
+    for row in result:
+        item = dict(row._mapping)
+        item["current_balance"] = item.pop("effective_balance")
+        items.append(item)
     return ok(items, "Cash accounts retrieved.")
 
 

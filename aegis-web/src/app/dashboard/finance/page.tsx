@@ -352,12 +352,11 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const claims = useMemo(() => financeData.claims?.data || [], [financeData.claims]);
   const budgets = useMemo(() => financeData.budgets?.data || [], [financeData.budgets]);
   const departmentPnl = useMemo(() => financeData.departmentPnl?.data || null, [financeData.departmentPnl]);
-  // Bank statement money out that isn't tagged to any project yet (mostly cash
-  // withdrawals) - costs and margins below are incomplete until it is.
-  const unassignedBankOut = useMemo(() => {
-    const rows: RecordData[] = financeData.bankAllocation?.data?.by_project || [];
-    return Number(rows.find((r) => !r.project_id)?.money_out || 0);
-  }, [financeData.bankAllocation]);
+  // Bank statement money out with neither a project nor a category, and cash
+  // withdrawn into petty cash whose uses are not recorded yet. An overhead with
+  // a category (salaries, ZIMRA, bank charges) is accounted for.
+  const unassignedBankOut = Number(financeData.bankAllocation?.data?.open_items?.unassigned_out || 0);
+  const cashWithoutUse = Number(financeData.bankAllocation?.data?.open_items?.cash_without_use || 0);
 
   useLiveTable("finance.budgets", () => void loadData());
   const error = loadError ? loadFailureMessage(loadError) : null;
@@ -700,7 +699,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
 
       {/* Tab Panels */}
       {activeTab === "overview" ? (
-        <FinanceOverviewDashboard projectSummaries={projectSummaries} departmentId={departmentId} unassignedBankOut={unassignedBankOut} />
+        <FinanceOverviewDashboard projectSummaries={projectSummaries} departmentId={departmentId} unassignedBankOut={unassignedBankOut} cashWithoutUse={cashWithoutUse} />
       ) : activeTab === "data-room" ? (
         <AccountingReportsWorkspace initialSubTab="data-room" departments={departments} projects={projects} departmentPnl={departmentPnl} />
       ) : activeTab === "bank-review" ? (
