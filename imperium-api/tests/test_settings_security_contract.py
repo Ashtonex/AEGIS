@@ -95,6 +95,21 @@ class SettingsSecurityContractTests(unittest.TestCase):
         self.assertIn("roleResolveSeqRef.current += 1", AUTH_CONTEXT)
         self.assertIn("setCachedAccessToken(null)", AUTH_CONTEXT)
 
+    def test_admin_password_reset_is_gated_and_forces_a_new_password(self):
+        start = SETTINGS_ROUTER.index('@router.post("/users/{target_user_id}/reset-password")')
+        end = SETTINGS_ROUTER.index("@router.", start + 1)
+        endpoint = SETTINGS_ROUTER[start:end]
+        self.assertIn('require_permission("settings.update")', endpoint)
+        self.assertIn("You cannot reset your own password here", endpoint)
+        self.assertIn('target["is_superadmin"]', endpoint)
+        self.assertIn("must_change_password=true", endpoint)
+        self.assertIn("organization_id=:org_id", endpoint)
+        self.assertIn("settings.access.user_password_reset", endpoint)
+        # The temporary password goes back to the admin once, never into the audit trail or Supabase metadata.
+        self.assertIn('{"email": target["user_email"]},', endpoint)
+        self.assertNotIn("app_metadata", endpoint)
+        self.assertIn("resetUserPassword={resetUserPassword}", SETTINGS_PAGE)
+
 
 if __name__ == "__main__":
     unittest.main()

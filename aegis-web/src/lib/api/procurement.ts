@@ -1908,6 +1908,13 @@ export async function setSettingsUserEmail(userId: string, email: string): Promi
   });
 }
 
+export async function resetSettingsUserPassword(userId: string): Promise<ApiResponse<{ user_id: string; email: string; temporary_password: string }>> {
+  return fetchApi<ApiResponse<{ user_id: string; email: string; temporary_password: string }>>(`/api/v1/settings/users/${userId}/reset-password`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
 export async function deleteSettingsUser(userId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/users/${userId}`, {
     method: 'DELETE',

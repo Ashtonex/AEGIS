@@ -1828,6 +1828,76 @@ async def set_user_email(
     return _response({"email": new_email}, "Account email updated.")
 
 
+@router.post("/users/{target_user_id}/reset-password")
+async def reset_user_password(
+    target_user_id: UUID,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin reset for someone who forgot their password - mainly accounts
+    created via invite_user's no_real_email path, which can never receive a
+    recovery email. Sets a fresh random temporary password on the Supabase
+    Auth identity, flags must_change_password so the portal gate sends them
+    to /setup-password on next login, and returns the temporary password
+    once for the admin to hand over directly. Roles and access are untouched."""
+    org_id = user["org_id"]
+    if str(target_user_id) == str(user["user_id"]):
+        raise HTTPException(status_code=400, detail="You cannot reset your own password here. Use the setup-password page instead.")
+
+    target = await _lookup_user_with_superadmin_flag(db, org_id, target_user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User was not found.")
+    if target["is_superadmin"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"SUPERADMIN access is restricted to {SOLE_SUPERADMIN_EMAIL} and its password cannot be reset here.",
+        )
+
+    temp_password = _generate_temporary_password()
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: supabase_admin.auth.admin.update_user_by_id(
+                    str(target_user_id),
+                    {"password": temp_password},
+                )
+            ),
+            timeout=15,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service temporarily unavailable. Please retry.",
+        ) from exc
+    except Exception as exc:
+        logger.error("settings.reset_user_password_failed", target_user_id=str(target_user_id), error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth could not reset this account's password.",
+        ) from exc
+
+    await db.execute(
+        text(
+            "UPDATE core.users SET must_change_password=true, updated_at=NOW() WHERE id=:target_user_id AND organization_id=:org_id"
+        ),
+        {"target_user_id": target_user_id, "org_id": org_id},
+    )
+    # The temporary password itself is never written to the audit trail.
+    await _write_audit(
+        db,
+        user,
+        "settings.access.user_password_reset",
+        "user",
+        target_user_id,
+        {"email": target["user_email"]},
+    )
+    await db.commit()
+    return _response(
+        {"user_id": str(target_user_id), "email": target["user_email"], "temporary_password": temp_password},
+        "Password reset. Hand the temporary password over directly - it will not be shown again.",
+    )
+
+
 @router.delete("/users/{target_user_id}")
 async def delete_user(
     target_user_id: UUID,

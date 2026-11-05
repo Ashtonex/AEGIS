@@ -210,20 +210,26 @@ function NewRoleForm({ saving, createRole }: { saving: string | null; createRole
   </form>;
 }
 
-export function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, setUserEmail, inviteUser, createRole }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any>; createRole: (name: string, description?: string) => Promise<void> }) {
+export function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, setUserEmail, resetUserPassword, inviteUser, createRole }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void>; resetUserPassword: (userId: string) => Promise<{ email: string; temporary_password: string } | null>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any>; createRole: (name: string, description?: string) => Promise<void> }) {
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [issuedReset, setIssuedReset] = useState<{ name: string; email: string; temporary_password: string } | null>(null);
+  const resetPassword = async (target: AccessUser) => {
+    const issued = await resetUserPassword(target.id);
+    if (issued) setIssuedReset({ name: target.name, ...issued });
+  };
   return <div className="space-y-6">
     {inviteOpen && <InviteUserModal roles={overview.roles} onClose={() => setInviteOpen(false)} onInvite={inviteUser} />}
+    {issuedReset && <PasswordResetIssuedModal issued={issuedReset} onClose={() => setIssuedReset(null)} />}
     <section className="border border-ink-mid bg-ink p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Users className="h-4 w-4 text-signal" /> User role assignments</h2>
         <button onClick={() => setInviteOpen(true)} className="inline-flex items-center gap-2 border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-signal hover:bg-signal/10"><UserPlus className="h-3.5 w-3.5" /> Invite user</button>
       </div>
       <div className="hidden overflow-x-auto lg:block">
-        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} />)}</tbody></table>
+        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} resetPassword={resetPassword} />)}</tbody></table>
       </div>
       <div className="grid gap-3 lg:hidden">
-        {overview.users.map((user) => <UserAccessCard key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} />)}
+        {overview.users.map((user) => <UserAccessCard key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} resetPassword={resetPassword} />)}
       </div>
     </section>
     <section className="border border-ink-mid bg-ink p-5">
@@ -257,11 +263,57 @@ export function AccessTab({ overview, saving, assignRole, removeRole, togglePerm
   </div>;
 }
 
-function UserActionsControl({ user, saving, toggleUserStatus, deleteUser }: { user: AccessUser; saving: string | null; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void> }) {
+function PasswordResetIssuedModal({ issued, onClose }: { issued: { name: string; email: string; temporary_password: string }; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(issued.temporary_password);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+    <div className="w-full max-w-md border border-ink-mid bg-ink-light p-6">
+      <div className="mb-5 flex items-start justify-between gap-3 border-b border-ink-mid pb-4">
+        <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><KeyRound className="h-4 w-4 text-signal" /> Password reset</h2>
+        <button type="button" onClick={onClose} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
+      </div>
+      <p className="mb-4 text-xs leading-relaxed text-slate-light">{issued.name}&apos;s old password no longer works. Copy the temporary password below and hand it to them directly - it will not be shown again. They will be asked to choose a new password when they sign in.</p>
+      <div className="space-y-2">
+        <div className="border border-ink-mid bg-ink p-2">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Sign-in email</p>
+          <p className="mt-1 break-all font-mono text-[12px] text-paper">{issued.email}</p>
+        </div>
+        <div className="border border-signal/40 bg-signal/5 p-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Temporary password</p>
+            <button type="button" onClick={() => void copy()} className="font-mono text-[10px] uppercase tracking-widest text-signal hover:underline">{copied ? "Copied" : "Copy"}</button>
+          </div>
+          <p className="mt-1 break-all font-mono text-[12px] text-paper">{issued.temporary_password}</p>
+        </div>
+      </div>
+      <button type="button" onClick={onClose} className="mt-5 flex w-full items-center justify-center gap-2 bg-signal py-3 font-mono text-xs uppercase tracking-widest text-ink">Done</button>
+    </div>
+  </div>;
+}
+
+function UserActionsControl({ user, saving, toggleUserStatus, deleteUser, resetPassword }: { user: AccessUser; saving: string | null; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; resetPassword: (user: AccessUser) => Promise<void> }) {
   const isActive = user.status !== "inactive";
   const busyStatus = saving === `status-${user.id}`;
   const busyDelete = saving === `delete-${user.id}`;
-  const [confirmMode, setConfirmMode] = useState<null | "deactivate" | "delete">(null);
+  const busyReset = saving === `reset-${user.id}`;
+  const [confirmMode, setConfirmMode] = useState<null | "deactivate" | "delete" | "reset">(null);
+
+  if (confirmMode === "reset") {
+    return <div className="flex items-center gap-2">
+      <span className="text-[10px] text-slate-light">Reset password?</span>
+      <button disabled={busyReset} onClick={() => { setConfirmMode(null); void resetPassword(user); }} title="Confirm password reset" className="inline-flex h-6 w-6 items-center justify-center border border-signal/50 text-signal hover:bg-signal/10 disabled:opacity-50">
+        <CheckCircle2 className="h-3 w-3" />
+      </button>
+      <button onClick={() => setConfirmMode(null)} title="Cancel" className="inline-flex h-6 w-6 items-center justify-center border border-ink-mid text-slate-light hover:text-paper"><X className="h-3 w-3" /></button>
+    </div>;
+  }
 
   if (confirmMode) {
     const isDelete = confirmMode === "delete";
@@ -279,6 +331,9 @@ function UserActionsControl({ user, saving, toggleUserStatus, deleteUser }: { us
     <StatusBadge status={user.status} />
     <button disabled={busyStatus} onClick={() => isActive ? setConfirmMode("deactivate") : void toggleUserStatus(user.id, true)} title={isActive ? "Deactivate user" : "Reactivate user"} className={`inline-flex h-6 w-6 items-center justify-center border disabled:opacity-50 ${isActive ? "border-red-500/40 text-red-300 hover:bg-red-500/10" : "border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10"}`}>
       {busyStatus ? <Loader2 className="h-3 w-3 animate-spin" /> : isActive ? <PowerOff className="h-3 w-3" /> : <UserCheck className="h-3 w-3" />}
+    </button>
+    <button disabled={busyReset} onClick={() => setConfirmMode("reset")} title="Reset password (issues a temporary password)" className="inline-flex h-6 w-6 items-center justify-center border border-ink-mid text-slate-light hover:border-signal hover:text-signal disabled:opacity-50">
+      {busyReset ? <Loader2 className="h-3 w-3 animate-spin" /> : <KeyRound className="h-3 w-3" />}
     </button>
     <button disabled={busyDelete} onClick={() => setConfirmMode("delete")} title="Remove user" className="inline-flex h-6 w-6 items-center justify-center border border-ink-mid text-slate-light hover:border-red-400 hover:text-red-300 disabled:opacity-50">
       {busyDelete ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
@@ -303,19 +358,19 @@ function EditableEmail({ user, saving, setUserEmail }: { user: AccessUser; savin
   </form>;
 }
 
-function UserAccessRow({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser, setUserEmail }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void> }) {
+function UserAccessRow({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser, setUserEmail, resetPassword }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void>; resetPassword: (user: AccessUser) => Promise<void> }) {
   const [roleId, setRoleId] = useState("");
   const assignedIds = new Set(user.roles.map((role) => role.id));
-  return <tr><td className="p-3"><p className="font-semibold text-paper">{user.name}</p><EditableEmail user={user} saving={saving} setUserEmail={setUserEmail} /></td><td className="p-3"><UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} /></td><td className="p-3"><div className="flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div></td><td className="p-3"><div className="flex gap-2"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div></td></tr>;
+  return <tr><td className="p-3"><p className="font-semibold text-paper">{user.name}</p><EditableEmail user={user} saving={saving} setUserEmail={setUserEmail} /></td><td className="p-3"><UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} resetPassword={resetPassword} /></td><td className="p-3"><div className="flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div></td><td className="p-3"><div className="flex gap-2"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div></td></tr>;
 }
 
-function UserAccessCard({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser, setUserEmail }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void> }) {
+function UserAccessCard({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser, setUserEmail, resetPassword }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void>; resetPassword: (user: AccessUser) => Promise<void> }) {
   const [roleId, setRoleId] = useState("");
   const assignedIds = new Set(user.roles.map((role) => role.id));
   return <article className="border border-ink-mid/70 p-3">
     <div className="mb-3 flex items-start justify-between gap-3">
       <div className="min-w-0"><p className="truncate font-semibold text-paper">{user.name}</p><EditableEmail user={user} saving={saving} setUserEmail={setUserEmail} /></div>
-      <UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} />
+      <UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} resetPassword={resetPassword} />
     </div>
     <div className="mb-3 flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-xs text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div>
     <div className="grid gap-2 sm:grid-cols-[1fr_auto]"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="min-w-0 border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div>
