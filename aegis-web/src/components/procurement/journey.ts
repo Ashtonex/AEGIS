@@ -55,12 +55,28 @@ export function invoiceIsMatched(inv: Row): boolean {
   return s(inv.match_status ?? inv.matching_status) === "matched";
 }
 
+/**
+ * Midnight (local time) of a due date. A plain "YYYY-MM-DD" is read as that
+ * calendar day locally - new Date("2026-11-06") would be UTC midnight, which
+ * lands on the previous day west of Greenwich. Kept in step with
+ * calendarDay() in deliveries.ts (separate copies so both stay importable
+ * by the plain-Node unit tests).
+ */
+export function dueDay(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw).trim());
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(String(raw));
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/** Late only once the due day has passed: a delivery due today is not overdue. */
 export function poIsOverdue(po: Row, now = Date.now()): boolean {
   if (!["issued", "partially_received"].includes(s(po.status))) return false;
-  const raw = po.required_by_date ?? po.expected_delivery_date;
-  if (!raw) return false;
-  const t = new Date(String(raw)).getTime();
-  return Number.isFinite(t) && t < now;
+  const due = dueDay(po.required_by_date ?? po.expected_delivery_date);
+  if (due === null) return false;
+  const today = new Date(now);
+  return due < new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 }
 
 function time(...values: unknown[]): number {

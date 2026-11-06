@@ -226,7 +226,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     requiredPermission: "procurement.requisition.read",
     subItems: [
       // Three views; the detailed lists (requests, quotes, orders, invoices,
-      // pricing) are linked from Purchases and keep their URLs.
+      // pricing) are tabs under Purchases and keep their URLs.
       { name: "My Tasks", href: "/dashboard/procurement", icon: LayoutDashboard },
       { name: "Plans", href: "/dashboard/procurement/plans", icon: ClipboardCheck },
       { name: "Purchases", href: "/dashboard/procurement/purchases", icon: ShoppingCart },
@@ -240,7 +240,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     domain: "supply",
     requiredPermission: "inventory_items.read",
     subItems: [
-      { name: "Stock Management", href: "/dashboard/inventory", icon: LayoutDashboard },
+      { name: "Expected Deliveries", href: "/dashboard/inventory/deliveries", icon: Truck, requiredPermission: "procurement.po.read" },
       { name: "Stock Levels", href: "/dashboard/inventory/stock", icon: Package },
       { name: "Item Catalogue", href: "/dashboard/inventory/catalogue", icon: FileText },
       { name: "Stores", href: "/dashboard/inventory/stores", icon: Building2 },

@@ -2,6 +2,7 @@
 
 import { type ReactNode } from "react";
 import { AlertTriangle, ClipboardList, Loader2, X } from "lucide-react";
+import { poIsOverdue } from "@/components/procurement/journey";
 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -139,12 +140,9 @@ export function normalizeActionError(reason: unknown, fallback: string) {
 }
 
 
+/** Same rule as My Tasks and Expected Deliveries: late once the due day has passed. */
 export function isPoOverdue(po: Rec) {
-  if (!["issued", "partially_received"].includes(tx(po.status).toLowerCase())) return false;
-  const raw = po.expected_delivery_date ?? po.required_by_date ?? po.required_by;
-  if (!raw) return false;
-  const date = new Date(String(raw));
-  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+  return poIsOverdue({ ...po, required_by_date: po.expected_delivery_date ?? po.required_by_date ?? po.required_by });
 }
 
 

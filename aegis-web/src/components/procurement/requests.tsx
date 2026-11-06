@@ -70,11 +70,11 @@ export function RequisitionsTable({ rows, saving, onSubmit, onApprove, onCreateR
                       <>
                         <button onClick={() => onCreatePO(row)} disabled={saving === `po-${row.id}`}
                           className="inline-flex items-center gap-1 border border-signal bg-signal/15 px-2 py-1 font-mono text-[10px] uppercase text-signal hover:bg-signal/25 disabled:opacity-40">
-                          <ShoppingCart className="h-3 w-3" />Create PO
+                          <ShoppingCart className="h-3 w-3" />Order now
                         </button>
-                        <button onClick={() => onCreateRFQ(row)} disabled={saving === `rfq-${row.id}`} title="Optional: ask suppliers to quote first"
+                        <button onClick={() => onCreateRFQ(row)} disabled={saving === `rfq-${row.id}`} title="Optional: ask suppliers to quote first, then order from the one you pick"
                           className="inline-flex items-center gap-1 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper disabled:opacity-40">
-                          <Search className="h-3 w-3" />Get quotes
+                          <Search className="h-3 w-3" />Get quotes first (optional)
                         </button>
                       </>
                     )}
@@ -244,6 +244,8 @@ export function RfqsTab({ rows, saving, onQuote, onDecideQuote, onCreatePO, onUp
 
 // ─── Create PR Modal ──────────────────────────────────────────────────────────
 
+const LAST_PR_PROJECT_KEY = "aegis.procurement.lastRequestProject";
+
 export function CreatePRModal({
   projects,
   stores = [],
@@ -257,7 +259,19 @@ export function CreatePRModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [form, setForm] = useState({ project_id: "", priority: "normal", required_by_date: "", justification: "" });
+  // Start from the project this person last requested for (if it is still in
+  // the list) and a required-by date a week out, so most requests only need lines.
+  const [form, setForm] = useState(() => {
+    let lastProject = "";
+    try { lastProject = window.localStorage.getItem(LAST_PR_PROJECT_KEY) ?? ""; } catch { /* storage blocked */ }
+    const inWeek = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+    return {
+      project_id: projects.some((p) => String(p.id) === lastProject) ? lastProject : "",
+      priority: "normal",
+      required_by_date: inWeek,
+      justification: "",
+    };
+  });
   const [lines, setLines] = useState<LineItem[]>([{ description: "", qty: "1", uom: "ea", unit_cost: "" }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -291,6 +305,7 @@ export function CreatePRModal({
         project_id: form.project_id || null,
         line_items: lines.map((l) => ({ ...l, qty: num(l.qty), unit_cost: num(l.unit_cost) })),
       });
+      try { window.localStorage.setItem(LAST_PR_PROJECT_KEY, form.project_id); } catch { /* storage blocked */ }
       onCreated();
     } catch (e) { setError(normalizeActionError(e, "Could not create the purchase request.")); setSaving(false); }
   };

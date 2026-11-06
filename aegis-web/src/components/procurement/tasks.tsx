@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardList, ExternalLink, Warehouse } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertTriangle, ArrowRight, BadgeCheck, CheckCircle2, ClipboardList, ExternalLink, Loader2, Warehouse } from "lucide-react";
 import { type Rec, dt, money } from "@/components/procurement/shared";
 import { PendingPricingTable } from "@/components/procurement/requests";
 import { TASK_GROUPS, type Task, type TaskAction } from "@/components/procurement/journey";
@@ -13,6 +14,7 @@ export function MyTasks({
   saving,
   onAct,
   onConfirmPrice,
+  onApproveMany,
   lifecycleTasks = [],
   onOpenPlan,
 }: {
@@ -22,11 +24,21 @@ export function MyTasks({
   saving: string | null;
   onAct: (action: TaskAction) => void;
   onConfirmPrice: (id: string, unitCost: number) => void;
+  /** Approve the ticked purchase requests in one go. */
+  onApproveMany?: (rows: Rec[]) => void;
   /** crm.tasks from procurement plans (job lifecycle packs) assigned to this user. */
   lifecycleTasks?: Rec[];
   onOpenPlan?: (planId: string) => void;
 }) {
   const total = tasks.length + (canPrice ? pricing.length : 0) + lifecycleTasks.length;
+  // Request approvals can be ticked and approved together; everything else
+  // (PO sign-offs, payments) still opens its own form.
+  const approvable = useMemo(() => tasks.filter((t) => t.action.type === "approveRequest"), [tasks]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const pickedRows = approvable.filter((t) => picked.has(t.id)).map((t) => (t.action as { row: Rec }).row);
+  const toggle = (id: string) => setPicked((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const allPicked = approvable.length > 0 && approvable.every((t) => picked.has(t.id));
+  const bulkBusy = saving === "bulk-approve";
   return (
     <div className="space-y-5 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -97,12 +109,31 @@ export function MyTasks({
         if (!rows.length) return null;
         return (
           <section key={group.key} className="border border-ink-mid">
-            <header className="border-b border-ink-mid bg-ink-light/40 px-4 py-2.5">
+            <header className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-mid bg-ink-light/40 px-4 py-2.5">
               <p className="font-mono text-[10px] uppercase tracking-widest text-signal">{group.label} ({rows.length})</p>
+              {group.key === "approvals" && onApproveMany && approvable.length > 1 && (
+                <div className="flex items-center gap-3">
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 font-mono text-[10px] uppercase text-slate-light">
+                    <input type="checkbox" checked={allPicked} onChange={() => setPicked(allPicked ? new Set() : new Set(approvable.map((t) => t.id)))} className="h-3.5 w-3.5 accent-emerald-500" />
+                    Select all requests
+                  </label>
+                  <button type="button" disabled={!pickedRows.length || bulkBusy}
+                    onClick={() => { onApproveMany(pickedRows); setPicked(new Set()); }}
+                    className="inline-flex h-8 items-center gap-1.5 border border-emerald-500/50 bg-emerald-950/30 px-3 font-mono text-[10px] font-bold uppercase text-emerald-300 hover:bg-emerald-950/50 disabled:opacity-40">
+                    {bulkBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <BadgeCheck className="h-3.5 w-3.5" />}
+                    Approve {pickedRows.length || ""} selected
+                  </button>
+                </div>
+              )}
             </header>
             <ul className="divide-y divide-ink-mid">
               {rows.map((task) => (
                 <li key={task.id} className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-ink-light/30">
+                  {onApproveMany && approvable.length > 1 && group.key === "approvals" && (
+                    task.action.type === "approveRequest"
+                      ? <input type="checkbox" aria-label={`Select ${task.title}`} checked={picked.has(task.id)} onChange={() => toggle(task.id)} className="h-4 w-4 shrink-0 accent-emerald-500" />
+                      : <span className="w-4 shrink-0" />
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className={`flex items-center gap-1.5 text-sm font-semibold ${task.urgent ? "text-red-300" : "text-paper"}`}>
                       {task.urgent && <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}

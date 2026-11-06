@@ -30,6 +30,9 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { useAuth } from "@/lib/auth/AuthContext";
+import { ReceiveGoodsModal } from "@/components/procurement/orders";
+import { isAwaitingDelivery } from "@/components/procurement/deliveries";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -44,12 +47,14 @@ import {
   getInventoryStockLevels,
   getInventoryStores,
   getInternalProjects,
+  getProcurementOrders,
   getProcurementSuppliers,
   getSiteOperationSites,
   getStockMovements,
   issueStock,
   receiveInventoryInvoice,
   receiveStock,
+  recordGoodsReceived,
   deleteInventoryItem,
   transferStock,
   updateInventoryItem,
@@ -63,10 +68,13 @@ const StockLevelsTab = dynamic(() => import("./InventoryTabPanels").then((m) => 
 const ItemCatalogueTab = dynamic(() => import("./InventoryTabPanels").then((m) => m.ItemCatalogueTab), { loading: PanelLoading });
 const StoresTab = dynamic(() => import("./InventoryTabPanels").then((m) => m.StoresTab), { loading: PanelLoading });
 const MovementsTab = dynamic(() => import("./InventoryTabPanels").then((m) => m.MovementsTab), { loading: PanelLoading });
+const ExpectedDeliveriesTab = dynamic(() => import("./DeliveriesPanel").then((m) => m.ExpectedDeliveriesTab), { loading: PanelLoading });
+const ReceiveChooserModal = dynamic(() => import("./DeliveriesPanel").then((m) => m.ReceiveChooserModal));
 
 export type Rec = Record<string, any> & { id: string };
-type ActiveTab = "stock" | "catalogue" | "stores" | "movements";
+type ActiveTab = "deliveries" | "stock" | "catalogue" | "stores" | "movements";
 const TAB_ROUTES: Record<ActiveTab, string> = {
+  deliveries: "/dashboard/inventory/deliveries",
   stock: "/dashboard/inventory/stock",
   catalogue: "/dashboard/inventory/catalogue",
   stores: "/dashboard/inventory/stores",
@@ -74,6 +82,7 @@ const TAB_ROUTES: Record<ActiveTab, string> = {
 };
 
 const INVENTORY_TAB_SUBTITLES: Record<ActiveTab, string> = {
+  deliveries: "Purchase orders on their way to your stores. Receive each one against its PO when it arrives.",
   stock: "What is on hand right now, where it sits, and what needs reordering.",
   catalogue: "The master list of materials, supplies and tools, with prices and VAT.",
   stores: "Every warehouse, site store and yard, and what each one holds.",
@@ -81,6 +90,7 @@ const INVENTORY_TAB_SUBTITLES: Record<ActiveTab, string> = {
 };
 
 const INVENTORY_TAB_LABELS: Record<ActiveTab, string> = {
+  deliveries: "Expected Deliveries",
   stock: "Stock Levels",
   catalogue: "Item Catalogue",
   stores: "Stores",
@@ -218,7 +228,19 @@ function normalizeActionError(reason: unknown, fallback: string) {
 }
 
 export default function InventoryPage() {
-  return <InventoryTabPage initialTab="stock" />;
+  return (
+    <RBACGuard>
+      <InventoryLanding />
+    </RBACGuard>
+  );
+}
+
+/** Storekeepers land on what is arriving; roles that cannot see purchase
+ * orders land on stock levels as before. */
+function InventoryLanding() {
+  const { permissions, isSuperAdmin } = useAuth();
+  const canReadPO = isSuperAdmin || Boolean(permissions?.has("procurement.po.read"));
+  return <InventoryWorkspace initialTab={canReadPO ? "deliveries" : "stock"} />;
 }
 
 /** Shared Inventory workspace, rendered by a real route per tab (see the
@@ -234,12 +256,17 @@ export function InventoryTabPage({ initialTab }: { initialTab: ActiveTab }) {
 
 function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
   const tab = initialTab;
+  const { permissions, isSuperAdmin } = useAuth();
+  const canReadPO = isSuperAdmin || Boolean(permissions?.has("procurement.po.read"));
+  const canReceivePO = isSuperAdmin || Boolean(permissions?.has("procurement.grn.create"));
   const [stockLevels, setStockLevels] = useState<Rec[]>([]);
   const [catalogue, setCatalogue] = useState<Rec[]>([]);
   const [stores, setStores] = useState<Rec[]>([]);
   const [movements, setMovements] = useState<Rec[]>([]);
   const [projects, setProjects] = useState<Rec[]>([]);
   const [suppliers, setSuppliers] = useState<Rec[]>([]);
+  const [orders, setOrders] = useState<Rec[]>([]);
+  const [ordersFailed, setOrdersFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -261,6 +288,9 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
 
   const [showIssue, setShowIssue] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
+  const [showReceiveChooser, setShowReceiveChooser] = useState(false);
+  const [receivingPO, setReceivingPO] = useState<Rec | null>(null);
+  const [receiveWithoutPO, setReceiveWithoutPO] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [showTransfer, setShowTransfer] = useState(false);
   const [showAdjust, setShowAdjust] = useState(false);
@@ -273,13 +303,14 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
     setLoading(true);
     setError(null);
     try {
-      const [stockRes, catRes, storeRes, movRes, projRes, supRes] = await Promise.allSettled([
+      const [stockRes, catRes, storeRes, movRes, projRes, supRes, poRes] = await Promise.allSettled([
         getInventoryStockLevels(),
         getInventoryCatalogue(),
         getInventoryStores(),
         getStockMovements({ limit: 200 }),
         getInternalProjects(),
         getProcurementSuppliers(),
+        canReadPO ? getProcurementOrders({ status: "all" }) : Promise.resolve({ data: [] as Rec[] }),
       ]);
       const warnings: string[] = [];
       if (stockRes.status === "fulfilled") setStockLevels(Array.isArray(stockRes.value.data) ? stockRes.value.data : []);
@@ -296,6 +327,15 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
       // who it came from) - a role without procurement.supplier.read just sees
       // an empty supplier picker rather than the whole page failing.
       if (supRes.status === "fulfilled") setSuppliers(Array.isArray(supRes.value.data) ? supRes.value.data : []);
+      // Open purchase orders drive Expected Deliveries and the "which PO?"
+      // step of Receive. Without them Receive falls back to a no-PO receipt.
+      if (!canReadPO) setOrdersFailed(true);
+      else if (poRes.status === "fulfilled") {
+        setOrders(Array.isArray(poRes.value.data) ? (poRes.value.data as Rec[]) : []);
+        setOrdersFailed(false);
+      } else {
+        setOrdersFailed(true);
+      }
       setSourceWarnings(warnings);
       if (stockRes.status === "rejected") {
         throw new Error(loadFailureMessage(stockRes.reason));
@@ -305,10 +345,12 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canReadPO]);
 
   useEffect(() => { void load(); }, [load]);
   useLiveTable("procurement.inventory_items", () => void load());
+  useLiveTable("procurement.purchase_orders", () => void load());
+  useLiveTable("procurement.goods_received_notes", () => void load());
 
   const projectById = useMemo(() => {
     const byId = new Map<string, Rec>();
@@ -397,6 +439,25 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
     return true;
   }), [stockLevels, selectedClientKey, selectedProjectId, rowClientKey, rowProjectId]);
 
+  const scopedOrders = useMemo(() => orders.filter((po) => {
+    if (selectedClientKey && rowClientKey(po) !== selectedClientKey) return false;
+    if (selectedProjectId && tx(po.project_id, "") !== selectedProjectId) return false;
+    return true;
+  }), [orders, selectedClientKey, selectedProjectId, rowClientKey]);
+  const hasOpenDeliveries = useMemo(() => scopedOrders.some(isAwaitingDelivery), [scopedOrders]);
+
+  /** Receive starts from "which PO is this for?" whenever the user can book
+   * against POs; the free-form receipt is the no-PO fallback and asks why. */
+  const startReceive = () => {
+    if (canReceivePO && !ordersFailed && hasOpenDeliveries) setShowReceiveChooser(true);
+    else { setReceiveWithoutPO(false); setShowReceive(true); }
+  };
+  const receiveManually = () => {
+    setShowReceiveChooser(false);
+    setReceiveWithoutPO(canReceivePO && !ordersFailed);
+    setShowReceive(true);
+  };
+
   const filteredStock = useMemo(() => {
     return stockLevels.filter((r) => {
       const q = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
@@ -450,10 +511,16 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
   const btn = "inline-flex h-9 items-center gap-2 border px-3 font-mono text-[11px] uppercase tracking-wider";
   const secondaryBtn = `${btn} border-ink-mid bg-ink-light text-slate-light hover:border-signal hover:text-paper`;
   const tabActions: Record<ActiveTab, ReactNode> = {
+    deliveries: (
+      <>
+        <button onClick={startReceive} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
+        <button onClick={() => setShowIssue(true)} className={secondaryBtn}><PackageMinus className="h-4 w-4" /> Issue</button>
+      </>
+    ),
     stock: (
       <>
         <button onClick={() => setShowIssue(true)} className={`${btn} border-signal bg-signal font-bold text-ink`}><PackageMinus className="h-4 w-4" /> Issue / Site Usage</button>
-        <button onClick={() => setShowReceive(true)} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
+        <button onClick={startReceive} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
         <button onClick={() => setShowTransfer(true)} className={secondaryBtn}><ArrowLeftRight className="h-4 w-4" /> Transfer</button>
         <button onClick={() => setShowAdjust(true)} className={secondaryBtn}><ClipboardEdit className="h-4 w-4" /> Adjust</button>
       </>
@@ -468,7 +535,7 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
     movements: (
       <>
         <button onClick={() => setShowInvoice(true)} className={`${btn} border-blue-500/40 bg-blue-950/20 text-blue-300 hover:border-blue-400`}><ReceiptText className="h-4 w-4" /> Bulk Store Invoice</button>
-        <button onClick={() => setShowReceive(true)} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
+        <button onClick={startReceive} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
         <button onClick={() => setShowIssue(true)} className={secondaryBtn}><PackageMinus className="h-4 w-4" /> Issue</button>
       </>
     ),
@@ -538,6 +605,17 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
         </div>
       )}
 
+      {tab === "deliveries" && (
+        <ExpectedDeliveriesTab
+          orders={scopedOrders}
+          loading={loading}
+          loadFailed={ordersFailed}
+          canReceive={canReceivePO}
+          onReceive={setReceivingPO}
+          onReceiveWithoutPO={receiveManually}
+        />
+      )}
+
       {tab === "stock" && (
         <StockLevelsTab
           stockSearch={stockSearch} setStockSearch={setStockSearch}
@@ -547,6 +625,8 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
           belowReorder={belowReorder} setBelowReorder={setBelowReorder}
           contextualStores={contextualStores} categories={categories} loading={loading}
           stockLevels={stockLevels} scopedStock={scopedStock} filteredStock={filteredStock}
+          canRequestRestock={isSuperAdmin || Boolean(permissions?.has("procurement.requisition.create"))}
+          canOpenRequests={isSuperAdmin || Boolean(permissions?.has("procurement.requisition.read") && permissions?.has("procurement.requisition.submit"))}
         />
       )}
 
@@ -601,8 +681,39 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
           }}
         />
       )}
+      {showReceiveChooser && (
+        <ReceiveChooserModal
+          orders={scopedOrders}
+          onClose={() => setShowReceiveChooser(false)}
+          onPickPO={(po) => { setShowReceiveChooser(false); setReceivingPO(po); }}
+          onNoPO={receiveManually}
+        />
+      )}
+      {receivingPO && (
+        <ReceiveGoodsModal
+          po={receivingPO}
+          stores={contextualStores}
+          saving={saving}
+          onClose={() => setReceivingPO(null)}
+          onSubmit={async (payload) => {
+            setSaving(true);
+            try {
+              const res = await recordGoodsReceived(payload);
+              const grn = (res?.data as Rec | undefined)?.grn_number;
+              flash(`${grn ? `${grn}: ` : ""}Delivery received against ${tx(receivingPO.po_number, "the PO")} and stock updated.`);
+              setReceivingPO(null);
+              await load();
+            } catch (e) {
+              flash(e instanceof Error && e.message ? e.message : "Failed to record the delivery.");
+            } finally {
+              setSaving(false);
+            }
+          }}
+        />
+      )}
       {showReceive && (
         <ReceiveStockModal
+          requireReason={receiveWithoutPO}
           catalogue={catalogue}
           categories={categories}
           stores={contextualStores}
@@ -888,7 +999,7 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
         <FieldGroup label="Item">
           <select value={form.item_id} onChange={(e) => set("item_id", e.target.value)} className="field">
             <option value="">Select item</option>
-            {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} \u2014 {tx(i.item_name ?? i.name)}</option>)}
+            {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} — {tx(i.item_name ?? i.name)}</option>)}
           </select>
         </FieldGroup>
         <FieldGroup label="Store">
@@ -937,7 +1048,9 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
   );
 }
 
-function ReceiveStockModal({ catalogue, categories, stores, suppliers, saving, onClose, onItemCreated, onSupplierCreated, onFlash, onSubmit }: {
+function ReceiveStockModal({ requireReason = false, catalogue, categories, stores, suppliers, saving, onClose, onItemCreated, onSupplierCreated, onFlash, onSubmit }: {
+  /** Set when the user could have received against a PO but chose not to. */
+  requireReason?: boolean;
   catalogue: Rec[]; categories: string[]; stores: Rec[]; suppliers: Rec[]; saving: boolean;
   onClose: () => void; onItemCreated: (item: Rec) => void; onSupplierCreated: (supplier: Rec) => void;
   onFlash: (msg: string) => void;
@@ -951,13 +1064,18 @@ function ReceiveStockModal({ catalogue, categories, stores, suppliers, saving, o
   const [creatingItem, setCreatingItem] = useState(false);
   const [creatingSupplier, setCreatingSupplier] = useState(false);
   return (
-    <ModalShell title="Receive Stock" onClose={onClose}>
+    <ModalShell title={requireReason ? "Receive Stock - No Purchase Order" : "Receive Stock"} onClose={onClose}>
       <div className="grid gap-3">
+        {requireReason && (
+          <p className="border border-amber-500/40 bg-amber-950/20 p-3 text-xs text-amber-200">
+            This stock is not linked to a purchase order, so it will not count as delivered on any order. Use it for cash buys, emergency purchases or stock with no PO.
+          </p>
+        )}
         <FieldGroup label="Item">
           <div className="flex gap-2">
             <select value={form.item_id} onChange={(e) => set("item_id", e.target.value)} className="field flex-1">
               <option value="">Select item</option>
-              {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} \u2014 {tx(i.item_name ?? i.name)}</option>)}
+              {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} — {tx(i.item_name ?? i.name)}</option>)}
             </select>
             <button
               type="button"
@@ -1001,8 +1119,8 @@ function ReceiveStockModal({ catalogue, categories, stores, suppliers, saving, o
         <FieldGroup label="Reference / LPO / GRN">
           <input value={form.reference} onChange={(e) => set("reference", e.target.value)} placeholder="e.g. LPO-2026-0041" className="field" />
         </FieldGroup>
-        <FieldGroup label="Notes">
-          <input value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Optional notes" className="field" />
+        <FieldGroup label={requireReason ? "Why is there no purchase order? *" : "Notes"}>
+          <input value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder={requireReason ? "e.g. cash purchase for an urgent repair" : "Optional notes"} className="field" />
         </FieldGroup>
       </div>
       {showAddItem && (
@@ -1061,7 +1179,7 @@ function ReceiveStockModal({ catalogue, categories, stores, suppliers, saving, o
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
           onClick={() => onSubmit({ ...form, supplier_id: form.supplier_id || undefined, quantity: Number(form.quantity), unit_cost: Number(form.unit_cost), request_id: requestId })}
-          disabled={saving || !form.item_id || !form.store_id || !form.quantity}
+          disabled={saving || !form.item_id || !form.store_id || !form.quantity || (requireReason && !form.notes.trim())}
           className="inline-flex h-10 items-center gap-2 border border-emerald-500/50 bg-emerald-950/30 px-4 font-mono text-xs font-bold uppercase text-emerald-300 disabled:opacity-50 hover:bg-emerald-950/50"
         >
           {saving && <Loader2 className="h-4 w-4 animate-spin" />}

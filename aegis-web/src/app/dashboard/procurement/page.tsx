@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Boxes, ClipboardList, ClipboardPen, FileUp, ListChecks, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, ShoppingCart, X } from "lucide-react";
+import { Boxes, ClipboardList, ClipboardPen, FileUp, ListChecks, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, ShoppingCart, X } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -10,7 +10,7 @@ import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
 import { ThreeWayMatchInspectorModal } from "@/components/supply/ThreeWayMatchInspectorModal";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
-import { signOffPurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getCcbFindings, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getProcurementPlans, getCrmTasks, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
+import { signOffPurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getProcurementPlans, getCrmTasks, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
 import { InvoicesTab, PaymentEvidenceModal } from "@/components/procurement/invoices";
 import { OrdersTable, PODetailDrawer, ReceiveGoodsModal, SupplierInvoiceModal } from "@/components/procurement/orders";
 import { buildPurchases, buildTasks, type TaskAction } from "@/components/procurement/journey";
@@ -34,6 +34,17 @@ const PROCUREMENT_TAB_META: Record<Tab, { title: string; subtitle: string }> = {
   invoices: { title: "Supplier Invoices", subtitle: "Check each invoice against its order and what was delivered, then approve payment." },
   suppliers: { title: "Suppliers", subtitle: "Supplier register with compliance, delivery performance and open balances." },
 };
+
+
+/** The detailed lists that sit under Purchases, in the order work flows. */
+const PURCHASE_SUBTABS: { key: Tab; label: string }[] = [
+  { key: "purchases", label: "All purchases" },
+  { key: "requisitions", label: "Requests" },
+  { key: "rfqs", label: "Quotes" },
+  { key: "orders", label: "Orders" },
+  { key: "invoices", label: "Invoices" },
+  { key: "pricing", label: "To price" },
+];
 
 
 // ─── Page export ──────────────────────────────────────────────────────────────
@@ -70,7 +81,10 @@ const TAB_ROUTES: Record<Tab, string> = {
 
 function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const router = useRouter();
-  const { user, permissions, isSuperAdmin } = useAuth();
+  const { user, role, permissions, isSuperAdmin } = useAuth();
+  // The API refuses requisition approval from a primary Procurement Manager
+  // (they review and reject; approval must be independent), so don't offer it.
+  const approvalBlockedForRole = (role ?? "").trim().toLowerCase() === "procurement manager";
   const [purchaseFilter, setPurchaseFilter] = useState("all");
   const [expandedPurchase, setExpandedPurchase] = useState<string | null>(null);
   const [showImportList, setShowImportList] = useState(false);
@@ -121,8 +135,6 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
       invoices: () => getProcurementInvoices({ match_status: "all" }),
       projects: () => getInternalProjects(),
       stores: () => getInventoryStores(),
-      stockLevels: () => getInventoryStockLevels(),
-      ccbFindings: () => getCcbFindings({ status: "open" }),
       pendingPricing: () => getMaterialRequests({ is_price_confirmed: false }),
       plans: () => getProcurementPlans(),
       lifecycleTasks: () => getCrmTasks({ entity_type: "procurement_plan" }),
@@ -138,8 +150,6 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
         invoices: "Invoices",
         projects: "Project register",
         stores: "Store register",
-        stockLevels: "Stock levels",
-        ccbFindings: "Budget warnings",
         pendingPricing: "Pending pricing",
         plans: "Procurement plans",
         lifecycleTasks: "Lifecycle tasks",
@@ -152,10 +162,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   useLiveTable("procurement.rfqs", () => void load());
   useLiveTable("procurement.goods_received_notes", () => void load());
   useLiveTable("procurement.supplier_invoices", () => void load());
-  useLiveTable("procurement.inventory_items", () => void load());
   useLiveTable("procurement.stores", () => void load());
   useLiveTable("procurement.suppliers", () => void load());
-  useLiveTable("finance.ccb_monitor_findings", () => void load());
 
   const requisitions = useMemo(() => (Array.isArray(procurementData.requisitions?.data) ? procurementData.requisitions.data : []), [procurementData.requisitions]);
   const rfqs = useMemo(() => (Array.isArray(procurementData.rfqs?.data) ? procurementData.rfqs.data : []), [procurementData.rfqs]);
@@ -164,8 +172,17 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const invoices = useMemo(() => (Array.isArray(procurementData.invoices?.data) ? procurementData.invoices.data : []), [procurementData.invoices]);
   const projects = useMemo(() => (Array.isArray(procurementData.projects?.data) ? procurementData.projects.data : []), [procurementData.projects]);
   const stores = useMemo(() => (Array.isArray(procurementData.stores?.data) ? procurementData.stores.data : []), [procurementData.stores]);
-  const stockLevels = useMemo(() => (Array.isArray(procurementData.stockLevels?.data) ? procurementData.stockLevels.data : []), [procurementData.stockLevels]);
-  const ccbFindings = useMemo(() => (Array.isArray(procurementData.ccbFindings?.data) ? procurementData.ccbFindings.data : []), [procurementData.ccbFindings]);
+  // Stock on hand is only needed by New request ("already in a store?"), so it
+  // loads when that form opens instead of with every visit to Procurement.
+  const [stockLevels, setStockLevels] = useState<Rec[] | null>(null);
+  useEffect(() => {
+    if (!showCreatePR || stockLevels) return;
+    let cancelled = false;
+    getInventoryStockLevels()
+      .then((res) => { if (!cancelled) setStockLevels(Array.isArray(res.data) ? res.data : []); })
+      .catch(() => { if (!cancelled) setStockLevels([]); });
+    return () => { cancelled = true; };
+  }, [showCreatePR, stockLevels]);
   const pendingPricing = useMemo(() => (Array.isArray(procurementData.pendingPricing?.data) ? procurementData.pendingPricing.data : []), [procurementData.pendingPricing]);
   const plans = useMemo(() => (Array.isArray(procurementData.plans?.data) ? procurementData.plans.data : []), [procurementData.plans]);
   const lifecycleTasks = useMemo(() => {
@@ -179,7 +196,12 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
 
   const purchases = useMemo(() => buildPurchases(requisitions, rfqs, orders, invoices), [requisitions, rfqs, orders, invoices]);
   const can = useMemo(() => (key: string) => isSuperAdmin || Boolean(permissions?.has(key)), [isSuperAdmin, permissions]);
-  const tasks = useMemo(() => buildTasks(purchases, can, user?.id ?? null), [purchases, can, user?.id]);
+  const tasks = useMemo(() => {
+    const built = buildTasks(purchases, can, user?.id ?? null);
+    return approvalBlockedForRole
+      ? built.map((t) => (t.action.type === "approveRequest" ? { ...t, verb: "Review or reject request (approval is by someone else)" } : t))
+      : built;
+  }, [purchases, can, user?.id, approvalBlockedForRole]);
   const canPrice = can("procurement.requisition.approve");
   const taskCount = tasks.length + (canPrice ? pendingPricing.length : 0) + lifecycleTasks.length;
   const activePurchases = purchases.filter((p) => p.stage !== "done" && p.stage !== "stopped").length;
@@ -242,6 +264,34 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
       }
     }
     finally { setSaving(null); }
+  };
+
+  /** Approve several requests in one go. Any that need a budget override
+   * are left for one-by-one approval, where the reason can be captured. */
+  const approveManyPRs = async (rows: Rec[]) => {
+    if (!rows.length) return;
+    setSaving("bulk-approve");
+    let approved = 0;
+    const overBudget: string[] = [];
+    const refused: string[] = [];
+    for (const row of rows) {
+      try {
+        await approveProcurementRequisition(row.id, "approved");
+        approved += 1;
+      } catch (e) {
+        const message = normalizeActionError(e, "Approval failed.");
+        const label = tx(row.requisition_number ?? row.pr_number, row.id.slice(0, 8));
+        if (/override reason/i.test(message)) overBudget.push(label);
+        else refused.push(`${label}: ${message}`);
+      }
+    }
+    setNotice([
+      `${approved} request${approved === 1 ? "" : "s"} approved.`,
+      overBudget.length ? `Over budget, so not approved: ${overBudget.join(", ")} - open ${overBudget.length === 1 ? "it" : "each one"} to approve with a reason.` : "",
+      refused.length ? `Not approved: ${refused.join("; ")}` : "",
+    ].filter(Boolean).join(" "));
+    setSaving(null);
+    await load();
   };
 
   const createPO = async (pr: Rec, supplierId: string, supplierSelectionReason: string) => {
@@ -460,6 +510,16 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
     return invoices.filter((r) => invMatchStatus === "all" || tx(r.match_status ?? r.matching_status, "unmatched").toLowerCase() === invMatchStatus).filter((r) => `${r.invoice_number ?? r.id} ${r.supplier_name ?? ""} ${r.po_number ?? ""} ${r.match_status ?? ""}`.toLowerCase().includes(q));
   }, [invoices, query, invMatchStatus]);
 
+  /** What still needs doing in each list, shown on its tab. */
+  const subTabCounts = useMemo<Partial<Record<Tab, number>>>(() => ({
+    purchases: activePurchases,
+    requisitions: requisitions.filter((r) => ["draft", "submitted", "approved"].includes(tx(r.status, "draft").toLowerCase())).length,
+    rfqs: rfqs.filter((r) => ["draft", "issued"].includes(tx(r.status, "draft").toLowerCase())).length,
+    orders: orders.filter((r) => ["draft", "approved", "issued", "partially_received"].includes(tx(r.status, "draft").toLowerCase())).length,
+    invoices: invoices.filter((r) => ["unmatched", "partial", "disputed"].includes(tx(r.match_status ?? r.matching_status, "unmatched").toLowerCase())).length,
+    pricing: pendingPricing.length,
+  }), [activePurchases, requisitions, rfqs, orders, invoices, pendingPricing]);
+
   const unmatchedCount = useMemo(
     () => filteredInvoices.filter((r) => ["unmatched", "disputed"].includes(tx(r.match_status ?? r.matching_status).toLowerCase())).length,
     [filteredInvoices]
@@ -528,10 +588,20 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
           );
         })}
       </nav>
-      {["requisitions", "rfqs", "orders", "invoices", "pricing"].includes(tab) && (
-        <button onClick={() => router.push(TAB_ROUTES.purchases)} className="mb-3 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase text-slate-light hover:text-paper">
-          <ArrowLeft className="h-3.5 w-3.5" />Back to Purchases
-        </button>
+      {PURCHASE_SUBTABS.some((t) => t.key === tab) && (
+        <nav aria-label="Purchase lists" className="-mt-2 mb-4 flex flex-wrap gap-px overflow-x-auto border border-ink-mid bg-ink-mid">
+          {PURCHASE_SUBTABS.map((sub) => {
+            const count = subTabCounts[sub.key];
+            const active = tab === sub.key;
+            return (
+              <button key={sub.key} type="button" onClick={() => router.push(TAB_ROUTES[sub.key])}
+                className={`flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 py-2 font-mono text-[10px] uppercase tracking-wider ${active ? "bg-signal/15 text-signal" : "bg-ink text-slate-light hover:bg-ink-light hover:text-paper"}`}>
+                {sub.label}
+                {count !== undefined && count > 0 && <span className={`border px-1 ${active ? "border-signal/40" : "border-ink-mid text-slate"}`}>{count}</span>}
+              </button>
+            );
+          })}
+        </nav>
       )}
 
       {/* Alerts */}
@@ -576,7 +646,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
       {/* Tab content */}
       <section className="border border-t-0 border-ink-mid bg-ink">
         {loading && !procurementData.requisitions ? <LoadingState label={`Loading ${tab}…`} /> :
-          tab === "tasks" ? <MyTasks tasks={tasks} pricing={filteredPricing} canPrice={canPrice} saving={saving} onAct={runTask} onConfirmPrice={confirmPricing} lifecycleTasks={lifecycleTasks} onOpenPlan={setOpenPlanId} /> :
+          tab === "tasks" ? <MyTasks tasks={tasks} pricing={filteredPricing} canPrice={canPrice} saving={saving} onAct={runTask} onConfirmPrice={confirmPricing} onApproveMany={approvalBlockedForRole ? undefined : (rows) => void approveManyPRs(rows)} lifecycleTasks={lifecycleTasks} onOpenPlan={setOpenPlanId} /> :
           tab === "plans" ? <PlansView plans={plans} projects={projects} onOpen={setOpenPlanId} onStarted={(plan) => { setNotice(`Procurement plan started for ${plan.title}.`); void load(); setOpenPlanId(plan.id); }} /> :
           tab === "purchases" ? (
             <PurchasesView
@@ -623,7 +693,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
         <CreatePRModal
           projects={projects}
           stores={stores}
-          stockLevels={stockLevels}
+          stockLevels={stockLevels ?? []}
           onClose={() => setShowCreatePR(false)}
           onCreated={() => {
             setShowCreatePR(false);

@@ -66,7 +66,13 @@ export function StockLevelsTab({
   stockSearch, setStockSearch, storeFilter, setStoreFilter, categoryFilter, setCategoryFilter,
   itemTypeFilter, setItemTypeFilter, belowReorder, setBelowReorder,
   contextualStores, categories, loading, stockLevels, scopedStock, filteredStock,
+  canRequestRestock = false,
+  canOpenRequests = false,
 }: {
+  /** Holds procurement.requisition.create, so the restock button can work. */
+  canRequestRestock?: boolean;
+  /** Holds procurement.requisition.read + submit, so can open and submit the draft. */
+  canOpenRequests?: boolean;
   stockSearch: string; setStockSearch: (v: string) => void;
   storeFilter: string; setStoreFilter: (v: string) => void;
   categoryFilter: string; setCategoryFilter: (v: string) => void;
@@ -97,24 +103,26 @@ export function StockLevelsTab({
 
   const [replenishing, setReplenishing] = useState(false);
   const [replenishSuccess, setReplenishSuccess] = useState<{ message: string; reqNumber: string } | null>(null);
+  const [replenishError, setReplenishError] = useState<string | null>(null);
 
   const handleGenerateReplenishment = async () => {
     try {
       setReplenishing(true);
       setReplenishSuccess(null);
+      setReplenishError(null);
       const res = await generateReplenishmentDrafts({
         store_id: storeFilter || undefined,
       });
       if (res.data) {
         setReplenishSuccess({
-          message: `Draft PR ${res.data.requisition_number} generated (${res.data.items_count} items, $${res.data.total_estimated.toLocaleString()})`,
+          message: `Draft request ${res.data.requisition_number} created: ${res.data.items_count} item${res.data.items_count === 1 ? "" : "s"}, about ${money(res.data.total_estimated)}. ${canOpenRequests ? "Check the quantities, then submit it for approval." : "Procurement will check it and send it for approval."}`,
           reqNumber: res.data.requisition_number,
         });
       } else {
-        alert(res.message || "No items were eligible for replenishment.");
+        setReplenishError(res.message || "Nothing needed restocking - no item is below its reorder level.");
       }
     } catch (err: any) {
-      alert(err?.message || "Failed to generate replenishment requisition.");
+      setReplenishError(err?.message || "The restock request could not be created.");
     } finally {
       setReplenishing(false);
     }
@@ -263,10 +271,15 @@ export function StockLevelsTab({
             <h2 className="flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-wider text-paper"><AlertTriangle className="h-4 w-4 text-amber-300" /> Reorder watchlist</h2>
             <span className="font-mono text-[10px] text-slate">{watchlist.length}</span>
           </div>
-          {watchlist.length > 0 && (
+          {watchlist.length > 0 && !canRequestRestock && (
+            <p className="border-b border-ink-mid bg-amber-950/20 p-3 text-[11px] leading-tight text-amber-200/90">
+              {watchlist.length} item{watchlist.length === 1 ? " is" : "s are"} low or out{storeFilter ? " in this store" : ""}. Ask procurement to raise a restock request - they can do it in one click from this list.
+            </p>
+          )}
+          {watchlist.length > 0 && canRequestRestock && (
             <div className="border-b border-ink-mid p-3 bg-amber-950/20">
               <p className="text-[11px] text-amber-200/90 leading-tight mb-2">
-                {watchlist.length} stocked item{watchlist.length === 1 ? "" : "s"} below safety threshold. Generate a draft purchase requisition:
+                {watchlist.length} item{watchlist.length === 1 ? " is" : "s are"} low or out{storeFilter ? " in this store" : ""}. One click drafts a purchase request topping each one back up:
               </p>
               <button
                 type="button"
@@ -275,18 +288,23 @@ export function StockLevelsTab({
                 className="w-full inline-flex items-center justify-center gap-2 border border-signal/60 bg-signal/15 px-3 py-2 font-mono text-xs font-bold uppercase text-signal hover:bg-signal/25 disabled:opacity-50 transition-colors"
               >
                 {replenishing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                <span>Auto-Draft Replenishment PR</span>
+                <span>Request restock</span>
               </button>
               {replenishSuccess && (
                 <div className="mt-2 p-2 border border-emerald-500/30 bg-emerald-950/40 text-[11px] text-emerald-300">
                   <p className="font-semibold">{replenishSuccess.message}</p>
-                  <a
-                    href="/dashboard/procurement/requisitions"
-                    className="inline-flex items-center gap-1 font-mono text-[10px] text-signal hover:underline mt-1"
-                  >
-                    View in Requisitions <ArrowRight className="h-3 w-3" />
-                  </a>
+                  {canOpenRequests && (
+                    <a
+                      href="/dashboard/procurement/requisitions"
+                      className="inline-flex items-center gap-1 font-mono text-[10px] text-signal hover:underline mt-1"
+                    >
+                      Open purchase requests <ArrowRight className="h-3 w-3" />
+                    </a>
+                  )}
                 </div>
+              )}
+              {replenishError && (
+                <p className="mt-2 border border-red-500/30 bg-red-950/30 p-2 text-[11px] text-red-200">{replenishError}</p>
               )}
             </div>
           )}

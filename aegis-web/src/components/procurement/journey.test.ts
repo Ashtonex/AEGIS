@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildPurchases, buildTasks, purchaseStage, type Row } from "./journey.ts";
+import { buildPurchases, buildTasks, poIsOverdue, purchaseStage, type Row } from "./journey.ts";
 
 const NOW = new Date("2026-10-24T12:00:00Z").getTime();
 const req = (id: string, status: string, extra: Partial<Row> = {}): Row => ({ id, status, requisition_number: `REQ-${id}`, project_name: "Trout Beck", created_by: "me", ...extra });
@@ -63,6 +63,14 @@ test("overdue deliveries sort first and become urgent tasks", () => {
   const tasks = buildTasks(purchases, all, "me", NOW);
   assert.equal(tasks[0].urgent, true);
   assert.match(tasks[0].verb, /overdue/);
+});
+
+test("a delivery due today is not overdue; one due yesterday is", () => {
+  const now = new Date(2026, 9, 24, 18, 0, 0).getTime(); // 24 Oct, 18:00 local
+  assert.equal(poIsOverdue(po("t", null, "issued", { required_by_date: "2026-10-24" }), now), false);
+  assert.equal(poIsOverdue(po("y", null, "issued", { required_by_date: "2026-10-23" }), now), true);
+  assert.equal(poIsOverdue(po("d", null, "draft", { required_by_date: "2026-10-01" }), now), false);
+  assert.equal(poIsOverdue(po("n", null, "issued", { required_by_date: null }), now), false);
 });
 
 test("tasks only appear for permissions the user holds", () => {
