@@ -20,7 +20,7 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { getInternalProjects } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { title, text, number, type Project } from "../page";
+import { title, text, number, type Project } from "../ProjectsPage";
 
 export default function PortfolioSchedulePage() {
   const [projects, setProjects] = useState<Project[]>([]);

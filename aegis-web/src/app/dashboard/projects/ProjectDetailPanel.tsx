@@ -59,7 +59,7 @@ import {
   type Project, type Department, type ClientOrganization, type ClientContact, type Detail,
   type PreMobilisationCheck, type PreMobilisationReadiness, type CommercialReadinessControl, type CommercialReadiness,
   type ProjectTab, type ProjectCommand,
-} from "./page";
+} from "./ProjectsPage";
 
 // A single inline field-save (client link, department, name, ...) failing
 // outright on one transient blip - a slow request racing DB pool pressure,
