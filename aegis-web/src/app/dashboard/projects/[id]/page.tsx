@@ -41,8 +41,6 @@ import { getProjectProgressPack, type ProjectProgressPackData } from "@/lib/api/
 import { ProgressPackModal } from "@/components/projects/ProgressPackModal";
 import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
-export { title, text, number };
-
 export default function ProjectMissionControlPage() {
   const params = useParams();
   const projectId = typeof params?.id === "string" ? params.id : "";

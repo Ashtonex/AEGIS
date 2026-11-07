@@ -15,7 +15,7 @@ import {
   updateProjectPreMobilisationCheck,
   type ProjectTeamMember,
 } from "@/lib/api";
-import type { Detail, Project } from "../app/dashboard/projects/page";
+import type { Detail, Project } from "../app/dashboard/projects/ProjectsPage";
 
 export type ProjectWorkspaceData = {
   project: Project | null;
