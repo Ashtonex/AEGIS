@@ -1,13 +1,11 @@
 const {
   closeSync,
-  existsSync,
-  mkdirSync,
   openSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
 } = require("node:fs");
-const { dirname, join } = require("node:path");
+const { join } = require("node:path");
 const { spawnSync } = require("node:child_process");
 const packageJson = require("../package.json");
 
@@ -15,7 +13,6 @@ process.env.AEGIS_BUILD_PHASE = process.env.AEGIS_BUILD_PHASE || "true";
 process.env.NEXT_TELEMETRY_DISABLED = process.env.NEXT_TELEMETRY_DISABLED || "1";
 
 const nextBin = require.resolve("next/dist/bin/next");
-const tscBin = require.resolve("typescript/bin/tsc");
 const buildLock = join(process.cwd(), ".aegis-build.lock");
 
 function processIsRunning(pid) {
@@ -70,41 +67,17 @@ function writeVersionManifest() {
   writeFileSync(versionPath, JSON.stringify(manifest, null, 2), "utf8");
 }
 
-function runBuild() {
-  return spawnSync(process.execPath, [nextBin, "build"], {
-    env: { ...process.env, AEGIS_SKIP_NEXT_TYPECHECK: "1" },
-    stdio: "inherit",
-  });
-}
-
+// `next build` runs its own type check, which also enforces Next's rules for
+// route files (e.g. a page.tsx may only export the page and segment config).
+// Plain `tsc` does not catch those, so the build must never skip it, and a
+// failed build is never retried: it has to fail the deploy.
 function build() {
   writeVersionManifest();
-  const typecheck = spawnSync(
-    process.execPath,
-    [tscBin, "--noEmit", "--pretty", "false", "--incremental", "false"],
-    {
-      env: process.env,
-      stdio: "inherit",
-    },
-  );
 
-  if (typecheck.error) {
-    console.error(typecheck.error);
-    return 1;
-  }
-
-  if ((typecheck.status ?? 1) !== 0) {
-    return typecheck.status ?? 1;
-  }
-
-  let result = runBuild();
-
-  const pagesManifest = join(process.cwd(), ".next", "server", "pages-manifest.json");
-  if ((result.status ?? 1) !== 0 && !existsSync(pagesManifest)) {
-    mkdirSync(dirname(pagesManifest), { recursive: true });
-    writeFileSync(pagesManifest, "{}", "utf8");
-    result = runBuild();
-  }
+  const result = spawnSync(process.execPath, [nextBin, "build"], {
+    env: process.env,
+    stdio: "inherit",
+  });
 
   if (result.error) {
     console.error(result.error);

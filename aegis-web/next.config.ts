@@ -6,9 +6,6 @@ const nextConfig: NextConfig = {
     process.env.NODE_ENV === "production" && process.env.VERCEL !== "1"
       ? "standalone"
       : undefined,
-  typescript: {
-    ignoreBuildErrors: process.env.AEGIS_SKIP_NEXT_TYPECHECK === "1",
-  },
   // No images config existed before this - next/image was already used in
   // 12 files but every one of them happened to serve local /public assets;
   // this lets any Supabase Storage-hosted image (profile photos, article/
