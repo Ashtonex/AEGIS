@@ -1060,6 +1060,53 @@ async def get_executive_stats(
     }
 
 
+def _health_entry(name: str, record_count: Any, last_updated: Any) -> Dict[str, Any]:
+    if not record_count:
+        status = "no_data"
+    elif last_updated and (
+        last_updated.tzinfo is None
+        or last_updated >= datetime.now(last_updated.tzinfo) - timedelta(days=7)
+    ):
+        status = "current"
+    else:
+        status = "stale"
+    return {
+        "source": name,
+        "status": status,
+        "record_count": record_count,
+        "last_updated": last_updated,
+    }
+
+
+async def _all_sources_health(
+    db: AsyncSession, org_id: str, sources: List[tuple[str, str]]
+) -> List[Dict[str, Any]]:
+    """Every source's count and latest update in one statement - one database
+    round trip instead of one per source. If any relation can't be read the
+    whole statement fails, so fall back to checking each source on its own,
+    which reports just the broken one as unavailable."""
+    parts = []
+    for index, (_, relation) in enumerate(sources):
+        config = EXECUTIVE_HEALTH_SOURCES[relation]
+        deletion_clause = f" AND {config['deleted_filter']}" if config["deleted_filter"] else ""
+        parts.append(
+            f"SELECT {index} AS idx, COUNT(*) AS record_count, "
+            f"MAX({config['updated_column']})::timestamptz AS last_updated "
+            f"FROM {relation} WHERE organization_id = :org_id{deletion_clause}"
+        )
+    try:
+        rows = (await db.execute(text("\nUNION ALL\n".join(parts)), {"org_id": org_id})).all()
+        by_index = {row.idx: row for row in rows}
+        return [
+            _health_entry(name, by_index[i].record_count, by_index[i].last_updated)
+            for i, (name, _) in enumerate(sources)
+        ]
+    except Exception as exc:
+        await db.rollback()
+        logger.warning("executive_data_health_combined_failed", error_type=exc.__class__.__name__)
+        return [await _source_health(db, org_id, name, relation) for name, relation in sources]
+
+
 async def _source_health(
     db: AsyncSession, org_id: str, name: str, relation: str
 ) -> Dict[str, Any]:
@@ -1080,22 +1127,7 @@ async def _source_health(
             {"org_id": org_id},
         )
         row = result.one()
-        last_updated = row.last_updated
-        if not row.record_count:
-            status = "no_data"
-        elif last_updated and (
-            last_updated.tzinfo is None
-            or last_updated >= datetime.now(last_updated.tzinfo) - timedelta(days=7)
-        ):
-            status = "current"
-        else:
-            status = "stale"
-        return {
-            "source": name,
-            "status": status,
-            "record_count": row.record_count,
-            "last_updated": last_updated,
-        }
+        return _health_entry(name, row.record_count, row.last_updated)
     except Exception:
         # A failed statement leaves the session's transaction aborted;
         # without a rollback every source checked after this one in the
@@ -1196,29 +1228,28 @@ async def get_executive_data_health(
 ):
     """Data confidence for the sources used by the command centre."""
     org_id = user["org_id"]
-    sources = [
-        _source_health(db, org_id, "Projects", "projects.projects"),
-        _source_health(db, org_id, "Project Profiles", "projects.project_profiles"),
-        _source_health(db, org_id, "Site Reports", "projects.daily_site_reports"),
-        _source_health(db, org_id, "HSE", "projects.hse_incidents"),
-        _source_health(db, org_id, "CRM Leads", "crm.leads"),
-        _source_health(db, org_id, "CRM Deals", "crm.opportunities"),
-        _source_health(db, org_id, "CRM Tenders", "crm.tenders"),
-        _source_health(db, org_id, "CRM Activity", "crm.activities"),
-        _source_health(db, org_id, "Finance Quotes", "finance.quotations"),
-        _source_health(db, org_id, "Finance Progress Claims", "finance.progress_claims"),
-        _source_health(db, org_id, "Finance Costs", "finance.cost_transactions"),
-        _source_health(db, org_id, "Finance Forecasts", "finance.project_forecasts"),
-        _source_health(db, org_id, "Procurement Orders", "procurement.purchase_orders"),
-        _source_health(db, org_id, "Suppliers", "procurement.suppliers"),
-        _source_health(db, org_id, "Inventory", "procurement.inventory_items"),
-        _source_health(db, org_id, "Workforce", "hr.employees"),
-        _source_health(db, org_id, "Fleet", "fleet.fleet"),
-        _source_health(db, org_id, "Plant Requests", "fleet.plant_requests"),
-        _source_health(db, org_id, "Plant Incidents", "fleet.plant_incidents"),
-        _source_health(db, org_id, "Compliance", "core.compliance_items"),
-    ]
-    sources = [await source for source in sources]
+    sources = await _all_sources_health(db, org_id, [
+        ("Projects", "projects.projects"),
+        ("Project Profiles", "projects.project_profiles"),
+        ("Site Reports", "projects.daily_site_reports"),
+        ("HSE", "projects.hse_incidents"),
+        ("CRM Leads", "crm.leads"),
+        ("CRM Deals", "crm.opportunities"),
+        ("CRM Tenders", "crm.tenders"),
+        ("CRM Activity", "crm.activities"),
+        ("Finance Quotes", "finance.quotations"),
+        ("Finance Progress Claims", "finance.progress_claims"),
+        ("Finance Costs", "finance.cost_transactions"),
+        ("Finance Forecasts", "finance.project_forecasts"),
+        ("Procurement Orders", "procurement.purchase_orders"),
+        ("Suppliers", "procurement.suppliers"),
+        ("Inventory", "procurement.inventory_items"),
+        ("Workforce", "hr.employees"),
+        ("Fleet", "fleet.fleet"),
+        ("Plant Requests", "fleet.plant_requests"),
+        ("Plant Incidents", "fleet.plant_incidents"),
+        ("Compliance", "core.compliance_items"),
+    ])
     try:
         await _emit_executive_data_health_notification(db, org_id, sources)
     except Exception as exc:
@@ -2828,12 +2859,19 @@ async def get_executive_overview_bundle(
 ):
     """Batches the top 6 executive dashboard reads into a single network payload,
     eliminating the 6-request waterfall fan-out on initial dashboard mount."""
-    kpis_res = await get_executive_kpis(user, db)
-    stats_res = await get_executive_stats(user, db)
-    regions_res = await get_regional_footprint(user, db)
-    projects_res = await get_active_projects(user, db)
+    # Data health can write and commit a notification, so it runs first on
+    # the request's own session. The other five only read and don't depend
+    # on each other, so they run concurrently where spare connections allow
+    # (before, all six ran one after another: ~1.2 s of database round trips).
     health_res = await get_executive_data_health(user, db)
-    exceptions_res = await get_executive_exceptions(user, db)
+    kpis_res, stats_res, regions_res, projects_res, exceptions_res = await gather_reads(
+        db,
+        lambda session: get_executive_kpis(user, session),
+        lambda session: get_executive_stats(user, session),
+        lambda session: get_regional_footprint(user, session),
+        lambda session: get_active_projects(user, session),
+        lambda session: get_executive_exceptions(user, session),
+    )
 
     all_source_errors = []
     for res in (kpis_res, stats_res, regions_res, projects_res, health_res, exceptions_res):

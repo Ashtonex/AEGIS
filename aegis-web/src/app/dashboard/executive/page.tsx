@@ -352,8 +352,9 @@ function ExecutiveCommandCentreWorkspace() {
     }
   };
 
-  if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="w-7 h-7 text-signal animate-spin" /></div>;
-
+  // The summary bundle feeds only the cards and panels marked below; every
+  // other panel loads its own data. So don't hold the whole page behind it -
+  // render now, and show placeholders where the bundle's data will land.
   const selectedCard = metricCards.find((card) => card.key === selectedMetric);
   return <div className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-7 sm:px-6 sm:pt-8 space-y-4">
     <DashboardPageHeader
@@ -365,21 +366,21 @@ function ExecutiveCommandCentreWorkspace() {
       </div>}
     />
 
-    <DataConfidence sources={dataHealth} />
+    {!loading && <DataConfidence sources={dataHealth} />}
     <SourceWarnings warnings={loadWarnings} />
 
     <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
-      {metricCards.map((card) => <button key={card.key} onClick={() => setSelectedMetric(card.key)} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_10px_20px_-14px_rgba(0,0,0,0.55)] p-3 transition-shadow hover:border-signal hover:shadow-[0_0_40px_var(--dxl-signal-ghost)] focus-visible:outline focus-visible:outline-signal">
-        <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl leading-tight text-paper mt-3 break-words">{card.value}</p>
+      {metricCards.map((card) => <button key={card.key} onClick={() => setSelectedMetric(card.key)} disabled={loading} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_10px_20px_-14px_rgba(0,0,0,0.55)] p-3 transition-shadow hover:border-signal hover:shadow-[0_0_40px_var(--dxl-signal-ghost)] focus-visible:outline focus-visible:outline-signal">
+        <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl leading-tight text-paper mt-3 break-words">{loading ? <Loader2 className="w-4 h-4 text-slate animate-spin" aria-label="Loading" /> : card.value}</p>
       </button>)}
     </section>
 
     <PendingApprovalsPanel />
-    <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
+    {loading ? <BundlePlaceholder label="Executive exceptions" /> : <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />}
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <RevenueCostMarginPanel kpis={kpis} />
-      <PipelineCompositionPanel kpis={kpis} />
+      {loading ? <BundlePlaceholder label="Revenue, cost and margin" /> : <RevenueCostMarginPanel kpis={kpis} />}
+      {loading ? <BundlePlaceholder label="Pipeline composition" /> : <PipelineCompositionPanel kpis={kpis} />}
     </section>
 
     <BudgetVsActualPanel />
@@ -398,10 +399,10 @@ function ExecutiveCommandCentreWorkspace() {
     <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
       <TodayPanel />
 
-      <RegionalFootprint regions={regions} />
+      {loading ? <BundlePlaceholder label="Regional footprint" /> : <RegionalFootprint regions={regions} />}
     </section>
 
-    <OperationalControlLedger stats={stats} />
+    {loading ? <BundlePlaceholder label="Operational control ledger" /> : <OperationalControlLedger stats={stats} />}
     <MaterialsForecastPanel />
     <CCBCommercialGovernanceWidget />
     <CCBAutomatedFindingsPanel />
@@ -411,6 +412,7 @@ function ExecutiveCommandCentreWorkspace() {
   </div>;
 }
 
+function BundlePlaceholder({ label }: { label: string }) { return <div className="min-h-32 bg-ink-light border border-ink-mid rounded-lg p-4 flex items-center gap-2 text-xs text-slate"><Loader2 className="h-4 w-4 animate-spin" /> Loading {label.toLowerCase()}...</div>; }
 function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) { return <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}><div className={`bg-ink border border-ink-light rounded-lg shadow-[0_20px_60px_-20px_rgba(0,0,0,0.7)] w-full ${wide ? "max-w-5xl" : "max-w-2xl"} max-h-[85vh] overflow-y-auto p-5`} onClick={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-4 mb-5"><h2 className="font-display text-2xl text-paper">{title}</h2><button onClick={onClose} title="Close" className="text-slate hover:text-paper"><X className="w-5 h-5" /></button></div>{children}</div></div>; }
 function MetricDetailGrid({ rows }: { rows: Array<{ label: string; value: string; source: string }> }) { if (!rows.length) return <p className="mt-5 text-sm text-slate-light">No drill-down fields are configured for this metric.</p>; return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{rows.map((row) => <div key={`${row.label}-${row.source}`} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{row.label}</p><p className="font-mono text-sm text-paper mt-1">{row.value}</p><p className="mt-2 font-mono text-[10px] uppercase text-slate">Source: {row.source}</p></div>)}</div>; }
 function MetricFields({ data }: { data: ApiData }) { return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{Object.entries(data).map(([key, value]) => <div key={key} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{titleCase(key)}</p><p className="font-mono text-sm text-paper mt-1">{displayValue(value)}</p></div>)}</div>; }
