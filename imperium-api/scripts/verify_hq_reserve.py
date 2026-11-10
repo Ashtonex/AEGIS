@@ -48,6 +48,7 @@ ACCOUNTS = [
     ("1100", "Receivable", "asset", "debit"), ("1900", "Suspense", "asset", "debit"),
     ("4100", "Certified revenue", "revenue", "credit"), ("4900", "Other income", "other_income", "credit"),
     ("5000", "Materials", "direct_project_cost", "debit"), ("5950", "Unclassified", "direct_project_cost", "debit"),
+    ("6000", "HQ salaries", "operating_expense", "debit"),
     ("6600", "Office administration", "operating_expense", "debit"), ("7900", "Other expense", "other_expense", "debit"),
 ]
 
@@ -98,9 +99,7 @@ async def receipt(db, project, amount, on, via="cash"):
 async def save(db, active=True, rate="5", starts_on=OCT, overrides=(), today=None):
     await hq_reserve.save_settings(db, org_id=ORG, user_id=USER, is_active=active, default_rate_pct=Decimal(rate),
                                    starts_on=starts_on, project_rates=[{"project_id": p, "rate_pct": Decimal(r)}
-                                                                       for p, r in overrides])
-    if today:
-        await hq_reserve.sync(db, org_id=ORG, user_id=USER, today=today)
+                                                                       for p, r in overrides], today=today)
     await db.commit()
 
 
@@ -151,7 +150,9 @@ async def main() -> None:
         check("project cost follows (60)", await project_cost(db, A) == Decimal("60"), await project_cost(db, A))
 
         await receipt(db, B, 500, date(2026, 11, 6))
-        check("exempt project (0%) contributes nothing", await row(db, B, NOV) is None and await gl(db, "5970", B) == 0)
+        b_row = await row(db, B, NOV)
+        check("exempt project (0%) contributes nothing", b_row and b_row["amount"] == 0 and b_row["gl_journal_id"] is None
+              and await gl(db, "5970", B) == 0, dict(b_row or {}))
 
         # --- a receipt arriving on the bank statement -----------------------------------
         imp = (await q(db, """INSERT INTO finance.bank_statement_imports (organization_id, cash_account_id, file_name)
@@ -187,6 +188,16 @@ async def main() -> None:
         check("earlier month (October) keeps 5% = 20", oct_row["amount"] == Decimal("20") and oct_row["rate_pct"] == Decimal("5"),
               dict(oct_row))
 
+        # --- a 0% month keeps its rate too ------------------------------------------------
+        b_row = await row(db, B, NOV)
+        check("exempt month is remembered at 0% (no journal)", b_row and b_row["rate_pct"] == 0 and b_row["amount"] == 0
+              and b_row["gl_journal_id"] is None, dict(b_row or {}))
+        await save(db, rate="10", overrides=[], today=date(2026, 12, 5))
+        b_row = await row(db, B, NOV)
+        check("dropping the exemption in December does not reach back into November",
+              b_row["amount"] == 0 and b_row["rate_pct"] == 0 and await gl(db, "5970", B) == 0, dict(b_row))
+        await save(db, rate="10", overrides=[(B, "0")], today=date(2026, 11, 10))
+
         # --- reserve balance -----------------------------------------------------------
         await project_entries.create(db, org_id=ORG, user_id=USER, values={
             "project_id": None, "direction": "out", "paid_via": "cash", "entry_date": date(2026, 11, 8), "amount": 30,
@@ -203,6 +214,23 @@ async def main() -> None:
         actuals = await company_budget._get_department_actuals_by_month(db, ORG, None, 2026)
         cost = sum(m["cost"] for m in actuals)
         check("company actual cost = the office voucher only (contributions net to zero)", cost == 30.0, actuals)
+
+        # --- HQ salaries: from the ledger unless a posted payroll run covers the month ----
+        await project_entries.create(db, org_id=ORG, user_id=USER, values={
+            "project_id": None, "direction": "out", "paid_via": "cash", "entry_date": date(2026, 11, 7), "amount": 400,
+            "category": "salaries_wages", "description": "Office assistant, October salary"})
+        await db.commit()
+        actuals = await company_budget._get_department_actuals_by_month(db, ORG, None, 2026)
+        check("a salary voucher with no payroll run counts (30 + 400)", sum(m["cost"] for m in actuals) == 430.0, actuals)
+        emp = (await q(db, "INSERT INTO hr.employees (organization_id, employee_name) VALUES (:org, 'Office Assistant') RETURNING id")).scalar()
+        run = (await q(db, """INSERT INTO finance.payroll_runs (organization_id, run_number, period_start, period_end, payment_date, status)
+                              VALUES (:org, 'PR-TEST-11', '2026-11-01', '2026-11-30', '2026-11-07', 'posted') RETURNING id""")).scalar()
+        await q(db, "INSERT INTO finance.payroll_items (organization_id, payroll_run_id, employee_id, net_pay) VALUES (:org, :r, :e, 400)",
+                r=run, e=emp)
+        await db.commit()
+        actuals = await company_budget._get_department_actuals_by_month(db, ORG, None, 2026)
+        check("...and once a posted payroll run covers November, salaries are not counted twice (30 + 400)",
+              sum(m["cost"] for m in actuals) == 430.0, actuals)
 
         # --- closed period blocks a change ------------------------------------------------
         await q(db, "UPDATE finance.accounting_periods SET status = 'closed' WHERE organization_id = :org AND period_number = 10")

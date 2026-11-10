@@ -93,7 +93,7 @@ async def get_settings(db: AsyncSession, org_id: str) -> dict:
 
 
 async def save_settings(db: AsyncSession, *, org_id: str, user_id: str, is_active: bool, default_rate_pct: Decimal,
-                        starts_on: date, project_rates: list[dict]) -> dict:
+                        starts_on: date, project_rates: list[dict], today: Optional[date] = None) -> dict:
     """Store the policy and the per-project overrides (the list replaces the
     previous overrides), then bring contributions in line with it."""
     seen: set[str] = set()
@@ -136,7 +136,7 @@ async def save_settings(db: AsyncSession, *, org_id: str, user_id: str, is_activ
             {"org_id": org_id, "project_id": r["project_id"], "rate": r["rate_pct"], "note": r.get("note"),
              "user_id": user_id},
         )
-    return await sync(db, org_id=org_id, user_id=user_id)
+    return await sync(db, org_id=org_id, user_id=user_id, today=today)
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +248,18 @@ async def sync(db: AsyncSession, *, org_id: str, user_id: str, today: Optional[d
             counts["unchanged"] += 1
             continue
         if not row and amount == 0:
+            if got["receipts"] != 0:
+                # remember the rate (e.g. 0% while exempt) so a later rate
+                # rise does not reach back into this month
+                await db.execute(
+                    text("""
+                        INSERT INTO finance.hq_reserve_contributions
+                            (organization_id, project_id, month, receipts, rate_pct, amount)
+                        VALUES (:org_id, :p, :m, :r, :rate, 0)
+                    """),
+                    {"org_id": org_id, "p": project_id, "m": month, "r": got["receipts"], "rate": rate},
+                )
+                counts["unchanged"] += 1
             continue
 
         on = got["last_date"] or (row["entry_date"] if row else None)
@@ -348,6 +360,8 @@ async def overview(db: AsyncSession, *, org_id: str) -> dict:
     by_project: dict[UUID, dict] = {}
     by_month: dict[date, dict] = {}
     for c in contributions:
+        if not _d(c["amount"]) and not c["blocked_reason"]:
+            continue   # a month that only records its rate (e.g. an exempt project)
         p = by_project.setdefault(c["project_id"], {"project_id": c["project_id"], "project_name": c["project_name"],
                                                     "receipts": Decimal("0"), "contributed": Decimal("0")})
         p["receipts"] += _d(c["receipts"])
