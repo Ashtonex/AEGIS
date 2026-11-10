@@ -321,6 +321,8 @@ export type ProjectMoneyEntryInput = {
   reference?: string | null;
   description?: string | null;
   pays_claim_id?: string | null;
+  spent_by?: string | null;
+  department_id?: string | null;
 };
 
 const PROJECT_ENTRIES = "/api/v1/bank-transactions/reconciliation/project-entries";
@@ -355,6 +357,35 @@ export async function unmatchProjectEntry(entryId: string): Promise<ApiResponse<
 
 export async function dismissProjectEntrySuggestion(entryId: string, lineId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/dismiss`, { method: "POST", body: JSON.stringify({ line_id: lineId }), allowFallback: false });
+}
+
+// Office expense vouchers: money entries with no project. PATCH/DELETE/match
+// use the project-entry routes above (they work on any entry by id).
+export type OfficeExpenseInput = {
+  paid_via: "bank" | "cash";
+  entry_date: string;
+  amount: number;
+  category: string;
+  counterparty_name?: string | null;
+  reference?: string | null;
+  description?: string | null;
+  spent_by?: string | null;
+  department_id?: string | null;
+};
+
+const OFFICE_EXPENSES = "/api/v1/bank-transactions/reconciliation/office-expenses";
+
+export async function getOfficeExpenses(params?: { date_from?: string; date_to?: string; category?: string }): Promise<ApiResponse<any>> {
+  const query = compactQuery({ date_from: params?.date_from || undefined, date_to: params?.date_to || undefined, category: params?.category || undefined });
+  return fetchApi<ApiResponse<any>>(`${OFFICE_EXPENSES}${query ? `?${query}` : ""}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function createOfficeExpense(entry: OfficeExpenseInput): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(OFFICE_EXPENSES, { method: "POST", body: JSON.stringify(entry), allowFallback: false });
+}
+
+export async function approveMoneyEntry(entryId: string, approved = true): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/approve?approved=${approved ? "true" : "false"}`, { method: "POST", allowFallback: false });
 }
 
 export async function getBankLineAllocations(lineId: string): Promise<ApiResponse<BankLineAllocation[]>> {

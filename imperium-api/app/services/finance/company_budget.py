@@ -13,14 +13,13 @@ Never posts to the General Ledger and never touches finance.project_budgets
 or finance.project_forecasts - this is a planning layer compared against
 existing actuals for variance reporting only.
 
-Known, flagged simplification: the actuals side of variance reporting
-covers external revenue (certified progress claims), project cost
-(cost_transactions), and non-project direct cost (cashbook/payroll/supplier
--payment rows tagged directly with a department) - the same core legs as
-routers/financial_performance.py::_compute_department_pnl, but omitting
-inter-department transfer legs (an internal, company-wide-zero-sum item)
-since a budget-vs-actual comparison is about external performance, not
-internal recharges. This is a deliberate scope boundary, not an oversight.
+The actuals side of variance reporting covers external revenue (certified
+progress claims), project cost (cost_transactions), non-project direct cost
+(cashbook/payroll/supplier-payment rows) and non-project overheads that
+exist only in the general ledger (bank lines tagged to an overhead account,
+office expense vouchers) - see _get_department_actuals_by_month.
+Inter-department transfer legs are left out: an internal, company-wide
+zero-sum item, not external performance.
 """
 
 from datetime import date
@@ -265,12 +264,35 @@ async def create_revision(db: AsyncSession, *, org_id: str, user_id: str, source
     return await get_budget(db, org_id=org_id, budget_id=new_id)
 
 
+# Ledger postings with no cashbook, payroll, supplier-payment or project-cost
+# row of their own: a bank line tagged straight to an overhead, and office
+# expense vouchers (cash ones included - their cashbook row is skipped below
+# so the voucher's department, which lives on the GL line, is the one used).
+GL_ONLY_SOURCES = ("bank_statement_line", "project_money_entry")
+
+
 async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, department_id: Optional[UUID], fiscal_year: int) -> list[dict]:
     """One row per (month, revenue|cost). department_id=None aggregates
-    across every department (the company-wide view)."""
+    across every department (the company-wide view).
+
+    Each leg reads the record that is the only home of that spending, so
+    nothing is counted twice:
+      revenue  certified/paid progress claims
+      cost     project cost_transactions
+               non-project cashbook payments (not transfers, not voucher
+               rows - vouchers are read from the GL below)
+               non-project payroll net pay and supplier payments
+               non-project overhead lines in the posted GL that come from a
+               bank line or an office voucher (operating/other expense
+               accounts except 6000 HQ salaries, which payroll covers)
+    The cashbook/payroll/supplier legs stay because those modules only
+    reach the GL once a proposed journal is approved.
+    """
     dept_filter = "p.department_id IS NOT DISTINCT FROM :department_id" if department_id else "TRUE"
     dept_filter_direct = "cb.department_id IS NOT DISTINCT FROM :department_id" if department_id else "TRUE"
-    params: dict = {"org_id": org_id, "year_start": date(fiscal_year, 1, 1), "year_end": date(fiscal_year, 12, 31)}
+    dept_filter_gl = "jl.department_id IS NOT DISTINCT FROM :department_id" if department_id else "TRUE"
+    params: dict = {"org_id": org_id, "year_start": date(fiscal_year, 1, 1), "year_end": date(fiscal_year, 12, 31),
+                    "gl_sources": list(GL_ONLY_SOURCES)}
     if department_id:
         params["department_id"] = department_id
 
@@ -303,6 +325,8 @@ async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, depart
                 SELECT date_trunc('month', cb.transaction_date)::date AS month, cb.amount
                 FROM finance.cashbook_transactions cb
                 WHERE cb.organization_id = :org_id AND cb.project_id IS NULL AND cb.direction = 'outflow'
+                  AND cb.transaction_type NOT IN ('transfer_in', 'transfer_out')
+                  AND COALESCE(cb.source_type, '') <> 'project_money_entry'
                   AND cb.is_deleted = false AND cb.transaction_date BETWEEN :year_start AND :year_end AND {dept_filter_direct}
                 UNION ALL
                 SELECT date_trunc('month', pr.payment_date)::date AS month, pi.net_pay
@@ -316,6 +340,17 @@ async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, depart
                 JOIN finance.supplier_payment_batches spb ON spb.id = spi.batch_id
                 WHERE spi.organization_id = :org_id AND spi.project_id IS NULL
                   AND spb.payment_date BETWEEN :year_start AND :year_end AND {dept_filter_supplier}
+                UNION ALL
+                SELECT date_trunc('month', je.entry_date)::date AS month, jl.debit_amount - jl.credit_amount
+                FROM finance.journal_entries je
+                JOIN finance.journal_lines jl ON jl.journal_entry_id = je.id
+                JOIN finance.chart_of_accounts a ON a.id = jl.account_id
+                LEFT JOIN finance.journal_entries orig ON orig.id = je.reverses_journal_id
+                WHERE je.organization_id = :org_id AND je.status = 'posted'
+                  AND COALESCE(orig.source_type, je.source_type) = ANY(:gl_sources)
+                  AND jl.project_id IS NULL
+                  AND a.account_category IN ('operating_expense', 'other_expense') AND a.account_code <> '6000'
+                  AND je.entry_date BETWEEN :year_start AND :year_end AND {dept_filter_gl}
             ) combined
             GROUP BY month
         """),

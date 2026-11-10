@@ -96,7 +96,10 @@ _MONEY_OUT_ACCOUNTS = {
     "reversal": SUSPENSE,
     "refund": "7900",
     "other": "7900",
+    "rent": "6100",
+    "utilities": "6200",
     "professional_fees": "6300",
+    "insurance": "6400",
     "travel_accommodation": "6500",
     "office_admin": "6600",
     "marketing": "6700",
@@ -116,6 +119,9 @@ _COST_CATEGORY = {
     "salaries_wages": "labour",
     "tax_statutory": "overhead",
     "bank_charges": "overhead",
+    "rent": "overhead",
+    "utilities": "overhead",
+    "insurance": "overhead",
 }
 
 
@@ -600,14 +606,15 @@ async def _post_journal(db: AsyncSession, *, org_id: str, user_id: str, entry_da
     )).scalar()
     values, params = [], {"journal_id": journal_id, "org_id": org_id}
     for i, l in enumerate(lines, start=1):
-        values.append(f"(:journal_id, :org_id, {i}, :a{i}, :d{i}, :c{i}, :desc{i}, :p{i}, 'USD')")
+        values.append(f"(:journal_id, :org_id, {i}, :a{i}, :d{i}, :c{i}, :desc{i}, :p{i}, :dep{i}, 'USD')")
         params.update({f"a{i}": l["account_id"], f"d{i}": l.get("debit_amount") or 0, f"c{i}": l.get("credit_amount") or 0,
-                       f"desc{i}": (l.get("description") or "")[:500] or None, f"p{i}": l.get("project_id")})
+                       f"desc{i}": (l.get("description") or "")[:500] or None, f"p{i}": l.get("project_id"),
+                       f"dep{i}": l.get("department_id")})
     await db.execute(
         text(f"""
             INSERT INTO finance.journal_lines (
                 journal_entry_id, organization_id, line_number, account_id, debit_amount, credit_amount,
-                description, project_id, currency_code
+                description, project_id, department_id, currency_code
             ) VALUES {', '.join(values)}
         """),
         params,
@@ -636,10 +643,11 @@ async def _reverse_journal(db: AsyncSession, *, org_id: str, user_id: str, journ
         return
     lines = [
         {"account_id": r.account_id, "debit_amount": r.credit_amount, "credit_amount": r.debit_amount,
-         "description": r.description, "project_id": r.project_id}
+         "description": r.description, "project_id": r.project_id, "department_id": r.department_id}
         for r in await db.execute(
             text("""
-                SELECT account_id, debit_amount, credit_amount, description, project_id FROM finance.journal_lines
+                SELECT account_id, debit_amount, credit_amount, description, project_id, department_id
+                FROM finance.journal_lines
                 WHERE journal_entry_id = :id ORDER BY line_number
             """),
             {"id": journal_id},
@@ -761,17 +769,19 @@ async def _bulk_post(db: AsyncSession, *, org_id: str, user_id: str, journals: l
                 "debit": str(l.get("debit_amount") or 0), "credit": str(l.get("credit_amount") or 0),
                 "description": (l.get("description") or "")[:500] or None,
                 "project_id": str(l["project_id"]) if l.get("project_id") else None,
+                "department_id": str(l["department_id"]) if l.get("department_id") else None,
             })
     await db.execute(
         text("""
             INSERT INTO finance.journal_lines (
                 journal_entry_id, organization_id, line_number, account_id, debit_amount, credit_amount,
-                description, project_id, currency_code
+                description, project_id, department_id, currency_code
             )
-            SELECT x.journal_entry_id, :org_id, x.line_number, x.account_id, x.debit, x.credit, x.description, x.project_id, 'USD'
+            SELECT x.journal_entry_id, :org_id, x.line_number, x.account_id, x.debit, x.credit, x.description,
+                   x.project_id, x.department_id, 'USD'
             FROM jsonb_to_recordset(CAST(:lines AS jsonb)) AS x(
                 journal_entry_id uuid, line_number int, account_id uuid, debit numeric, credit numeric,
-                description text, project_id uuid)
+                description text, project_id uuid, department_id uuid)
         """),
         {"org_id": org_id, "lines": json.dumps(journal_lines)},
     )
@@ -806,14 +816,14 @@ async def _bulk_reverse(db: AsyncSession, *, org_id: str, user_id: str, original
     lines_by_journal: dict[UUID, list[dict]] = {}
     for r in await db.execute(
         text("""
-            SELECT journal_entry_id, account_id, debit_amount, credit_amount, description, project_id
+            SELECT journal_entry_id, account_id, debit_amount, credit_amount, description, project_id, department_id
             FROM finance.journal_lines WHERE journal_entry_id = ANY(:ids) ORDER BY journal_entry_id, line_number
         """),
         {"ids": list(heads)},
     ):
         lines_by_journal.setdefault(r.journal_entry_id, []).append({
             "account_id": r.account_id, "debit_amount": r.credit_amount, "credit_amount": r.debit_amount,
-            "description": r.description, "project_id": r.project_id,
+            "description": r.description, "project_id": r.project_id, "department_id": r.department_id,
         })
     posted = await _bulk_post(db, org_id=org_id, user_id=user_id, periods=periods, journals=[
         {"source_type": "journal_reversal", "source_id": jid, "reverses": jid, "entry_date": h.entry_date,

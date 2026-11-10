@@ -74,6 +74,9 @@ _DOCUMENT_LINK_ENTITY_TABLES = {
     "client_contact": "crm.contacts",
     "client_organization": "crm.organizations",
     "journal_entry": "finance.journal_entries",
+    # money recorded on a project / office expense voucher (receipts);
+    # is_deleted is a generated mirror of is_void (migration 288)
+    "money_entry": "finance.project_money_entries",
 }
 
 

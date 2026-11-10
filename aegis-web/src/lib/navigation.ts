@@ -299,6 +299,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Cashbook", href: "/dashboard/finance/cashbook", icon: BookMarked },
       { name: "Stationery Books", href: "/dashboard/finance/stationery", icon: BookMarked, requiredPermission: "finance.stationery.read" },
       { name: "Bank Statement Review", href: "/dashboard/finance/bank-review", icon: Banknote },
+      { name: "Office Expenses", href: "/dashboard/finance/office-expenses", icon: Receipt },
       { name: "Cash Forecast", href: "/dashboard/finance/cash-forecast", icon: TrendingUp },
     ],
   },

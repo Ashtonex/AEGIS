@@ -92,7 +92,9 @@ CATEGORY_LABELS = {
     "reversal": "Bank reversal", "site_petty_cash": "Handed to site petty cash", "other": "Other",
     "professional_fees": "Professional fees (accounting, tax, legal)",
     "travel_accommodation": "Travel, accommodation & conferences",
-    "office_admin": "Office, software & admin", "marketing": "Marketing & website",
+    "office_admin": "Office supplies, software & admin", "marketing": "Marketing & website",
+    "rent": "Rent (office & yard)", "utilities": "Utilities & communications (power, water, airtime, internet)",
+    "insurance": "Insurance",
     "loan_advance": "Loan / advance (lent out or repaid)",
 }
 # What a person can pick for a whole bank line (site petty cash is only a use of cash)

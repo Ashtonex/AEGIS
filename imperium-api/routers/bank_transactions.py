@@ -803,6 +803,8 @@ class ProjectEntryFields(BaseModel):
     reference: Optional[str] = Field(default=None, max_length=160)
     description: Optional[str] = Field(default=None, max_length=2000)
     pays_claim_id: Optional[UUID] = None
+    spent_by: Optional[str] = Field(default=None, max_length=160)
+    department_id: Optional[UUID] = None
 
 
 class ProjectEntryUpdate(BaseModel):
@@ -817,6 +819,23 @@ class ProjectEntryUpdate(BaseModel):
     reference: Optional[str] = Field(default=None, max_length=160)
     description: Optional[str] = Field(default=None, max_length=2000)
     pays_claim_id: Optional[UUID] = None
+    spent_by: Optional[str] = Field(default=None, max_length=160)
+    department_id: Optional[UUID] = None
+
+
+class OfficeExpenseFields(BaseModel):
+    """An office expense voucher: money out with no project."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    paid_via: str = Field(default="cash", pattern=r"^(bank|cash)$")
+    entry_date: date
+    amount: float = Field(gt=0)
+    category: str = Field(min_length=1, max_length=60)
+    counterparty_name: Optional[str] = Field(default=None, max_length=200)
+    reference: Optional[str] = Field(default=None, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    spent_by: Optional[str] = Field(default=None, max_length=160)
+    department_id: Optional[UUID] = None
 
 
 class ProjectEntryLineRef(BaseModel):
@@ -936,6 +955,59 @@ async def dismiss_project_entry_suggestion(
     entry = await _entry_write(org_id, db, lambda: project_entries.dismiss_suggestion(
         db, org_id=org_id, entry_id=entry_id, line_id=payload.line_id))
     return ok(entry, "Suggestion dismissed.")
+
+
+# ---------------------------------------------------------------------------
+# Office expense vouchers: money entries with no project. Same books, same
+# bank pairing; the PATCH/DELETE/match routes above work on them by id.
+# ---------------------------------------------------------------------------
+
+@router.get("/reconciliation/office-expenses", summary="Office expense vouchers and their totals")
+async def list_office_expenses(
+    date_from: Optional[date] = Query(default=None),
+    date_to: Optional[date] = Query(default=None),
+    category: Optional[str] = Query(default=None, max_length=60),
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    entries = await project_entries.list_office(db, org_id=org_id, date_from=date_from, date_to=date_to,
+                                                category=category)
+    summary = await project_entries.office_summary(db, org_id=org_id, date_from=date_from, date_to=date_to,
+                                                   category=category)
+    return ok({"entries": entries, "summary": summary, "categories": list(project_entries.OFFICE_CATEGORIES)},
+              "Office expenses retrieved.")
+
+
+@router.post("/reconciliation/office-expenses", status_code=status.HTTP_201_CREATED,
+             summary="Record an office expense voucher")
+async def create_office_expense(
+    payload: OfficeExpenseFields,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    values = {**payload.model_dump(), "project_id": None, "direction": "out", "pays_claim_id": None}
+    entry = await _entry_write(org_id, db, lambda: project_entries.create(db, org_id=org_id, user_id=user["sub"], values=values))
+    message = {
+        "matched": "Recorded and matched to the bank statement.",
+        "suggested": "Recorded. Possible bank lines found - confirm which one it is.",
+        "not_bank": "Recorded and paid out of HQ Cash.",
+    }.get(entry["match_status"], "Recorded. It will be matched when the bank statement is uploaded.")
+    return ok(entry, message)
+
+
+@router.post("/reconciliation/project-entries/{entry_id}/approve", summary="Approve (or un-approve) a voucher")
+async def approve_project_entry(
+    entry_id: UUID,
+    approved: bool = Query(default=True),
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    entry = await _entry_write(org_id, db, lambda: project_entries.approve(
+        db, org_id=org_id, user_id=user["sub"], entry_id=entry_id, approved=approved))
+    return ok(entry, "Approved." if approved else "Approval removed.")
 
 
 @router.get("/reconciliation/audit", summary="Prove the bank statement is fully carried into the books")

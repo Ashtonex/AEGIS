@@ -46,3 +46,9 @@ def test_receipt_already_entered_as_a_hand_claim_creates_no_second_claim():
     assert _claim_wanted(line, line.parts()[0]) is False
     row["claim_entered_by_hand"] = False
     assert _claim_wanted(line, line.parts()[0]) is True
+
+
+def test_rent_utilities_insurance_have_their_own_accounts():
+    assert money_out_account("rent", has_project=False) == "6100"
+    assert money_out_account("utilities", has_project=False) == "6200"
+    assert money_out_account("insurance", has_project=False) == "6400"
