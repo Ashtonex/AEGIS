@@ -475,28 +475,26 @@ def _microtext_border(c: rl_canvas.Canvas, w: float, h: float, inset: float) -> 
     c.restoreState()
 
 
-# Watermark strength: share of full ink at the darkest point of the mark.
-# 0.035 prints as a very pale grey (#F6F6F6 at most) that reads as paper
-# texture, not as artwork, and never competes with handwriting.
-WATERMARK_INK = 0.035
+# Watermark strength: how far each pixel of the SNC mark is from white
+# (1.0 = the logo's full colour). The mark keeps its navy and red, faded so
+# it sits behind handwriting.
+WATERMARK_STRENGTH = 0.18
 _watermark_reader: Optional[ImageReader] = None
 
 
 def _watermark_image() -> Optional[ImageReader]:
-    """The hexagon mark alone, turned into a single pale grey. The fade is
+    """The hexagon mark in its own colours, blended toward white. The fade is
     baked into the pixels rather than set as PDF transparency, so viewers and
-    printers that ignore transparency still print it faint."""
+    printers that ignore transparency still print it at the same strength."""
     global _watermark_reader
     if _watermark_reader is None and os.path.exists(LOGO_PATH):
         from PIL import Image
 
         with Image.open(LOGO_PATH) as img:
             mark = img.convert("RGBA").crop(MARK_BOX)
-        alpha = mark.getchannel("A")
-        ink = mark.convert("L").point(lambda v: 255 - v)  # darker logo pixel -> more ink
-        ink = Image.composite(ink, Image.new("L", mark.size, 0), alpha)
-        grey = ink.point(lambda v: 255 - round(v * WATERMARK_INK))
-        _watermark_reader = ImageReader(Image.merge("RGB", (grey, grey, grey)))
+        white = Image.new("RGB", mark.size, (255, 255, 255))
+        flat = Image.composite(mark.convert("RGB"), white, mark.getchannel("A"))
+        _watermark_reader = ImageReader(Image.blend(white, flat, WATERMARK_STRENGTH))
     return _watermark_reader
 
 
