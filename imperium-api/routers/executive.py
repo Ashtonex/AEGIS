@@ -1,4 +1,6 @@
 import asyncio
+import json
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.routing import APIRoute
@@ -184,6 +186,55 @@ async def _rows(
         return []
 
 
+def _decode_json_row(value: Any) -> Dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        # Decimal keeps numeric columns exact, as they are from a plain query.
+        return json.loads(value, parse_float=Decimal)
+    return dict(value)
+
+
+async def _single_row_reads(
+    db: AsyncSession,
+    reads: Dict[str, str],
+    params: Dict[str, Any],
+    *,
+    source_errors: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Run independent reads that each return at most one row as ONE
+    statement, so they cost one database round trip instead of one each.
+
+    Keyed by source, each result has _rows()'s shape: [row], or [] when the
+    read found no row or failed. Dates come back as ISO strings. If the
+    combined statement fails, every read is retried on its own so only the
+    broken source is reported degraded.
+    """
+    sources = list(reads)
+    columns = ",\n".join(
+        f"(SELECT row_to_json(r) FROM ({reads[source]}) r) AS r{i}"
+        for i, source in enumerate(sources)
+    )
+    try:
+        row = (await db.execute(text(f"SELECT {columns}"), params)).one()
+    except Exception as exc:
+        await db.rollback()
+        logger.warning(
+            "executive_combined_read_failed",
+            sources=sources,
+            error_type=exc.__class__.__name__,
+        )
+        return {
+            source: await _rows(db, reads[source], params, source=source, source_errors=source_errors)
+            for source in sources
+        }
+    results: Dict[str, List[Dict[str, Any]]] = {}
+    for i, source in enumerate(sources):
+        decoded = _decode_json_row(row[i])
+        results[source] = [decoded] if decoded is not None else []
+    return results
+
+
 _KPI_SNAPSHOT_MAX_AGE_DAYS = 7
 
 
@@ -220,25 +271,31 @@ async def _compute_cash_runway(
     """
     params = {"org_id": org_id}
 
-    def rows(query: str, source: str):
-        return lambda session: _rows(session, query, params, source=source, source_errors=source_errors)
-
-    # Four independent reads; the payroll tiers below depend on burn_res.
-    cash_res, burn_res, fleet_res, po_res = await gather_reads(
+    # Independent reads in one statement; the payroll tiers below depend on
+    # burn_res. The employee count is only used by some tiers but is cheaper
+    # to read here than in a round trip of its own.
+    reads = await _single_row_reads(
         db,
-        rows(f"SELECT COALESCE(SUM({EFFECTIVE_BALANCE_SQL}), 0) as total FROM finance.cash_accounts ca WHERE ca.organization_id = :org_id AND ca.is_active = true AND ca.is_deleted = false", "finance.cash_accounts"),
-        rows(
-            """
+        {
+            "finance.cash_accounts": f"SELECT COALESCE(SUM({EFFECTIVE_BALANCE_SQL}), 0) as total FROM finance.cash_accounts ca WHERE ca.organization_id = :org_id AND ca.is_active = true AND ca.is_deleted = false",
+            "finance.cashbook_transactions": """
         SELECT COALESCE(SUM(amount), 0) as total
         FROM finance.cashbook_transactions
         WHERE organization_id = :org_id AND direction = 'outflow' AND is_deleted = false
           AND transaction_date >= (CURRENT_DATE - INTERVAL '90 days')
         """,
-            "finance.cashbook_transactions",
-        ),
-        rows("SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false", "fleet.fleet"),
-        rows("SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false", "procurement.purchase_orders"),
+            "fleet.fleet": "SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
+            "procurement.purchase_orders": "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
+            "hr.employees": "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
+        },
+        params,
+        source_errors=source_errors,
     )
+    cash_res = reads["finance.cash_accounts"]
+    burn_res = reads["finance.cashbook_transactions"]
+    fleet_res = reads["fleet.fleet"]
+    po_res = reads["procurement.purchase_orders"]
+    emp_res = reads["hr.employees"]
     cash_unavailable = any(e["source"] == "finance.cash_accounts" for e in source_errors)
     cash_reserves = float(cash_res[0]["total"]) if cash_res else 0.0
     real_monthly_burn = (float(burn_res[0]["total"]) / 3.0) if burn_res else 0.0
@@ -270,13 +327,6 @@ async def _compute_cash_runway(
             )
         else:
             # Tier 3: no cashbook and no posted payroll at all - last resort.
-            emp_res = await _rows(
-                db,
-                "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
-                {"org_id": org_id},
-                source="hr.employees",
-                source_errors=source_errors,
-            )
             emp_count = emp_res[0]["total"] if emp_res else 0
             payroll_burn = emp_count * 3500.00
             payroll_basis = (
@@ -286,13 +336,6 @@ async def _compute_cash_runway(
     else:
         # Real cashbook burn already covers payroll outflows (posting payroll
         # posts a cashbook transaction); this figure is supplementary context only.
-        emp_res = await _rows(
-            db,
-            "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
-            {"org_id": org_id},
-            source="hr.employees",
-            source_errors=source_errors,
-        )
         emp_count = emp_res[0]["total"] if emp_res else 0
         payroll_burn = emp_count * 3500.00
 
@@ -341,8 +384,15 @@ async def get_executive_kpis(
     """Fetch high-level KPIs for the Executive Dashboard."""
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
-    query = text("""
-        SELECT 
+    params = {"org_id": org_id}
+
+    # The snapshot, the live-module reads and the SOP completion fallback are
+    # independent single-row reads: one statement, one round trip.
+    reads = await _single_row_reads(
+        db,
+        {
+            "executive.kpi_snapshots": """
+        SELECT
             cash_survival_days,
             revenue_concentration_percent,
             active_projects_count,
@@ -352,38 +402,28 @@ async def get_executive_kpis(
         WHERE organization_id = :org_id
         ORDER BY snapshot_date DESC
         LIMIT 1
-    """)
-    params = {"org_id": org_id}
-
-    def rows(sql: str, source: str):
-        return lambda session: _rows(session, sql, params, source=source, source_errors=source_errors)
-
-    async def latest_snapshot(session: AsyncSession):
-        return (await session.execute(query, params)).fetchone()
-
-    # The snapshot and the five live-module reads are independent of each
-    # other - run them concurrently where spare connections allow.
-    (
-        snapshot,
-        live_rows,
-        pipeline_rows,
-        finance_rows,
-        cost_rows,
-        concentration_rows,
-    ) = await gather_reads(
-        db,
-        latest_snapshot,
-        rows(_KPI_LIVE_PROJECTS_SQL, "kpis.projects"),
-        rows(_KPI_PIPELINE_SQL, "kpis.pipeline"),
-        rows(_KPI_REVENUE_YTD_SQL, "kpis.progress_claims"),
-        rows(_KPI_COST_YTD_SQL, "kpis.cost_transactions"),
-        rows(_KPI_CLIENT_CONCENTRATION_SQL, "kpis.client_concentration"),
+        """,
+            "kpis.projects": _KPI_LIVE_PROJECTS_SQL,
+            "kpis.pipeline": _KPI_PIPELINE_SQL,
+            "kpis.progress_claims": _KPI_REVENUE_YTD_SQL,
+            "kpis.cost_transactions": _KPI_COST_YTD_SQL,
+            "kpis.client_concentration": _KPI_CLIENT_CONCENTRATION_SQL,
+            "kpis.sop_instances": _KPI_SOP_COMPLETION_SQL,
+        },
+        params,
+        source_errors=source_errors,
     )
+    snapshot = reads["executive.kpi_snapshots"][0] if reads["executive.kpi_snapshots"] else None
+    live_rows = reads["kpis.projects"]
+    pipeline_rows = reads["kpis.pipeline"]
+    finance_rows = reads["kpis.progress_claims"]
+    cost_rows = reads["kpis.cost_transactions"]
+    concentration_rows = reads["kpis.client_concentration"]
 
     # A missing snapshot is not a zero-performance result. Keep it explicit so
     # the executive UI can distinguish unavailable data from a real zero.
     data = (
-        dict(snapshot._mapping)
+        dict(snapshot)
         if snapshot
         else {
             "cash_survival_days": None,
@@ -451,18 +491,11 @@ async def get_executive_kpis(
         data["top_client_contract_value"] = float(concentration_rows[0].get("top_client_contract_value") or 0)
         data["portfolio_contract_value"] = float(concentration_rows[0].get("portfolio_contract_value") or 0)
 
-    # Live fallbacks for whatever the snapshot didn't supply - independent
-    # of each other, so they also run concurrently.
+    # Live fallbacks for whatever the snapshot didn't supply.
     needs_runway = data.get("cash_survival_days") is None
     needs_sop = data.get("documented_workflow_percent") is None
-    fallback_reads = []
-    if needs_runway:
-        fallback_reads.append(lambda session: _compute_cash_runway(session, org_id, source_errors))
-    if needs_sop:
-        fallback_reads.append(rows(_KPI_SOP_COMPLETION_SQL, "kpis.sop_instances"))
-    fallback_results = await gather_reads(db, *fallback_reads)
-    runway = fallback_results.pop(0) if needs_runway else None
-    sop_rows = fallback_results.pop(0) if needs_sop else None
+    runway = await _compute_cash_runway(db, org_id, source_errors) if needs_runway else None
+    sop_rows = reads["kpis.sop_instances"]
 
     if needs_runway:
         if runway["runway_months"] is not None:
@@ -900,22 +933,6 @@ async def get_project_detail(
     }
 
 
-async def _stat_scalar(db: AsyncSession, query_sql: str, params: Dict[str, Any], *, source: str, source_errors: List[Dict[str, Any]]):
-    """A genuine COUNT/SUM of 0 and a failed query must never look the
-    same to the caller - returns the query's real scalar (0 kept as a
-    true result) on success, or None (plus a source_errors entry, same
-    shape _rows() already uses elsewhere in this file) if the query
-    itself failed. Every /stats field used to collapse both cases to a
-    hardcoded 0 with no record anywhere that a query had failed."""
-    try:
-        result = await db.execute(text(query_sql), params)
-        return result.scalar() or 0
-    except Exception as exc:
-        await db.rollback()
-        source_errors.append({"source": source, "status": "degraded", "reason": exc.__class__.__name__})
-        return None
-
-
 @router.get("/stats")
 async def get_executive_stats(
     user: dict = Depends(require_permission("executive.view_dashboard")),
@@ -935,37 +952,40 @@ async def get_executive_stats(
     source_errors: List[Dict[str, Any]] = []
     params = {"org_id": org_id}
 
-    def stat(query_sql: str, source: str):
-        return lambda session: _stat_scalar(session, query_sql, params, source=source, source_errors=source_errors)
-
-    # CRM open pipeline (deal count + value, excluding won/lost) - a shared
-    # query, so both derived fields become None together on failure rather
-    # than one silently staying a stale/fake 0 while the other is flagged.
-    async def pipeline(session: AsyncSession):
-        try:
-            pipeline_query = text(
-                """
+    # All independent single-row reads: one statement, one round trip. A
+    # failed source comes back as [] (and a source_errors entry), never as
+    # a fake 0.
+    reads = await _single_row_reads(
+        db,
+        {
+            "projects.projects": f"SELECT COUNT(*) AS value FROM projects.projects p WHERE p.organization_id = :org_id AND p.is_deleted = false AND {PROJECT_OPEN_STATUS_SQL}",
+            "fleet.fleet": "SELECT COUNT(*) AS value FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
+            "hr.employees": "SELECT COUNT(*) AS value FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
+            "procurement.purchase_orders": "SELECT COUNT(*) AS value FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
+            "procurement.stock_ledger": """
+                SELECT COALESCE(SUM(sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)), 0) AS value
+                FROM procurement.stock_ledger sl
+                JOIN procurement.inventory_items i
+                  ON i.id = sl.item_id AND i.organization_id = sl.organization_id AND i.is_deleted = false
+                WHERE sl.organization_id = :org_id
+            """,
+            "projects.hse_incidents": "SELECT COUNT(*) AS value FROM projects.hse_incidents WHERE organization_id = :org_id AND is_deleted = false",
+            # CRM open pipeline (deal count + value, excluding won/lost) - a
+            # shared query, so both derived fields become None together on
+            # failure rather than one silently staying a stale/fake 0.
+            "crm.opportunities": """
                 SELECT
                     COUNT(*) AS open_deal_count,
                     COALESCE(SUM(COALESCE(deal_value, budget)), 0) AS open_pipeline_value
                 FROM crm.opportunities
                 WHERE organization_id = :org_id AND is_deleted = false
                   AND stage NOT IN ('Contract', 'Lost')
-                """
-            )
-            pipeline_res = (await session.execute(pipeline_query, params)).one()
-            return pipeline_res.open_deal_count or 0, float(pipeline_res.open_pipeline_value or 0)
-        except Exception as exc:
-            await session.rollback()
-            source_errors.append({"source": "crm.opportunities", "status": "degraded", "reason": exc.__class__.__name__})
-            return None, None
-
-    # Plant & Equipment lifecycle control spine - one shared query, so all
-    # 5 derived fields become None together on failure.
-    async def plant(session: AsyncSession):
-        try:
-            plant_query = text(
-                """
+            """,
+            "crm.leads": "SELECT COUNT(*) AS value FROM crm.leads WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('converted', 'disqualified')",
+            "crm.activities": "SELECT COUNT(*) AS value FROM crm.activities WHERE organization_id = :org_id AND activity_date >= NOW() - INTERVAL '7 days'",
+            # Plant & Equipment lifecycle control spine - one shared query, so
+            # all 5 derived fields become None together on failure.
+            "fleet.plant_requests": """
                 SELECT
                     COUNT(*) FILTER (WHERE status NOT IN ('closed','cancelled','rejected')) AS open_requests,
                     COUNT(*) FILTER (WHERE status IN ('approved','reserved','ready_for_dispatch')) AS dispatch_queue,
@@ -974,66 +994,39 @@ async def get_executive_stats(
                     COALESCE(SUM(contribution_margin) FILTER (WHERE status NOT IN ('cancelled','rejected')), 0) AS contribution_margin
                 FROM fleet.plant_requests
                 WHERE organization_id = :org_id AND is_deleted = false
-                """
-            )
-            plant_res = (await session.execute(plant_query, params)).one()
-            return (
-                plant_res.open_requests or 0,
-                plant_res.dispatch_queue or 0,
-                plant_res.active_deployments or 0,
-                plant_res.closure_queue or 0,
-                float(plant_res.contribution_margin or 0),
-            )
-        except Exception as exc:
-            await session.rollback()
-            source_errors.append({"source": "fleet.plant_requests", "status": "degraded", "reason": exc.__class__.__name__})
-            return None, None, None, None, None
-
-    # All independent reads - run concurrently where spare connections allow.
-    (
-        projects_count,
-        machinery_count,
-        workforce_count,
-        orders_count,
-        inventory_value,
-        incidents_count,
-        (open_deal_count, open_pipeline_value),
-        open_leads_count,
-        recent_activity_last_7_days,
-        (
-            plant_open_requests,
-            plant_dispatch_queue,
-            plant_active_deployments,
-            plant_closure_queue,
-            plant_contribution_margin,
-        ),
-        plant_serious_incidents,
-    ) = await gather_reads(
-        db,
-        stat(f"SELECT COUNT(*) FROM projects.projects p WHERE p.organization_id = :org_id AND p.is_deleted = false AND {PROJECT_OPEN_STATUS_SQL}", "projects.projects"),
-        stat("SELECT COUNT(*) FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false", "fleet.fleet"),
-        stat("SELECT COUNT(*) FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false", "hr.employees"),
-        stat("SELECT COUNT(*) FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false", "procurement.purchase_orders"),
-        stat(
-            """
-                SELECT COALESCE(SUM(sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)), 0)
-                FROM procurement.stock_ledger sl
-                JOIN procurement.inventory_items i
-                  ON i.id = sl.item_id AND i.organization_id = sl.organization_id AND i.is_deleted = false
-                WHERE sl.organization_id = :org_id
             """,
-            "procurement.stock_ledger",
-        ),
-        stat("SELECT COUNT(*) FROM projects.hse_incidents WHERE organization_id = :org_id AND is_deleted = false", "projects.hse_incidents"),
-        pipeline,
-        stat("SELECT COUNT(*) FROM crm.leads WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('converted', 'disqualified')", "crm.leads"),
-        stat("SELECT COUNT(*) FROM crm.activities WHERE organization_id = :org_id AND activity_date >= NOW() - INTERVAL '7 days'", "crm.activities"),
-        plant,
-        stat(
-            "SELECT COUNT(*) FROM fleet.plant_incidents WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('closed','cancelled') AND severity IN ('high','critical')",
-            "fleet.plant_incidents",
-        ),
+            "fleet.plant_incidents": "SELECT COUNT(*) AS value FROM fleet.plant_incidents WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('closed','cancelled') AND severity IN ('high','critical')",
+        },
+        params,
+        source_errors=source_errors,
     )
+
+    def stat(source: str):
+        """The read's value - a real 0 stays 0 - or None if it failed."""
+        rows = reads[source]
+        return (rows[0].get("value") or 0) if rows else None
+
+    projects_count = stat("projects.projects")
+    machinery_count = stat("fleet.fleet")
+    workforce_count = stat("hr.employees")
+    orders_count = stat("procurement.purchase_orders")
+    inventory_value = stat("procurement.stock_ledger")
+    incidents_count = stat("projects.hse_incidents")
+    open_leads_count = stat("crm.leads")
+    recent_activity_last_7_days = stat("crm.activities")
+    plant_serious_incidents = stat("fleet.plant_incidents")
+
+    pipeline_rows = reads["crm.opportunities"]
+    open_deal_count = (pipeline_rows[0].get("open_deal_count") or 0) if pipeline_rows else None
+    open_pipeline_value = float(pipeline_rows[0].get("open_pipeline_value") or 0) if pipeline_rows else None
+
+    plant_rows = reads["fleet.plant_requests"]
+    plant = plant_rows[0] if plant_rows else {}
+    plant_open_requests = (plant.get("open_requests") or 0) if plant_rows else None
+    plant_dispatch_queue = (plant.get("dispatch_queue") or 0) if plant_rows else None
+    plant_active_deployments = (plant.get("active_deployments") or 0) if plant_rows else None
+    plant_closure_queue = (plant.get("closure_queue") or 0) if plant_rows else None
+    plant_contribution_margin = float(plant.get("contribution_margin") or 0) if plant_rows else None
 
     return {
         "success": True,
