@@ -16,6 +16,12 @@ changes, and torn down when it is voided):
                   in, pays a claim   Dr 1070 (or 1010)  Cr 1100 receivable
                   out                Dr cost account    Cr 1070 (or 1010)
 
+Office expenses (migration 288): an entry with no project is an office
+expense voucher - money out with a category. It books the same way, except
+there is no project cost row and the debit goes to the head-office expense
+account for its category (rent 6100, utilities 6200, office admin 6600 ...),
+carrying the entry's department onto the GL line.
+
 Pairing with the bank (bank entries only):
   A matched statement line carries project_entry_id; bank_books then posts
   it as Bank against 1070 and creates no claim or cost of its own, so the
@@ -49,6 +55,10 @@ IN_CATEGORIES = {"client_receipt", "refund", "other"}
 OUT_EXCLUDED = {"cash_withdrawal", "site_petty_cash", "internal_transfer", "reversal", "client_receipt",
                 "capital_injection", bank_books.HISTORICAL_CASH_USE}
 PAYABLE_CLAIM_STATUSES = ("certified", "invoiced", "submitted")
+# What an office expense (no project) can be: each lands on a head-office
+# expense account (bank_books.money_out_account with has_project=False).
+OFFICE_CATEGORIES = ("rent", "utilities", "office_admin", "professional_fees", "insurance", "travel_accommodation",
+                     "marketing", "salaries_wages", "bank_charges", "tax_statutory", "tithe_donation", "other")
 
 
 def _d(value: Any) -> Decimal:
@@ -148,19 +158,21 @@ async def _build(db: AsyncSession, org_id: str, user_id: str, entry: dict) -> No
         gl = [{"code": holding, "debit_amount": amount, "description": detail},
               {"code": credit, "credit_amount": amount, "project_id": project_id, "description": detail}]
     else:
-        await db.execute(
-            text("""
-                INSERT INTO finance.cost_transactions (
-                    organization_id, project_id, source_type, source_id, cost_category, description,
-                    quantity, unit_cost, amount, transaction_date, status, posted_by, evidence_quality
-                ) VALUES (:org_id, :project_id, :st, :id, :cc, :description, 1, :amount, :amount, :on, 'posted', :user_id, 'B')
-            """),
-            {"org_id": org_id, "project_id": project_id, "st": SOURCE, "id": entry["id"],
-             "cc": cost_category(entry["category"]), "description": detail[:500], "amount": amount, "on": on,
-             "user_id": user_id},
-        )
-        gl = [{"code": money_out_account(entry["category"], True), "debit_amount": amount, "project_id": project_id,
-               "description": detail},
+        if project_id is not None:
+            await db.execute(
+                text("""
+                    INSERT INTO finance.cost_transactions (
+                        organization_id, project_id, source_type, source_id, cost_category, description,
+                        quantity, unit_cost, amount, transaction_date, status, posted_by, evidence_quality
+                    ) VALUES (:org_id, :project_id, :st, :id, :cc, :description, 1, :amount, :amount, :on, 'posted',
+                              :user_id, 'B')
+                """),
+                {"org_id": org_id, "project_id": project_id, "st": SOURCE, "id": entry["id"],
+                 "cc": cost_category(entry["category"]), "description": detail[:500], "amount": amount, "on": on,
+                 "user_id": user_id},
+            )
+        gl = [{"code": money_out_account(entry["category"], project_id is not None), "debit_amount": amount,
+               "project_id": project_id, "department_id": entry.get("department_id"), "description": detail},
               {"code": holding, "credit_amount": amount, "description": detail}]
 
     if entry["paid_via"] == "cash":
@@ -190,13 +202,34 @@ async def _build(db: AsyncSession, org_id: str, user_id: str, entry: dict) -> No
 # ---------------------------------------------------------------------------
 
 async def _validate(db: AsyncSession, org_id: str, values: dict) -> None:
-    project = (await db.execute(
-        text("SELECT 1 FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
-        {"id": values["project_id"], "org_id": org_id},
-    )).first()
-    if not project:
-        raise GeneralLedgerError("Project not found.", status_code=404)
     category = values.get("category")
+    if values.get("project_id"):
+        project = (await db.execute(
+            text("SELECT 1 FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": values["project_id"], "org_id": org_id},
+        )).first()
+        if not project:
+            raise GeneralLedgerError("Project not found.", status_code=404)
+    else:
+        if values["direction"] != "out":
+            raise GeneralLedgerError("An office expense is money out - record money in on its project.", status_code=422)
+        if category not in OFFICE_CATEGORIES:
+            raise GeneralLedgerError("Pick what the office expense was for (rent, utilities, office admin ...).",
+                                     status_code=422)
+    if values.get("department_id"):
+        found = (await db.execute(
+            text("SELECT 1 FROM finance.departments WHERE id = :id AND organization_id = :org_id"),
+            {"id": values["department_id"], "org_id": org_id},
+        )).first()
+        if not found:
+            raise GeneralLedgerError("Department not found.", status_code=404)
+    if values.get("approved_by"):
+        found = (await db.execute(
+            text("SELECT 1 FROM core.users WHERE id = :id AND organization_id = :org_id"),
+            {"id": values["approved_by"], "org_id": org_id},
+        )).first()
+        if not found:
+            raise GeneralLedgerError("The approver is not a user in this organisation.", status_code=404)
     if values["direction"] == "in":
         if category and category not in IN_CATEGORIES:
             raise GeneralLedgerError("Money in can be a client receipt, a refund or other income.", status_code=422)
@@ -218,7 +251,7 @@ async def _validate(db: AsyncSession, org_id: str, values: dict) -> None:
 
 
 ENTRY_FIELDS = ("project_id", "direction", "paid_via", "entry_date", "amount", "category", "counterparty_name",
-                "reference", "description", "pays_claim_id")
+                "reference", "description", "pays_claim_id", "spent_by", "approved_by", "department_id")
 
 
 async def create(db: AsyncSession, *, org_id: str, user_id: str, values: dict) -> dict:
@@ -250,6 +283,8 @@ async def update(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID,
     await _validate(db, org_id, values)
     amount_or_way_changed = (_d(values["amount"]) != _d(entry["amount"]) or values["direction"] != entry["direction"]
                              or values["paid_via"] != entry["paid_via"])
+    if (amount_or_way_changed or values["category"] != entry["category"]) and "approved_by" not in changes:
+        values["approved_by"] = None   # an approval was for the old amount / purpose
     if entry["matched_line_id"] and amount_or_way_changed:
         await unmatch(db, org_id=org_id, user_id=user_id, entry_id=entry_id)
         entry = await _get(db, org_id, entry_id)
@@ -523,7 +558,11 @@ async def candidates(db: AsyncSession, *, org_id: str, entry_id: UUID, q: Option
 # ---------------------------------------------------------------------------
 
 _LIST_SQL = """
-    SELECT e.*, pc.claim_number AS pays_claim_number,
+    SELECT e.*, pc.claim_number AS pays_claim_number, dep.name AS department_name,
+           COALESCE(au.full_name, au.email) AS approved_by_name,
+           (SELECT count(*) FROM core.document_links dl
+            WHERE dl.organization_id = e.organization_id AND dl.entity_type = 'money_entry' AND dl.entity_id = e.id
+              AND dl.is_deleted = false) AS receipt_count,
            l.transaction_date AS bank_date, l.reference AS bank_reference, l.description AS bank_description,
            COALESCE((
                SELECT jsonb_agg(jsonb_build_object(
@@ -536,6 +575,8 @@ _LIST_SQL = """
     FROM finance.project_money_entries e
     LEFT JOIN finance.progress_claims pc ON pc.id = e.pays_claim_id
     LEFT JOIN finance.bank_statement_lines l ON l.id = e.matched_line_id
+    LEFT JOIN finance.departments dep ON dep.id = e.department_id
+    LEFT JOIN core.users au ON au.id = e.approved_by
 """
 
 
@@ -585,3 +626,69 @@ def summary(entries: list[dict]) -> dict:
         if e["match_status"] == "suggested" and e["suggestions"]:
             out["needs_decision"] += 1
     return out
+
+
+# ---------------------------------------------------------------------------
+# Office expenses (entries with no project)
+# ---------------------------------------------------------------------------
+
+async def list_office(db: AsyncSession, *, org_id: str, date_from: Optional[Any] = None,
+                      date_to: Optional[Any] = None, category: Optional[str] = None) -> list[dict]:
+    where = "e.organization_id = :org_id AND e.project_id IS NULL AND NOT e.is_void"
+    params: dict[str, Any] = {"org_id": org_id}
+    if date_from:
+        where += " AND e.entry_date >= :date_from"
+        params["date_from"] = date_from
+    if date_to:
+        where += " AND e.entry_date <= :date_to"
+        params["date_to"] = date_to
+    if category:
+        where += " AND e.category = :category"
+        params["category"] = category
+    rows = await db.execute(
+        text(_LIST_SQL + f" WHERE {where} ORDER BY e.entry_date DESC, e.created_at DESC LIMIT 1000"),
+        params,
+    )
+    return [dict(r) for r in rows.mappings()]
+
+
+async def office_summary(db: AsyncSession, *, org_id: str, entries: list[dict]) -> dict:
+    """Totals for the listed office expenses, plus what is still sitting in
+    HQ Cash per the books: cash withdrawn from the bank that has no voucher
+    yet (or is genuinely still on hand)."""
+    by_category: dict[str, Decimal] = {}
+    out = {"total": Decimal("0"), "cash": Decimal("0"), "bank": Decimal("0"), "without_receipt": 0,
+           "without_approval": 0, **{k: v for k, v in summary(entries).items() if k in ("awaiting_bank", "awaiting_bank_amount", "needs_decision")}}
+    for e in entries:
+        amount = _d(e["amount"])
+        out["total"] += amount
+        out["cash" if e["paid_via"] == "cash" else "bank"] += amount
+        by_category[e["category"] or "other"] = by_category.get(e["category"] or "other", Decimal("0")) + amount
+        if not e.get("receipt_count"):
+            out["without_receipt"] += 1
+        if not e.get("approved_by"):
+            out["without_approval"] += 1
+    out["by_category"] = [{"category": k, "amount": v, "account_code": bank_books.money_out_account(k, False)}
+                          for k, v in sorted(by_category.items(), key=lambda kv: -kv[1])]
+    hq = (await db.execute(
+        text("""
+            SELECT COALESCE(current_balance, 0) FROM finance.cash_accounts
+            WHERE organization_id = :org_id AND account_code = :code AND is_deleted = false
+        """),
+        {"org_id": org_id, "code": bank_books.HQ_PETTY_CASH_CODE},
+    )).scalar()
+    out["cash_not_yet_vouchered"] = _d(hq)
+    return out
+
+
+async def approve(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID, approved: bool = True) -> dict:
+    """Record (or clear) who approved a voucher. Approval does not change the
+    books, so the journal is left alone."""
+    entry = await _get(db, org_id, entry_id)
+    if entry["is_void"]:
+        raise GeneralLedgerError("This entry has been removed.", status_code=409)
+    await db.execute(
+        text("UPDATE finance.project_money_entries SET approved_by = :u, updated_at = NOW() WHERE id = :id"),
+        {"id": entry_id, "u": user_id if approved else None},
+    )
+    return await get_entry(db, org_id=org_id, entry_id=entry_id)

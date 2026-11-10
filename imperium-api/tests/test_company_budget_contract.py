@@ -107,8 +107,18 @@ class Phase5AServiceContractTests(unittest.TestCase):
         self.assertNotIn("finance.project_forecasts", SERVICE_CODE_ONLY)
 
     def test_no_gl_posting_of_any_kind(self):
-        self.assertNotIn("journal_entries", SERVICE_CODE_ONLY)
-        self.assertNotIn("journal_lines", SERVICE_CODE_ONLY)
+        # Actuals READ the ledger; the budget layer never writes to it.
+        for verb in ("INSERT INTO", "UPDATE", "DELETE FROM"):
+            self.assertNotIn(f"{verb} finance.journal_entries", SERVICE_CODE_ONLY)
+            self.assertNotIn(f"{verb} finance.journal_lines", SERVICE_CODE_ONLY)
+
+    def test_actuals_come_from_the_posted_general_ledger(self):
+        fn_body = SERVICE.split("async def _get_department_actuals_by_month")[1].split("\nasync def ")[0]
+        self.assertIn("FROM finance.journal_entries je", fn_body)
+        self.assertIn("je.status = 'posted'", fn_body)
+        for category in ("'revenue'", "'other_income'", "'direct_project_cost'", "'operating_expense'", "'other_expense'"):
+            self.assertIn(category, fn_body)
+        self.assertIn("COALESCE(jl.department_id, p.department_id)", fn_body)
 
 
 class Phase5ARouterContractTests(unittest.TestCase):

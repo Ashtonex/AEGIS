@@ -62,3 +62,89 @@ def test_summary_counts_only_bank_entries_as_awaiting():
     assert s["recorded_in"] == Decimal("110") and s["recorded_out"] == Decimal("65")
     assert s["awaiting_bank"] == 2 and s["awaiting_bank_amount"] == Decimal("125")
     assert s["needs_decision"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Office expense vouchers (entries with no project, migration 288)
+# ---------------------------------------------------------------------------
+
+def test_office_categories_land_on_head_office_expense_accounts():
+    from app.services.finance.bank_books import money_out_account
+    expected = {"rent": "6100", "utilities": "6200", "professional_fees": "6300", "insurance": "6400",
+                "travel_accommodation": "6500", "office_admin": "6600", "marketing": "6700", "bank_charges": "6800",
+                "tax_statutory": "6900", "salaries_wages": "6000", "tithe_donation": "7800", "other": "7900"}
+    assert set(project_entries.OFFICE_CATEGORIES) == set(expected)
+    for category, code in expected.items():
+        assert money_out_account(category, has_project=False) == code, category
+    # never Suspense or a project-cost account
+    assert all(money_out_account(c, has_project=False) not in (bank_books.SUSPENSE, bank_books.UNCLASSIFIED_PROJECT_COST)
+               for c in project_entries.OFFICE_CATEGORIES)
+
+
+def test_bank_line_settling_an_office_voucher_posts_bank_against_awaiting():
+    line = _line("-120", entry_id=uuid4(), project_id=None, category="utilities")
+    debit, credit = _line_journal(line, ACCOUNTS)[0]
+    assert debit["account_id"] == ACCOUNTS[bank_books.AWAITING_BANK] and debit["debit_amount"] == Decimal("120")
+    assert credit["account_id"] == ACCOUNTS[bank_books.BANK]
+
+
+class _Result:
+    def __init__(self, row):
+        self._row = row
+
+    def first(self):
+        return self._row
+
+    def mappings(self):
+        return self
+
+    def scalar(self):
+        return self._row
+
+
+class _Db:
+    """Answers every existence check with a row."""
+    async def execute(self, *_args, **_kwargs):
+        return _Result((1,))
+
+
+def _office(**overrides):
+    values = {"project_id": None, "direction": "out", "paid_via": "cash", "entry_date": date(2026, 11, 3),
+              "amount": 45, "category": "utilities", "pays_claim_id": None}
+    return {**values, **overrides}
+
+
+def test_office_voucher_must_be_money_out_with_a_category():
+    import asyncio
+
+    import pytest
+
+    from app.services.finance.general_ledger import GeneralLedgerError
+
+    asyncio.run(project_entries._validate(_Db(), "org", _office()))
+    with pytest.raises(GeneralLedgerError):
+        asyncio.run(project_entries._validate(_Db(), "org", _office(direction="in", category="refund")))
+    with pytest.raises(GeneralLedgerError):
+        asyncio.run(project_entries._validate(_Db(), "org", _office(category=None)))
+    with pytest.raises(GeneralLedgerError):
+        asyncio.run(project_entries._validate(_Db(), "org", _office(category="supplier_payment")))
+
+
+def test_office_summary_flags_missing_receipts_and_approvals():
+    import asyncio
+
+    class _HqDb:
+        async def execute(self, *_args, **_kwargs):
+            return _Result(Decimal("47835"))
+
+    entries = [
+        {"amount": Decimal("100"), "paid_via": "cash", "category": "utilities", "match_status": "not_bank",
+         "suggestions": [], "receipt_count": 1, "approved_by": uuid4(), "direction": "out"},
+        {"amount": Decimal("40"), "paid_via": "bank", "category": "office_admin", "match_status": "awaiting",
+         "suggestions": [], "receipt_count": 0, "approved_by": None, "direction": "out"},
+    ]
+    s = asyncio.run(project_entries.office_summary(_HqDb(), org_id="org", entries=entries))
+    assert s["total"] == Decimal("140") and s["cash"] == Decimal("100") and s["bank"] == Decimal("40")
+    assert s["without_receipt"] == 1 and s["without_approval"] == 1
+    assert s["awaiting_bank"] == 1 and s["cash_not_yet_vouchered"] == Decimal("47835")
+    assert [c["account_code"] for c in s["by_category"]] == ["6200", "6600"]

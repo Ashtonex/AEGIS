@@ -74,6 +74,7 @@ const CostCodesByProjectPanel = dynamic(() => import("./CostCodesByProjectPanel"
 const ProjectCommercialWorkspace = dynamic(() => import("./ProjectCommercialWorkspace").then((m) => m.ProjectCommercialWorkspace), { loading: PanelLoading });
 const TreasuryBankingWorkspace = dynamic(() => import("./TreasuryBankingWorkspace").then((m) => m.TreasuryBankingWorkspace), { loading: PanelLoading });
 const PayablesPayrollWorkspace = dynamic(() => import("./PayablesPayrollWorkspace").then((m) => m.PayablesPayrollWorkspace), { loading: PanelLoading });
+const OfficeExpensesPanel = dynamic(() => import("./OfficeExpensesPanel").then((m) => m.OfficeExpensesPanel), { loading: PanelLoading });
 const AccountingReportsWorkspace = dynamic(() => import("./AccountingReportsWorkspace").then((m) => m.AccountingReportsWorkspace), { loading: PanelLoading });
 
 // Pages where entering a project's budget / variation / claim is relevant
@@ -82,7 +83,7 @@ const AccountingReportsWorkspace = dynamic(() => import("./AccountingReportsWork
 const QUICK_ENTRY_TABS: FinanceTab[] = ["project-financials", "cost-codes", "variations", "progress-claims", "earned-value", "close-out", "budgets", "project-portfolio"];
 
 type RecordData = Record<string, any>;
-type FinanceTab = "overview" | "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace" | "bank-review";
+type FinanceTab = "overview" | "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace" | "bank-review" | "office-expenses";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   overview: "/dashboard/finance",
@@ -113,6 +114,7 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-portfolio": "/dashboard/finance/project-portfolio",
   "audit-workspace": "/dashboard/finance/audit-workspace",
   "bank-review": "/dashboard/finance/bank-review",
+  "office-expenses": "/dashboard/finance/office-expenses",
 };
 
 const FINANCE_TOUR_STEPS: ModuleTourStep[] = [
@@ -226,6 +228,7 @@ const FINANCE_TAB_LABELS: Record<FinanceTab, string> = {
   "project-portfolio": "Project Portfolio",
   "audit-workspace": "Audit Workspace",
   "bank-review": "Bank Statement Review",
+  "office-expenses": "Office Expenses",
 };
 
 /** Shared Finance workspace, rendered by a real route per tab (see the
@@ -702,6 +705,8 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
         <FinanceOverviewDashboard projectSummaries={projectSummaries} departmentId={departmentId} unassignedBankOut={unassignedBankOut} cashWithoutUse={cashWithoutUse} />
       ) : activeTab === "data-room" ? (
         <AccountingReportsWorkspace initialSubTab="data-room" departments={departments} projects={projects} departmentPnl={departmentPnl} />
+      ) : activeTab === "office-expenses" ? (
+        <OfficeExpensesPanel />
       ) : activeTab === "bank-review" ? (
         <TreasuryBankingWorkspace initialSubTab="reconciliation" projects={projects} departmentId={departmentId} />
       ) : activeTab === "payroll" ? (

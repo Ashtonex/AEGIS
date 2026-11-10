@@ -42,6 +42,7 @@ KNOWN_CATEGORIES = {
     "subcontractor", "equipment_hire", "fuel_transport", "salaries_wages", "tax_statutory", "bank_charges",
     "card_purchase", "owner_drawings", "tithe_donation", "refund", "reversal", "other",
     "professional_fees", "travel_accommodation", "office_admin", "marketing", "loan_advance",
+    "rent", "utilities", "insurance",
 }
 RULE_FIELDS = {"set_category": "category", "set_project_id": "project_id",
                "set_counterparty": "counterparty_name", "set_note": "notes"}
@@ -407,7 +408,7 @@ async def suggest(db: AsyncSession, *, org_id: str, limit: int = 20) -> list[dic
 
 
 _CATEGORY_NAMES = {"bank_charges": "Bank charges & IMTT", "tax_statutory": "Tax & statutory",
-                   "cash_withdrawal": "Cash withdrawal"}
+                   "cash_withdrawal": "Cash withdrawal", "utilities": "Utilities & communications"}
 # (text, category, who, priority, direction)
 STARTER_RULES = [
     ("Intermediated Money Transfer Tax", "bank_charges", "BancABC", 10, "out"),
@@ -423,4 +424,12 @@ STARTER_RULES = [
     ("Zimra", "tax_statutory", "ZIMRA", 15, "out"),
     ("FCA Cash Withdrawal", "cash_withdrawal", None, 20, "out"),
     ("ATM-Cash Withdrawal", "cash_withdrawal", None, 20, "out"),
+    # Office running costs (payee wording as it appears on the BancABC statement)
+    ("ECONET AIRTIME", "utilities", "Econet", 30, "out"),
+    ("AIRTIME TOP UP", "utilities", "Airtime", 30, "out"),
+    ("ELECTRICITY PURCHASE", "utilities", "ZESA prepaid electricity", 30, "out"),
+    ("LIQUID BILL PAYMENTS", "utilities", "Liquid", 30, "out"),
+    ("ZESA", "utilities", "ZESA", 30, "out"),
+    ("TELONE", "utilities", "TelOne", 30, "out"),
+    ("NETONE", "utilities", "NetOne", 30, "out"),
 ]

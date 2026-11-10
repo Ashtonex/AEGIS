@@ -139,9 +139,9 @@ export function RecordedEntries({ direction, entries, payableClaims, projectId, 
   );
 }
 
-function StatusChip({ entry }: { entry: RecordData }) {
+export function StatusChip({ entry }: { entry: RecordData }) {
   if (entry.paid_via === "cash") {
-    return <span className="inline-flex items-center gap-1 text-slate-light"><Wallet className="h-3.5 w-3.5" />Cash (HQ Petty Cash)</span>;
+    return <span className="inline-flex items-center gap-1 text-slate-light"><Wallet className="h-3.5 w-3.5" />Cash (HQ Cash)</span>;
   }
   if (entry.match_status === "matched") {
     return (
@@ -212,7 +212,7 @@ function EntryRow({ entry, direction, onEdit, onFind, onChanged }: {
   );
 }
 
-function SuggestionBlock({ entry, onChanged, onFind }: { entry: RecordData; onChanged: (msg?: string) => Promise<void>; onFind: () => void }) {
+export function SuggestionBlock({ entry, onChanged, onFind }: { entry: RecordData; onChanged: (msg?: string) => Promise<void>; onFind: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const act = async (lineId: string, fn: () => Promise<unknown>, msg: string) => {
@@ -384,7 +384,7 @@ function EntryForm({ direction, projectId, entry, payableClaims, onCancel, onSav
 
 // ---------------------------------------------------------------------------
 
-function FindOnBank({ entry, onClose, onMatched }: { entry: RecordData; onClose: () => void; onMatched: (msg: string) => Promise<void> }) {
+export function FindOnBank({ entry, onClose, onMatched }: { entry: RecordData; onClose: () => void; onMatched: (msg: string) => Promise<void> }) {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<RecordData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -424,7 +424,7 @@ function FindOnBank({ entry, onClose, onMatched }: { entry: RecordData; onClose:
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-ink/80 p-3" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-3" role="dialog" aria-modal="true">
       <div className="bg-ink-light border border-ink-mid rounded-lg w-full max-w-4xl max-h-[88vh] flex flex-col">
         <div className="px-5 py-4 border-b border-ink-mid flex justify-between gap-4">
           <div>

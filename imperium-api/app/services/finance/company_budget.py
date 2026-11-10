@@ -13,14 +13,11 @@ Never posts to the General Ledger and never touches finance.project_budgets
 or finance.project_forecasts - this is a planning layer compared against
 existing actuals for variance reporting only.
 
-Known, flagged simplification: the actuals side of variance reporting
-covers external revenue (certified progress claims), project cost
-(cost_transactions), and non-project direct cost (cashbook/payroll/supplier
--payment rows tagged directly with a department) - the same core legs as
-routers/financial_performance.py::_compute_department_pnl, but omitting
-inter-department transfer legs (an internal, company-wide-zero-sum item)
-since a budget-vs-actual comparison is about external performance, not
-internal recharges. This is a deliberate scope boundary, not an oversight.
+The actuals side of variance reporting reads the general ledger (posted
+journals on revenue and expense accounts), so it matches the financial
+statements and includes every recognised cost - office expenses paid by
+bank or cash included. Inter-department transfers are not ledger revenue or
+expense, so they stay out, as before.
 """
 
 from datetime import date
@@ -266,71 +263,51 @@ async def create_revision(db: AsyncSession, *, org_id: str, user_id: str, source
 
 
 async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, department_id: Optional[UUID], fiscal_year: int) -> list[dict]:
-    """One row per (month, revenue|cost). department_id=None aggregates
-    across every department (the company-wide view)."""
-    dept_filter = "p.department_id IS NOT DISTINCT FROM :department_id" if department_id else "TRUE"
-    dept_filter_direct = "cb.department_id IS NOT DISTINCT FROM :department_id" if department_id else "TRUE"
+    """One row per month: revenue and cost as the general ledger records them.
+
+    The ledger is the one place every recognised transaction lands - bank
+    lines, uses of withdrawn cash, office expense vouchers, project money
+    entries, payroll and supplier postings - so budget-vs-actual sees exactly
+    what the financial statements see (an office cost paid by bank used to be
+    invisible here because it creates no cashbook or project cost row).
+
+    revenue = credits less debits on revenue and other-income accounts
+    cost    = debits less credits on direct project cost, operating expense
+              and other expense accounts
+    Every posted journal counts, reversals included, so a reversed journal
+    nets to nothing. department_id=None is the company-wide view; otherwise a
+    line belongs to the department on the line itself, else its project's.
+    """
+    dept_filter = ("COALESCE(jl.department_id, p.department_id) IS NOT DISTINCT FROM :department_id"
+                   if department_id else "TRUE")
     params: dict = {"org_id": org_id, "year_start": date(fiscal_year, 1, 1), "year_end": date(fiscal_year, 12, 31)}
     if department_id:
         params["department_id"] = department_id
 
-    revenue_rows = await db.execute(
+    rows = await db.execute(
         text(f"""
-            SELECT date_trunc('month', pc.certified_at)::date AS month, SUM(pc.certified_amount) AS amount
-            FROM finance.progress_claims pc
-            JOIN projects.projects p ON p.id = pc.project_id
-            WHERE p.organization_id = :org_id AND pc.status IN ('certified', 'paid') AND pc.is_deleted = false
-              AND pc.certified_at BETWEEN :year_start AND :year_end AND {dept_filter}
+            SELECT date_trunc('month', je.entry_date)::date AS month,
+                   COALESCE(SUM(jl.credit_amount - jl.debit_amount)
+                            FILTER (WHERE a.account_category IN ('revenue', 'other_income')), 0) AS revenue,
+                   COALESCE(SUM(jl.debit_amount - jl.credit_amount)
+                            FILTER (WHERE a.account_category IN ('direct_project_cost', 'operating_expense',
+                                                                 'other_expense')), 0) AS cost
+            FROM finance.journal_entries je
+            JOIN finance.journal_lines jl ON jl.journal_entry_id = je.id
+            JOIN finance.chart_of_accounts a ON a.id = jl.account_id
+            LEFT JOIN projects.projects p ON p.id = jl.project_id
+            WHERE je.organization_id = :org_id AND je.status = 'posted'
+              AND je.entry_date BETWEEN :year_start AND :year_end
+              AND a.account_category IN ('revenue', 'other_income', 'direct_project_cost', 'operating_expense',
+                                         'other_expense')
+              AND {dept_filter}
             GROUP BY 1
+            ORDER BY 1
         """),
         params,
     )
-    cost_rows = await db.execute(
-        text(f"""
-            SELECT date_trunc('month', ct.transaction_date)::date AS month, SUM(ct.amount) AS amount
-            FROM finance.cost_transactions ct
-            JOIN projects.projects p ON p.id = ct.project_id
-            WHERE ct.organization_id = :org_id AND ct.transaction_date BETWEEN :year_start AND :year_end AND {dept_filter}
-            GROUP BY 1
-        """),
-        params,
-    )
-    dept_filter_payroll = "pi.department_id IS NOT DISTINCT FROM :department_id" if department_id else "TRUE"
-    dept_filter_supplier = "spi.department_id IS NOT DISTINCT FROM :department_id" if department_id else "TRUE"
-    direct_cost_rows = await db.execute(
-        text(f"""
-            SELECT month, SUM(amount) AS amount FROM (
-                SELECT date_trunc('month', cb.transaction_date)::date AS month, cb.amount
-                FROM finance.cashbook_transactions cb
-                WHERE cb.organization_id = :org_id AND cb.project_id IS NULL AND cb.direction = 'outflow'
-                  AND cb.is_deleted = false AND cb.transaction_date BETWEEN :year_start AND :year_end AND {dept_filter_direct}
-                UNION ALL
-                SELECT date_trunc('month', pr.payment_date)::date AS month, pi.net_pay
-                FROM finance.payroll_items pi
-                JOIN finance.payroll_runs pr ON pr.id = pi.payroll_run_id AND pr.status = 'posted'
-                WHERE pi.organization_id = :org_id AND pi.project_id IS NULL
-                  AND pr.payment_date BETWEEN :year_start AND :year_end AND {dept_filter_payroll}
-                UNION ALL
-                SELECT date_trunc('month', spb.payment_date)::date AS month, spi.amount
-                FROM finance.supplier_payment_items spi
-                JOIN finance.supplier_payment_batches spb ON spb.id = spi.batch_id
-                WHERE spi.organization_id = :org_id AND spi.project_id IS NULL
-                  AND spb.payment_date BETWEEN :year_start AND :year_end AND {dept_filter_supplier}
-            ) combined
-            GROUP BY month
-        """),
-        params,
-    )
-
-    by_month: dict[date, dict[str, float]] = {}
-    for row in revenue_rows.mappings().all():
-        by_month.setdefault(row["month"], {"revenue": 0.0, "cost": 0.0})["revenue"] += float(row["amount"] or 0)
-    for row in cost_rows.mappings().all():
-        by_month.setdefault(row["month"], {"revenue": 0.0, "cost": 0.0})["cost"] += float(row["amount"] or 0)
-    for row in direct_cost_rows.mappings().all():
-        by_month.setdefault(row["month"], {"revenue": 0.0, "cost": 0.0})["cost"] += float(row["amount"] or 0)
-
-    return [{"month": month, **totals} for month, totals in sorted(by_month.items())]
+    return [{"month": r["month"], "revenue": float(r["revenue"] or 0), "cost": float(r["cost"] or 0)}
+            for r in rows.mappings().all()]
 
 
 async def _get_budget_lines_by_month(db: AsyncSession, org_id: str, budget_id: UUID, department_id: Optional[UUID]) -> list[dict]:

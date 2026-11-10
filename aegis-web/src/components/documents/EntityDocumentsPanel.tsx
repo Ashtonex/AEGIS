@@ -11,7 +11,7 @@ import {
   deleteDocument,
 } from "@/lib/api";
 
-export type DocumentEntityType = "lead" | "opportunity" | "tender" | "project" | "fleet" | "machinery";
+export type DocumentEntityType = "lead" | "opportunity" | "tender" | "project" | "fleet" | "machinery" | "money_entry";
 
 interface DocRecord {
   id: string;
