@@ -268,6 +268,20 @@ class LineBuildingTests(unittest.TestCase):
             build_lines(profile=self.profile, item=ItemInput(employee_id="x", one_offs=[OneOffInput("BASIC", D("1"))]),
                         recurring=[], elements_by_code=self.elements, employee_label="Test")
 
+    def test_employer_cost_codes_refused_on_runs(self):
+        # Runs only post employer NSSA; any other employer cost would be left
+        # out of totals and the GL, so it is refused rather than dropped.
+        employer = {"id": "e-er", "code": "PENS_ER", "name": "Pension (employer)", "element_type": "employer_contribution",
+                    "is_taxable": False, "is_nssa_insurable": False, "is_bonus": False, "reduces_taxable": False,
+                    "tax_credit_pct": 0, "is_loan": False, "is_active": True, "sort_order": 300}
+        with self.assertRaises(PayrollServiceError):
+            build_lines(profile=self.profile, item=ItemInput(employee_id="x", one_offs=[OneOffInput("PENS_ER", D("10"))]),
+                        recurring=[], elements_by_code={**self.elements, "PENS_ER": employer}, employee_label="Test")
+        with self.assertRaises(PayrollServiceError):
+            build_lines(profile=self.profile, item=ItemInput(employee_id="x", regular_hours=D("8")),
+                        recurring=[self.recurring(code="PENS_ER", element_type="employer_contribution", is_loan=False)],
+                        elements_by_code=self.elements, employee_label="Test")
+
     def test_formula_helpers(self):
         self.assertEqual(basic_and_overtime(pay_type="daily", base_rate=D("40"), overtime_rate=D("0"),
                                             regular_hours=D("80"), overtime_hours=D("4")), (D("400.00"), D("30.00")))

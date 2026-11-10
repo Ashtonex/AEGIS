@@ -251,7 +251,7 @@ export function PayrollSetupPanel() {
             <div>
               <label className={labelClass}>Type</label>
               <select className={inputClass} value={codeForm.element_type} onChange={e => setCodeForm({ ...codeForm, element_type: e.target.value })}>
-                {Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                {Object.entries(TYPE_LABEL).filter(([k]) => k !== "employer_contribution").map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
             </div>
             <div>

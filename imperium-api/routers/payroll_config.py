@@ -121,7 +121,9 @@ class PayElementBase(BaseModel):
 class PayElementCreate(PayElementBase):
     code: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_]+$")
     name: str = Field(min_length=1, max_length=120)
-    element_type: str = Field(pattern=r"^(earning|deduction|tax_credit|employer_contribution)$")
+    # Employer costs other than NSSA (which is statutory) are not posted by
+    # runs yet, so such codes cannot be created until they are.
+    element_type: str = Field(pattern=r"^(earning|deduction|tax_credit)$")
 
 
 def _check_flags(element_type: str, values: dict) -> None:
@@ -316,7 +318,7 @@ async def create_employee_pay_element(
     org_id = _org(user)
     element = (await db.execute(
         text("""
-            SELECT code, is_loan, is_system, is_active FROM finance.pay_elements
+            SELECT code, element_type, is_loan, is_system, is_active FROM finance.pay_elements
             WHERE id = :id AND organization_id = :org_id AND is_deleted = false
         """),
         {"id": str(payload.pay_element_id), "org_id": org_id},
@@ -325,6 +327,8 @@ async def create_employee_pay_element(
         raise HTTPException(status_code=404, detail="Pay code not found or inactive.")
     if element.code in payroll_service.SYSTEM_CODES:
         raise HTTPException(status_code=409, detail=f"{element.code} comes from the pay profile; it cannot be assigned.")
+    if element.element_type == "employer_contribution":
+        raise HTTPException(status_code=422, detail=f"{element.code} is an employer-cost code; these are not supported on runs yet.")
     if element.is_loan and payload.loan_balance is None:
         raise HTTPException(status_code=422, detail=f"{element.code} is a loan: enter the balance to recover.")
     if not element.is_loan and payload.loan_balance is not None:

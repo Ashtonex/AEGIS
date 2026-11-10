@@ -331,6 +331,10 @@ def build_lines(
         lines.append(system_line("OT", "Overtime", overtime, 20, quantity=item.overtime_hours))
 
     for rec in recurring:
+        if rec["element_type"] == "employer_contribution":
+            raise PayrollServiceError(
+                422, f"{rec['code']} is an employer-cost code assigned to {employee_label}; employer costs other "
+                "than NSSA are not supported on runs yet. End that assignment and try again.")
         amount, quantity, rate = element_amount(
             calc_method=rec["calc_method"],
             amount=Decimal(str(rec["amount"])),
@@ -353,6 +357,8 @@ def build_lines(
             raise PayrollServiceError(422, f"Unknown or inactive pay code '{code}' for {employee_label}.")
         if code in SYSTEM_CODES:
             raise PayrollServiceError(422, f"{code} comes from the pay profile and hours; it cannot be entered as a one-off.")
+        if el["element_type"] == "employer_contribution":
+            raise PayrollServiceError(422, f"{code} is an employer-cost code; employer costs other than NSSA are not supported on runs yet.")
         if one_off.amount <= 0:
             continue
         lines.append(_line_from_element({**el, "pay_element_id": el["id"]}, money(one_off.amount)))
@@ -738,7 +744,27 @@ async def create_run(db: AsyncSession, *, org_id: str, user_id: Optional[str], r
 
 async def assert_loan_balances_cover(db: AsyncSession, org_id: str, run_id: str) -> None:
     """A loan instalment taken on a draft must still be covered by the loan's
-    balance when the run is posted (another run may have posted in between)."""
+    balance when the run is posted (another run may have posted in between).
+
+    The assignments are locked first, so a run posting concurrently against
+    the same loan waits here and then sees the reduced balance."""
+    await db.execute(
+        text("""
+            SELECT epe.id
+            FROM finance.employee_pay_elements epe
+            WHERE epe.organization_id = :org_id
+              AND epe.loan_balance IS NOT NULL
+              AND epe.id IN (
+                  SELECT employee_pay_element_id
+                  FROM finance.payroll_item_lines
+                  WHERE payroll_run_id = :run_id AND organization_id = :org_id
+                    AND employee_pay_element_id IS NOT NULL AND line_kind = 'deduction'
+              )
+            ORDER BY epe.id
+            FOR UPDATE OF epe
+        """),
+        {"run_id": run_id, "org_id": org_id},
+    )
     rows = (await db.execute(
         text("""
             SELECT pe.code, e.employee_name, l.amount, epe.loan_balance
@@ -765,7 +791,7 @@ async def apply_loan_repayments(db: AsyncSession, org_id: str, run_id: str, paym
     await db.execute(
         text("""
             UPDATE finance.employee_pay_elements epe
-            SET loan_balance = GREATEST(0, epe.loan_balance - l.amount),
+            SET loan_balance = epe.loan_balance - l.amount,
                 is_active = CASE WHEN epe.loan_balance - l.amount <= 0 THEN false ELSE epe.is_active END,
                 effective_to = CASE WHEN epe.loan_balance - l.amount <= 0 THEN CAST(:payment_date AS date) ELSE epe.effective_to END,
                 updated_at = NOW()

@@ -85,7 +85,8 @@ async def call(fn, **kwargs):
 async def seed_base() -> None:
     await sql("INSERT INTO core.organizations (id, name) VALUES (:id, 'Payroll Test Org')", id=ORG)
     await sql("""INSERT INTO core.users (id, email, full_name, organization_id)
-                 VALUES (:id, 'payroll.tester@example.test', 'Payroll Tester', :org)""", id=USER_ID, org=ORG)
+                 VALUES (:id, :email, 'Payroll Tester', :org)""", id=USER_ID, org=ORG,
+              email=f"payroll.tester+{ORG[:8]}@example.test")
 
 
 async def seed_rest() -> None:
@@ -294,6 +295,40 @@ async def main() -> None:
     status, body = await call(payroll_config.update_pay_element, user=USER, element_id=basic_id,
                               payload=payroll_config.PayElementBase(is_taxable=False))
     check("system code tax flags are locked", status == 409, (status, body))
+
+    try:
+        payroll_config.PayElementCreate(code="PENS_ER", name="Pension (employer)", element_type="employer_contribution")
+        check("employer-cost pay codes cannot be created", False)
+    except ValueError:
+        check("employer-cost pay codes cannot be created", True)
+
+    # --- Two runs posting against the same loan at once ---------------------------------
+    E4 = str(uuid.uuid4())
+    await sql("""INSERT INTO hr.employees (id, organization_id, employee_name, employment_status)
+                 VALUES (:id, :org, 'Dan Race', 'active')""", id=E4, org=ORG)
+    await sql("""INSERT INTO finance.employee_pay_profiles (organization_id, employee_id, pay_type, base_rate, overtime_rate, currency)
+                 VALUES (:org, :e, 'monthly_salary', 300, 0, 'USD')""", org=ORG, e=E4)
+    loan_code = (await sql("SELECT id FROM finance.pay_elements WHERE organization_id = :org AND code = 'LOAN'", org=ORG))[0]["id"]
+    status, body = await call(payroll_config.create_employee_pay_element, user=USER, payload=payroll_config.EmployeePayElementCreate(
+        employee_id=E4, pay_element_id=loan_code, amount=D(100), loan_balance=D(100), effective_from=date(2026, 1, 1)))
+    check("assign race loan", status == 200, body)
+    race_runs = []
+    for month in (4, 5):
+        status, body = await call(payroll_runs.create_payroll_run, user=USER, _={}, payload=run_payload(
+            month, [payroll_runs.PayrollItemInput(employee_id=E4)]))
+        race_runs.append(body["data"]["id"] if status == 200 else None)
+        if status == 200:
+            await call(payroll_runs.decide_payroll_run, user=USER, _={}, run_id=race_runs[-1],
+                       payload=payroll_runs.PayrollRunDecision(action="approve"))
+    check("two drafts each take the full 100 instalment", all(race_runs), race_runs)
+    if all(race_runs):
+        results = await asyncio.gather(*(
+            call(payroll_runs.decide_payroll_run, user=USER, _={}, run_id=r, payload=payroll_runs.PayrollRunDecision(action="post"))
+            for r in race_runs))
+        statuses = sorted(s for s, _ in results)
+        check("concurrent posts: one posts, the other is refused", statuses == [200, 409], results)
+        bal = (await sql("SELECT loan_balance FROM finance.employee_pay_elements WHERE employee_id = :e", e=E4))[0]["loan_balance"]
+        check("race loan recovered once, not twice", bal == D("0.00"), bal)
 
     # --- Retired endpoints ---------------------------------------------------------------
     status, body = await call(financial_performance.decide_payroll_run, user=USER, run_id=run1,
