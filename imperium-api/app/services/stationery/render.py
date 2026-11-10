@@ -475,20 +475,39 @@ def _microtext_border(c: rl_canvas.Canvas, w: float, h: float, inset: float) -> 
     c.restoreState()
 
 
+# Watermark strength: share of full ink at the darkest point of the mark.
+# 0.035 prints as a very pale grey (#F6F6F6 at most) that reads as paper
+# texture, not as artwork, and never competes with handwriting.
+WATERMARK_INK = 0.035
+_watermark_reader: Optional[ImageReader] = None
+
+
+def _watermark_image() -> Optional[ImageReader]:
+    """The hexagon mark alone, turned into a single pale grey. The fade is
+    baked into the pixels rather than set as PDF transparency, so viewers and
+    printers that ignore transparency still print it faint."""
+    global _watermark_reader
+    if _watermark_reader is None and os.path.exists(LOGO_PATH):
+        from PIL import Image
+
+        with Image.open(LOGO_PATH) as img:
+            mark = img.convert("RGBA").crop(MARK_BOX)
+        alpha = mark.getchannel("A")
+        ink = mark.convert("L").point(lambda v: 255 - v)  # darker logo pixel -> more ink
+        ink = Image.composite(ink, Image.new("L", mark.size, 0), alpha)
+        grey = ink.point(lambda v: 255 - round(v * WATERMARK_INK))
+        _watermark_reader = ImageReader(Image.merge("RGB", (grey, grey, grey)))
+    return _watermark_reader
+
+
 def _watermark(c: rl_canvas.Canvas, w: float, h: float) -> None:
-    logo = _logo()
-    if not logo:
+    mark = _watermark_image()
+    if not mark:
         return
-    c.saveState()
-    try:
-        c.setFillAlpha(0.055)
-    except AttributeError:  # pragma: no cover - very old reportlab
-        pass
-    size = min(w, h) * 0.62
-    iw, ih = logo.getSize()
+    size = min(w, h) * 0.55
+    iw, ih = mark.getSize()
     dh = size * ih / iw
-    c.drawImage(logo, (w - size) / 2, (h - dh) / 2 - h * 0.03, width=size, height=dh, mask="auto")
-    c.restoreState()
+    c.drawImage(mark, (w - size) / 2, (h - dh) / 2 - h * 0.02, width=size, height=dh)
 
 
 QR_BORDER = 4  # the standard 4-module quiet zone: 2 measurably hurts decoding on A5
