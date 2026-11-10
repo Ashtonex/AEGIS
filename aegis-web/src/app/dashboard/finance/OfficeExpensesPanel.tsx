@@ -97,6 +97,7 @@ export function OfficeExpensesPanel() {
   const summary = data?.summary ?? {};
   const categories = data?.categories ?? Object.keys(ACCOUNT_FOR);
   const decide = entries.filter((e) => e.match_status === "suggested" && (e.suggestions || []).length > 0);
+  const voucherCount = Number(summary.count ?? entries.length);
 
   return (
     <div className="space-y-5">
@@ -117,7 +118,7 @@ export function OfficeExpensesPanel() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Tile label="Recorded in period" value={money(summary.total)} hint={`${entries.length} voucher${entries.length === 1 ? "" : "s"}`} />
+        <Tile label="Recorded in period" value={money(summary.total)} hint={`${voucherCount} voucher${voucherCount === 1 ? "" : "s"}`} />
         <Tile label="Paid in cash" value={money(summary.cash)} hint="out of HQ Cash" />
         <Tile label="Paid by bank / card" value={money(summary.bank)}
           hint={summary.awaiting_bank ? `${summary.awaiting_bank} not yet on a statement` : "all matched"} />
@@ -185,6 +186,11 @@ export function OfficeExpensesPanel() {
         <p className="text-sm text-slate">No office expenses recorded in this period.</p>
       ) : (
         <div className={`${cardClass} overflow-hidden`}>
+          {voucherCount > entries.length && (
+            <p className="px-3 py-2 text-xs text-amber-300 border-b border-ink-mid">
+              Showing the latest {entries.length} of {voucherCount} vouchers. The totals above cover all of them - narrow the dates to list older ones.
+            </p>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
@@ -202,7 +208,7 @@ export function OfficeExpensesPanel() {
               </tbody>
               <tfoot>
                 <tr className="border-t border-ink-mid">
-                  <td colSpan={7} className="p-2 text-right text-slate font-mono uppercase text-[10px]">{entries.length} vouchers</td>
+                  <td colSpan={7} className="p-2 text-right text-slate font-mono uppercase text-[10px]">{voucherCount > entries.length ? `${entries.length} of ${voucherCount}` : voucherCount} vouchers</td>
                   <td className="p-2 text-right font-mono text-red-300">{money(summary.total)}</td>
                   <td />
                 </tr>

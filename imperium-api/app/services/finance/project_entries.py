@@ -223,13 +223,6 @@ async def _validate(db: AsyncSession, org_id: str, values: dict) -> None:
         )).first()
         if not found:
             raise GeneralLedgerError("Department not found.", status_code=404)
-    if values.get("approved_by"):
-        found = (await db.execute(
-            text("SELECT 1 FROM core.users WHERE id = :id AND organization_id = :org_id"),
-            {"id": values["approved_by"], "org_id": org_id},
-        )).first()
-        if not found:
-            raise GeneralLedgerError("The approver is not a user in this organisation.", status_code=404)
     if values["direction"] == "in":
         if category and category not in IN_CATEGORIES:
             raise GeneralLedgerError("Money in can be a client receipt, a refund or other income.", status_code=422)
@@ -251,7 +244,9 @@ async def _validate(db: AsyncSession, org_id: str, values: dict) -> None:
 
 
 ENTRY_FIELDS = ("project_id", "direction", "paid_via", "entry_date", "amount", "category", "counterparty_name",
-                "reference", "description", "pays_claim_id", "spent_by", "approved_by", "department_id")
+                "reference", "description", "pays_claim_id", "spent_by", "department_id")
+# approved_by is deliberately not an entry field: it is only ever set by
+# approve() from the signed-in user, and cleared when the voucher changes.
 
 
 async def create(db: AsyncSession, *, org_id: str, user_id: str, values: dict) -> dict:
@@ -283,8 +278,8 @@ async def update(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID,
     await _validate(db, org_id, values)
     amount_or_way_changed = (_d(values["amount"]) != _d(entry["amount"]) or values["direction"] != entry["direction"]
                              or values["paid_via"] != entry["paid_via"])
-    if (amount_or_way_changed or values["category"] != entry["category"]) and "approved_by" not in changes:
-        values["approved_by"] = None   # an approval was for the old amount / purpose
+    # an approval was for the old amount / way of paying / purpose
+    approval_lapses = amount_or_way_changed or values["category"] != entry["category"]
     if entry["matched_line_id"] and amount_or_way_changed:
         await unmatch(db, org_id=org_id, user_id=user_id, entry_id=entry_id)
         entry = await _get(db, org_id, entry_id)
@@ -299,6 +294,9 @@ async def update(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID,
         """),
         {"id": entry_id, "status": status, **{f: values.get(f) for f in ENTRY_FIELDS}},
     )
+    if approval_lapses:
+        await db.execute(text("UPDATE finance.project_money_entries SET approved_by = NULL WHERE id = :id"),
+                         {"id": entry_id})
     await _build(db, org_id, user_id, await _get(db, org_id, entry_id))
     entry = await _get(db, org_id, entry_id)
     if entry["matched_line_id"]:
@@ -632,8 +630,11 @@ def summary(entries: list[dict]) -> dict:
 # Office expenses (entries with no project)
 # ---------------------------------------------------------------------------
 
-async def list_office(db: AsyncSession, *, org_id: str, date_from: Optional[Any] = None,
-                      date_to: Optional[Any] = None, category: Optional[str] = None) -> list[dict]:
+OFFICE_LIST_LIMIT = 500   # rows returned; totals are always over every matching voucher
+
+
+def _office_filter(org_id: str, date_from: Optional[Any], date_to: Optional[Any],
+                   category: Optional[str]) -> tuple[str, dict[str, Any]]:
     where = "e.organization_id = :org_id AND e.project_id IS NULL AND NOT e.is_void"
     params: dict[str, Any] = {"org_id": org_id}
     if date_from:
@@ -645,31 +646,58 @@ async def list_office(db: AsyncSession, *, org_id: str, date_from: Optional[Any]
     if category:
         where += " AND e.category = :category"
         params["category"] = category
+    return where, params
+
+
+async def list_office(db: AsyncSession, *, org_id: str, date_from: Optional[Any] = None,
+                      date_to: Optional[Any] = None, category: Optional[str] = None) -> list[dict]:
+    """The latest OFFICE_LIST_LIMIT vouchers for the filter (office_summary
+    gives the count and totals over all of them)."""
+    where, params = _office_filter(org_id, date_from, date_to, category)
     rows = await db.execute(
-        text(_LIST_SQL + f" WHERE {where} ORDER BY e.entry_date DESC, e.created_at DESC LIMIT 1000"),
+        text(_LIST_SQL + f" WHERE {where} ORDER BY e.entry_date DESC, e.created_at DESC LIMIT {OFFICE_LIST_LIMIT}"),
         params,
     )
     return [dict(r) for r in rows.mappings()]
 
 
-async def office_summary(db: AsyncSession, *, org_id: str, entries: list[dict]) -> dict:
-    """Totals for the listed office expenses, plus what is still sitting in
-    HQ Cash per the books: cash withdrawn from the bank that has no voucher
-    yet (or is genuinely still on hand)."""
-    by_category: dict[str, Decimal] = {}
-    out = {"total": Decimal("0"), "cash": Decimal("0"), "bank": Decimal("0"), "without_receipt": 0,
-           "without_approval": 0, **{k: v for k, v in summary(entries).items() if k in ("awaiting_bank", "awaiting_bank_amount", "needs_decision")}}
-    for e in entries:
-        amount = _d(e["amount"])
-        out["total"] += amount
-        out["cash" if e["paid_via"] == "cash" else "bank"] += amount
-        by_category[e["category"] or "other"] = by_category.get(e["category"] or "other", Decimal("0")) + amount
-        if not e.get("receipt_count"):
-            out["without_receipt"] += 1
-        if not e.get("approved_by"):
-            out["without_approval"] += 1
-    out["by_category"] = [{"category": k, "amount": v, "account_code": bank_books.money_out_account(k, False)}
-                          for k, v in sorted(by_category.items(), key=lambda kv: -kv[1])]
+async def office_summary(db: AsyncSession, *, org_id: str, date_from: Optional[Any] = None,
+                         date_to: Optional[Any] = None, category: Optional[str] = None) -> dict:
+    """Totals over EVERY office voucher matching the filter (not just the
+    listed page), plus what is still sitting in HQ Cash per the books: cash
+    withdrawn from the bank that has no voucher yet (or is genuinely still on
+    hand)."""
+    where, params = _office_filter(org_id, date_from, date_to, category)
+    totals = (await db.execute(
+        text(f"""
+            SELECT count(*) AS count,
+                   COALESCE(sum(e.amount), 0) AS total,
+                   COALESCE(sum(e.amount) FILTER (WHERE e.paid_via = 'cash'), 0) AS cash,
+                   COALESCE(sum(e.amount) FILTER (WHERE e.paid_via = 'bank'), 0) AS bank,
+                   count(*) FILTER (WHERE NOT EXISTS (
+                       SELECT 1 FROM core.document_links dl
+                       WHERE dl.organization_id = e.organization_id AND dl.entity_type = 'money_entry'
+                         AND dl.entity_id = e.id AND dl.is_deleted = false)) AS without_receipt,
+                   count(*) FILTER (WHERE e.approved_by IS NULL) AS without_approval,
+                   count(*) FILTER (WHERE e.paid_via = 'bank' AND e.match_status IN ('awaiting', 'suggested')) AS awaiting_bank,
+                   COALESCE(sum(e.amount) FILTER (WHERE e.paid_via = 'bank'
+                                                    AND e.match_status IN ('awaiting', 'suggested')), 0) AS awaiting_bank_amount,
+                   count(*) FILTER (WHERE e.match_status = 'suggested'
+                                      AND cardinality(e.suggested_line_ids) > 0) AS needs_decision
+            FROM finance.project_money_entries e
+            WHERE {where}
+        """),
+        params,
+    )).mappings().one()
+    by_category = (await db.execute(
+        text(f"""
+            SELECT COALESCE(e.category, 'other') AS category, sum(e.amount) AS amount
+            FROM finance.project_money_entries e
+            WHERE {where}
+            GROUP BY 1 ORDER BY 2 DESC
+        """),
+        params,
+    )).mappings().all()
     hq = (await db.execute(
         text("""
             SELECT COALESCE(current_balance, 0) FROM finance.cash_accounts
@@ -677,6 +705,11 @@ async def office_summary(db: AsyncSession, *, org_id: str, entries: list[dict]) 
         """),
         {"org_id": org_id, "code": bank_books.HQ_PETTY_CASH_CODE},
     )).scalar()
+    out: dict[str, Any] = {k: (_d(v) if k in ("total", "cash", "bank", "awaiting_bank_amount") else int(v or 0))
+                           for k, v in totals.items()}
+    out["listed"] = min(out["count"], OFFICE_LIST_LIMIT)
+    out["by_category"] = [{"category": r["category"], "amount": _d(r["amount"]),
+                           "account_code": bank_books.money_out_account(r["category"], False)} for r in by_category]
     out["cash_not_yet_vouchered"] = _d(hq)
     return out
 

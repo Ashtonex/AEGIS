@@ -804,7 +804,6 @@ class ProjectEntryFields(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     pays_claim_id: Optional[UUID] = None
     spent_by: Optional[str] = Field(default=None, max_length=160)
-    approved_by: Optional[UUID] = None
     department_id: Optional[UUID] = None
 
 
@@ -821,7 +820,6 @@ class ProjectEntryUpdate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     pays_claim_id: Optional[UUID] = None
     spent_by: Optional[str] = Field(default=None, max_length=160)
-    approved_by: Optional[UUID] = None
     department_id: Optional[UUID] = None
 
 
@@ -837,7 +835,6 @@ class OfficeExpenseFields(BaseModel):
     reference: Optional[str] = Field(default=None, max_length=160)
     description: Optional[str] = Field(default=None, max_length=2000)
     spent_by: Optional[str] = Field(default=None, max_length=160)
-    approved_by: Optional[UUID] = None
     department_id: Optional[UUID] = None
 
 
@@ -976,7 +973,8 @@ async def list_office_expenses(
     org_id = _require_org(user)
     entries = await project_entries.list_office(db, org_id=org_id, date_from=date_from, date_to=date_to,
                                                 category=category)
-    summary = await project_entries.office_summary(db, org_id=org_id, entries=entries)
+    summary = await project_entries.office_summary(db, org_id=org_id, date_from=date_from, date_to=date_to,
+                                                   category=category)
     return ok({"entries": entries, "summary": summary, "categories": list(project_entries.OFFICE_CATEGORIES)},
               "Office expenses retrieved.")
 

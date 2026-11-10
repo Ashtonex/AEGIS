@@ -130,21 +130,19 @@ def test_office_voucher_must_be_money_out_with_a_category():
         asyncio.run(project_entries._validate(_Db(), "org", _office(category="supplier_payment")))
 
 
-def test_office_summary_flags_missing_receipts_and_approvals():
-    import asyncio
+def test_office_totals_are_not_limited_to_the_listed_rows():
+    import inspect
+    src = inspect.getsource(project_entries.office_summary)
+    import re
+    assert not re.search(r"\bLIMIT\b", src) and "count(*) AS count" in src
+    assert "LIMIT {OFFICE_LIST_LIMIT}" in inspect.getsource(project_entries.list_office)
 
-    class _HqDb:
-        async def execute(self, *_args, **_kwargs):
-            return _Result(Decimal("47835"))
 
-    entries = [
-        {"amount": Decimal("100"), "paid_via": "cash", "category": "utilities", "match_status": "not_bank",
-         "suggestions": [], "receipt_count": 1, "approved_by": uuid4(), "direction": "out"},
-        {"amount": Decimal("40"), "paid_via": "bank", "category": "office_admin", "match_status": "awaiting",
-         "suggestions": [], "receipt_count": 0, "approved_by": None, "direction": "out"},
-    ]
-    s = asyncio.run(project_entries.office_summary(_HqDb(), org_id="org", entries=entries))
-    assert s["total"] == Decimal("140") and s["cash"] == Decimal("100") and s["bank"] == Decimal("40")
-    assert s["without_receipt"] == 1 and s["without_approval"] == 1
-    assert s["awaiting_bank"] == 1 and s["cash_not_yet_vouchered"] == Decimal("47835")
-    assert [c["account_code"] for c in s["by_category"]] == ["6200", "6600"]
+def test_approver_cannot_be_supplied_by_the_client():
+    from pathlib import Path
+    router = (Path(__file__).resolve().parents[1] / "routers" / "bank_transactions.py").read_text(encoding="utf-8")
+    for model in ("class ProjectEntryFields", "class ProjectEntryUpdate", "class OfficeExpenseFields"):
+        body = router.split(model)[1].split("\nclass ")[0]
+        assert "approved_by" not in body, model
+    assert "approved_by" not in project_entries.ENTRY_FIELDS
+

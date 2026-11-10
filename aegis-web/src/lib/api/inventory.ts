@@ -322,7 +322,6 @@ export type ProjectMoneyEntryInput = {
   description?: string | null;
   pays_claim_id?: string | null;
   spent_by?: string | null;
-  approved_by?: string | null;
   department_id?: string | null;
 };
 

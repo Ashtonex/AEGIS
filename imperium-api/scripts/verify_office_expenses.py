@@ -82,8 +82,8 @@ async def gl(db, code: str) -> Decimal:
 
 async def seed(db) -> uuid.UUID:
     await q(db, "INSERT INTO core.organizations (id, name) VALUES (:org, 'Office expense test org')")
-    await q(db, "INSERT INTO core.users (id, organization_id, email, full_name) VALUES (:u, :org, 'office.test@example.invalid', 'Office Tester')",
-            u=USER)
+    await q(db, "INSERT INTO core.users (id, organization_id, email, full_name) VALUES (:u, :org, :email, 'Office Tester')",
+            u=USER, email=f"office.test.{USER[:8]}@example.invalid")
     for code, name, category, normal in ACCOUNTS:
         await q(db, """INSERT INTO finance.chart_of_accounts (organization_id, account_code, account_name, account_category, normal_balance)
                        VALUES (:org, :c, :n, :cat, :nb)""", c=code, n=name, cat=category, nb=normal)
@@ -143,6 +143,8 @@ async def main() -> None:
         renamed = await project_entries.update(db, org_id=ORG, user_id=USER, entry_id=cash["id"], changes={"description": "Airtime, Oct"})
         await db.commit()
         check("editing the description keeps the approval", str(renamed["approved_by"]) == USER)
+        await project_entries.approve(db, org_id=ORG, user_id=USER, entry_id=cash["id"])
+        await db.commit()
         changed = await project_entries.update(db, org_id=ORG, user_id=USER, entry_id=cash["id"], changes={"amount": 50})
         await db.commit()
         check("changing the amount clears the approval", changed["approved_by"] is None)
@@ -192,7 +194,7 @@ async def main() -> None:
 
         # --- listing and summary -------------------------------------------------
         entries = await project_entries.list_office(db, org_id=ORG, date_from=date(2026, 11, 1))
-        summary = await project_entries.office_summary(db, org_id=ORG, entries=entries)
+        summary = await project_entries.office_summary(db, org_id=ORG, date_from=date(2026, 11, 1))
         check("list shows both vouchers", len(entries) == 2, len(entries))
         cash_row = next(e for e in entries if e["id"] == cash["id"])
         check("receipt counted on the voucher", cash_row["receipt_count"] == 1, cash_row["receipt_count"])
@@ -205,10 +207,22 @@ async def main() -> None:
         check("HQ Cash per the books reported", summary["cash_not_yet_vouchered"] == Decimal("-50"),
               summary["cash_not_yet_vouchered"])
 
-        # --- company budget actuals from the ledger --------------------------------
+        # --- company budget actuals ------------------------------------------------
         company = await company_budget._get_department_actuals_by_month(db, ORG, None, 2026)
         check("company actuals include both office costs", company == [{"month": date(2026, 11, 1), "revenue": 0.0, "cost": 170.0}],
               company)
+        # a plain cashbook payment (no journal - post_cashbook_transaction) still counts
+        hq_id = (await q(db, "SELECT id FROM finance.cash_accounts WHERE organization_id = :org AND account_code = 'HQPC'")).scalar()
+        plain = (await q(db, """INSERT INTO finance.cashbook_transactions
+                                    (organization_id, cash_account_id, transaction_number, transaction_date, transaction_type,
+                                     direction, amount, currency, description, payment_method, posted_by)
+                                VALUES (:org, :c, :num, :on, 'payment', 'outflow', 30, 'USD', 'Cleaning materials', 'cash', :u)
+                                RETURNING id""", c=hq_id, on=ON, u=USER, num=f"CB-PLAIN-{USER[:8]}")).scalar()
+        await db.commit()
+        company = await company_budget._get_department_actuals_by_month(db, ORG, None, 2026)
+        check("unjournalled cashbook spending still counts in actuals", company[0]["cost"] == 200.0, company)
+        await q(db, "UPDATE finance.cashbook_transactions SET is_deleted = true WHERE id = :id", id=plain)
+        await db.commit()
         dept = await company_budget._get_department_actuals_by_month(db, ORG, DEPT, 2026)
         check("department actuals include only its own voucher", dept == [{"month": date(2026, 11, 1), "revenue": 0.0, "cost": 50.0}],
               dept)
