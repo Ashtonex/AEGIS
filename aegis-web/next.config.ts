@@ -52,6 +52,11 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // QR codes on AEGIS stationery encode HTTPS://HOST/Q/<token> in capitals
+  // (QR alphanumeric mode: a smaller, sturdier code). Serve it as /q/<token>.
+  async rewrites() {
+    return [{ source: "/Q/:token", destination: "/q/:token" }];
+  },
   async redirects() {
     return [
       {
