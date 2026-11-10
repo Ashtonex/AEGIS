@@ -14,6 +14,7 @@ pre-mobilisation with an empty commercial pack inside the transaction.
 """
 
 import asyncio
+import json
 from datetime import date
 from uuid import UUID
 
@@ -34,6 +35,9 @@ from routers.projects import (  # noqa: E402
 ORG = "00000000-0000-0000-0000-000000000001"
 PROJECT = UUID("dacf0363-d2db-4467-922b-bbac12a3e705")
 ACTOR = "3e84ee75-dd68-4502-9dc2-c6016756d396"
+# A blocker recorded by hand: not derivable from the control pack, so the
+# waived list must come from what was accepted at clearance.
+MANUAL_BLOCKERS = ["Client performance bond not yet lodged"]
 
 
 async def attempt(coro):
@@ -51,13 +55,14 @@ async def run() -> None:
             await db.execute(text("""
                 UPDATE projects.project_profiles
                 SET commercial_readiness_status='in_progress', commercial_readiness_pack='{}'::jsonb,
-                    commercial_readiness_blockers='[]'::jsonb, commercial_clearance_statement='{}'::jsonb,
+                    commercial_readiness_blockers=CAST(:manual AS jsonb), commercial_clearance_statement='{}'::jsonb,
                     commercial_cleared_at=NULL, commercial_cleared_by=NULL, mobilisation_approved_at=NULL
                 WHERE project_id=:p
-            """), {"p": PROJECT})
+            """), {"p": PROJECT, "manual": json.dumps(MANUAL_BLOCKERS)})
             summary = await _commercial_readiness_summary(db, org_id=ORG, project_id=PROJECT)
-            open_items = list(summary["blockers"])
-            check(len(open_items) == 15, f"empty pack has 15 open items ({len(open_items)})")
+            controls_open = [c["label"] for c in summary["controls"] if not c["complete"]]
+            open_items = list(dict.fromkeys(summary["blockers"] + controls_open))
+            check(len(open_items) == 15, f"14 open controls + 1 manual blocker ({len(open_items)})")
 
             print("\n== 1. no exceptions")
             _, err = await attempt(clear_commercial_readiness(PROJECT, CommercialClearancePayload(
@@ -95,6 +100,7 @@ async def run() -> None:
             check(data["status"] == "cleared" and data["ready"], "status cleared and ready")
             check(data["blockers"] == [], "no live blockers on the cleared pack")
             check(sorted(data["waived"]) == sorted(open_items), f"all {len(open_items)} items reported as waived")
+            check(MANUAL_BLOCKERS[0] in data["waived"], "the waived manual blocker stays in the waived list")
             check(data["ready_count"] == 0, "controls stay unticked (not claimed as done)")
             check(data["clearance_statement"].get("executive_waiver") is True, "statement records the waiver")
 

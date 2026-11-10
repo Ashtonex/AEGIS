@@ -215,11 +215,13 @@ export function ProjectGovernanceWorkspace({
 
   // Everything the server still counts as open on the Commercial Readiness
   // Pack: recorded blockers plus unticked controls.
-  const openCommercialItems = useMemo(() => {
-    if (!commercial || commercial.status === "cleared") return [];
-    const unticked = (commercial.controls ?? []).filter((c) => !c.complete).map((c) => c.label);
-    return Array.from(new Set([...(commercial.blockers ?? []), ...unticked]));
-  }, [commercial]);
+  const openCommercialItems: string[] =
+    !commercial || commercial.status === "cleared"
+      ? []
+      : Array.from(new Set([
+          ...(commercial.blockers ?? []),
+          ...(commercial.controls ?? []).filter((c) => !c.complete).map((c) => c.label),
+        ]));
 
   // Commercial Readiness Pack: tick the 14 controls, record the contract
   // authority, then clear. The server enforces who may do each step.

@@ -648,9 +648,12 @@ async def _commercial_readiness_summary(
     statement = statement if isinstance(statement, dict) else {}
     waived: list[str] = []
     if data.get("commercial_readiness_status") == "cleared" and statement.get("executive_waiver"):
-        # Open items were accepted as executive exceptions: report them as
-        # waived, not as live blockers on a cleared pack.
-        waived, blockers = blockers, []
+        # Open items were accepted as executive exceptions: report the audited
+        # list recorded at clearance (it includes manual blockers that the
+        # pack alone cannot reproduce), not live blockers on a cleared pack.
+        recorded = statement.get("executive_exceptions_accepted")
+        waived = [str(item) for item in recorded] if isinstance(recorded, list) and recorded else blockers
+        blockers = []
     complete_count = sum(1 for key in COMMERCIAL_READINESS_CONTROLS if pack.get(key))
     return {
         "status": data.get("commercial_readiness_status") or "not_started",
