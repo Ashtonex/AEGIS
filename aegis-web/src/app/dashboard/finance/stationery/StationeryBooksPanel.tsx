@@ -35,6 +35,7 @@ import {
   type StationeryLeafLookup,
 } from "@/lib/api/stationery";
 
+const PAGE = 100;
 const SIZE_LABEL: Record<string, string> = { A4: "A4", A5: "A5", A5L: "A5 landscape" };
 const COPY_LABEL: Record<number, string> = { 1: "Original only", 2: "Duplicate", 3: "Triplicate" };
 const STATUS_STYLE: Record<string, string> = {
@@ -85,6 +86,8 @@ export function StationeryBooksPanel() {
 
   const [types, setTypes] = useState<StationeryBookType[]>([]);
   const [books, setBooks] = useState<StationeryBook[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -94,7 +97,7 @@ export function StationeryBooksPanel() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [leaves, setLeaves] = useState<Record<string, StationeryLeaf[]>>({});
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [query, setQuery] = useState(searchParams.get("q") || "");
+  const [query, setQuery] = useState(searchParams?.get("q") || "");
   const [found, setFound] = useState<StationeryLeafLookup | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
 
@@ -102,8 +105,9 @@ export function StationeryBooksPanel() {
 
   const loadBooks = useCallback(async () => {
     try {
-      const res = await fetchStationeryBooks({ book_type: typeFilter || undefined, status: statusFilter || undefined });
+      const res = await fetchStationeryBooks({ book_type: typeFilter || undefined, status: statusFilter || undefined, limit: PAGE });
       setBooks(res.data || []);
+      setTotal(res.meta?.total ?? (res.data || []).length);
       setError(null);
     } catch (err) {
       setError(getErrorMessage(err));
@@ -131,16 +135,34 @@ export function StationeryBooksPanel() {
     setFound(null);
     try {
       const res = await lookupStationeryLeaf(value.trim());
-      setFound(res.data);
+      setFound(res.data ?? null);
     } catch (err) {
       setLookupError(getErrorMessage(err));
     }
   }, []);
 
-  const initialQuery = searchParams.get("q");
+  const initialQuery = searchParams?.get("q") ?? null;
   useEffect(() => {
     if (initialQuery) runLookup(initialQuery);
   }, [initialQuery, runLookup]);
+
+  async function loadMore() {
+    setLoadingMore(true);
+    try {
+      const res = await fetchStationeryBooks({
+        book_type: typeFilter || undefined,
+        status: statusFilter || undefined,
+        limit: PAGE,
+        offset: books.length,
+      });
+      setBooks((prev) => [...prev, ...(res.data || [])]);
+      if (typeof res.meta?.total === "number") setTotal(res.meta.total);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function toggleLeaves(book: StationeryBook) {
     if (expanded === book.id) {
@@ -150,7 +172,7 @@ export function StationeryBooksPanel() {
     setExpanded(book.id);
     try {
       const res = await fetchStationeryBook(book.id);
-      setLeaves((prev) => ({ ...prev, [book.id]: res.data.leaves || [] }));
+      setLeaves((prev) => ({ ...prev, [book.id]: res.data?.leaves || [] }));
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -187,7 +209,7 @@ export function StationeryBooksPanel() {
     setError(null);
     try {
       const res = await changeStationeryBookStatus(book.id, { action, ...extra });
-      setNotice(`${res.data.book_label} is now ${res.data.status}.`);
+      if (res.data) setNotice(`${res.data.book_label} is now ${res.data.status}.`);
       setDialog(null);
       await loadBooks();
     } catch (err) {
@@ -365,6 +387,21 @@ export function StationeryBooksPanel() {
             </tbody>
           </table>
         </div>
+        {!loading && books.length > 0 && (
+          <div className="px-4 py-3 border-t border-ink-mid flex items-center justify-between text-xs text-slate">
+            <span>Showing {books.length} of {total} books</span>
+            {books.length < total && (
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="inline-flex items-center gap-1 border border-ink-mid px-3 py-1 text-slate-light hover:text-paper disabled:opacity-50"
+              >
+                {loadingMore && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Show more
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {dialog && (
@@ -377,8 +414,8 @@ export function StationeryBooksPanel() {
             setError(null);
             try {
               const res = await generateStationeryBooks(payload);
-              const made = res.data.books;
-              setNotice(`${made.length} book${made.length === 1 ? "" : "s"} registered: ${made[0].first_label} to ${made[made.length - 1].last_label}. Download each PDF from the register for printing.`);
+              const made = res.data?.books ?? [];
+              if (made.length) setNotice(`${made.length} book${made.length === 1 ? "" : "s"} registered: ${made[0].first_label} to ${made[made.length - 1].last_label}. Download each PDF from the register for printing.`);
               setDialog(null);
               await loadBooks();
             } catch (err) {
@@ -396,7 +433,7 @@ export function StationeryBooksPanel() {
               setNotice(`${leaf.serial_label} voided.`);
               setDialog(null);
               const res = await fetchStationeryBook(book.id);
-              setLeaves((prev) => ({ ...prev, [book.id]: res.data.leaves || [] }));
+              setLeaves((prev) => ({ ...prev, [book.id]: res.data?.leaves || [] }));
               await loadBooks();
             } catch (err) {
               setError(getErrorMessage(err));

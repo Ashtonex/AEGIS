@@ -302,10 +302,12 @@ async def list_books(
     book_type: Optional[str] = None,
     status: Optional[str] = None,
     holder_group: Optional[str] = None,
-    limit: int = 200,
-) -> List[Dict[str, Any]]:
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[List[Dict[str, Any]], int]:
+    """One page of the register (newest first) and the total matching count."""
     where = ["b.organization_id = CAST(:org AS uuid)"]
-    params: Dict[str, Any] = {"org": org_id, "limit": max(1, min(int(limit), 500))}
+    params: Dict[str, Any] = {"org": org_id, "limit": max(1, min(int(limit), 500)), "offset": max(0, int(offset))}
     if book_type:
         where.append("b.book_type = :book_type")
         params["book_type"] = book_type
@@ -318,13 +320,26 @@ async def list_books(
     rows = (
         await db.execute(
             text(
-                f"SELECT {_BOOK_COLUMNS} {_BOOK_FROM} WHERE {' AND '.join(where)} "
-                "ORDER BY b.created_at DESC, b.book_type, b.book_number DESC LIMIT :limit"
+                f"SELECT {_BOOK_COLUMNS}, count(*) OVER () AS total_count {_BOOK_FROM} WHERE {' AND '.join(where)} "
+                "ORDER BY b.created_at DESC, b.book_type, b.book_number DESC LIMIT :limit OFFSET :offset"
             ),
             params,
         )
     ).all()
-    return [_book_out(r) for r in rows]
+    total = int(rows[0].total_count) if rows else 0
+    if not rows and params["offset"]:
+        total = int(
+            (
+                await db.execute(text(f"SELECT count(*) FROM core.stationery_books b WHERE {' AND '.join(where)}"), params)
+            ).scalar()
+            or 0
+        )
+    books = []
+    for r in rows:
+        book = _book_out(r)
+        book.pop("total_count", None)
+        books.append(book)
+    return books, total
 
 
 async def get_book(db: AsyncSession, org_id: str, book_id: str, with_leaves: bool = True) -> Dict[str, Any]:

@@ -91,11 +91,15 @@ async def list_books(
     book_type: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     holder_group: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     user: dict = Depends(require_permission(READ)),
     db: AsyncSession = Depends(get_db),
 ):
-    books = await service.list_books(db, str(user["org_id"]), book_type=book_type, status=status, holder_group=holder_group)
-    return ok(books, total=len(books))
+    books, total = await service.list_books(
+        db, str(user["org_id"]), book_type=book_type, status=status, holder_group=holder_group, limit=limit, offset=offset
+    )
+    return ok(books, total=total)
 
 
 @router.post("/books")

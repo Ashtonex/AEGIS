@@ -90,6 +90,17 @@ async def main() -> None:
         r = await c.get(f"{base}/books")
         books = r.json()["data"]
         check("register lists 4 books", len(books) == 4, len(books))
+        r = await c.get(f"{base}/books", params={"limit": 3})
+        page1 = r.json()
+        r = await c.get(f"{base}/books", params={"limit": 3, "offset": 3})
+        page2 = r.json()
+        check(
+            "register pages: 3 + 1 rows, total 4 on both",
+            len(page1["data"]) == 3 and len(page2["data"]) == 1 and page1["meta"].get("total") == 4 and page2["meta"].get("total") == 4,
+            (len(page1["data"]), len(page2["data"]), page1["meta"], page2["meta"]),
+        )
+        r = await c.get(f"{base}/books", params={"limit": 3, "offset": 10})
+        check("page past the end: empty, total still 4", r.json()["data"] == [] and r.json()["meta"].get("total") == 4, r.json()["meta"])
         b = next(x for x in books if x["id"] == book_id)
         check("leaf counts: 10 blank", b["leaves_blank"] == 10 and b["status"] == "generated", b)
 

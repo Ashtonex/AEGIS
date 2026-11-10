@@ -90,8 +90,12 @@ export async function fetchStationeryTypes(): Promise<ApiResponse<StationeryBook
   return fetchApi<ApiResponse<StationeryBookType[]>>(`${BASE}/types`, { cache: "no-store", allowFallback: false });
 }
 
-export async function fetchStationeryBooks(params: { book_type?: string; status?: string } = {}): Promise<ApiResponse<StationeryBook[]>> {
+export async function fetchStationeryBooks(
+  params: { book_type?: string; status?: string; limit?: number; offset?: number } = {},
+): Promise<ApiResponse<StationeryBook[]>> {
   const search = new URLSearchParams();
+  if (params.limit) search.set("limit", String(params.limit));
+  if (params.offset) search.set("offset", String(params.offset));
   if (params.book_type) search.set("book_type", params.book_type);
   if (params.status) search.set("status", params.status);
   const query = search.toString();
