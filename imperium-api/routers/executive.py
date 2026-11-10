@@ -2859,19 +2859,17 @@ async def get_executive_overview_bundle(
 ):
     """Batches the top 6 executive dashboard reads into a single network payload,
     eliminating the 6-request waterfall fan-out on initial dashboard mount."""
-    # Data health can write and commit a notification, so it runs first on
-    # the request's own session. The other five only read and don't depend
-    # on each other, so they run concurrently where spare connections allow
-    # (before, all six ran one after another: ~1.2 s of database round trips).
+    # Deliberately sequential on the request's one connection. The executive
+    # page fires ~19 calls at once, which already fills this worker's pool;
+    # running these six through gather_reads as well borrowed up to 8 more
+    # connections, each opened fresh past the pool size, and made this call
+    # take 2-6 s instead of ~1 s (measured 2026-11-10).
+    kpis_res = await get_executive_kpis(user, db)
+    stats_res = await get_executive_stats(user, db)
+    regions_res = await get_regional_footprint(user, db)
+    projects_res = await get_active_projects(user, db)
     health_res = await get_executive_data_health(user, db)
-    kpis_res, stats_res, regions_res, projects_res, exceptions_res = await gather_reads(
-        db,
-        lambda session: get_executive_kpis(user, session),
-        lambda session: get_executive_stats(user, session),
-        lambda session: get_regional_footprint(user, session),
-        lambda session: get_active_projects(user, session),
-        lambda session: get_executive_exceptions(user, session),
-    )
+    exceptions_res = await get_executive_exceptions(user, db)
 
     all_source_errors = []
     for res in (kpis_res, stats_res, regions_res, projects_res, health_res, exceptions_res):
