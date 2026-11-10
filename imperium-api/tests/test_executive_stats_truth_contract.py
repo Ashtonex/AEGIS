@@ -18,10 +18,10 @@ class ExecutiveStatsTruthContractTests(unittest.TestCase):
     is still reported as a true 0.
     """
 
-    def test_stat_scalar_helper_returns_none_not_zero_on_failure(self):
-        self.assertIn("async def _stat_scalar", EXECUTIVE)
-        self.assertIn("return result.scalar() or 0", EXECUTIVE)
-        self.assertIn("return None", EXECUTIVE)
+    def test_stat_helper_returns_none_not_zero_on_failure(self):
+        # A failed read comes back from _single_row_reads as [] and stat()
+        # turns that into None; a real result (including 0) is kept.
+        self.assertIn('return (rows[0].get("value") or 0) if rows else None', EXECUTIVE)
 
     def test_stats_endpoint_reports_source_errors_in_meta(self):
         # Old behaviour returned a bare {} with no error visibility at all.
