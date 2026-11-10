@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { BadgeCheck, CheckCircle2, FileText, FileUp, Loader2, Paperclip, Pencil, Plus, Search, Send, ShieldAlert, ShoppingCart, Warehouse, X, XCircle } from "lucide-react";
 import { amendProcurementRequisition, createDocument, createProcurementRequisition, getDocumentSignedUrl, recordProcurementRfqResponse } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
+import { type Allocation, allocationProblem, assignSupplier, assigned, groupBySupplier, initialAllocations, needsReason, quoteOptions, requestLines, splitRow, toPayload } from "@/components/procurement/supplierOrders";
 import { NoticeChip } from "@/components/procurement/NoticeChip";
 import { RfqPdfButton } from "@/components/procurement/RfqPdfButton";
 import { Banner, EmptyState, InfoCard, type LineItem, type Rec, type Tab, dt, money, normalizeActionError, num, poStatusClass, prStatusClass, priorityClass, qty, supplierStatusClass, tx } from "@/components/procurement/shared";
@@ -29,6 +30,7 @@ export function RequisitionsTable({ rows, saving, onSubmit, onApprove, onCreateR
             const isDraft = status === "draft" || status === "rejected";
             const isSubmitted = status === "submitted";
             const isApproved = status === "approved";
+            const isPartlyOrdered = status === "partially_ordered";
             const amendments = num(row.amendment_count);
             return (
               <tr key={row.id} className="hover:bg-ink-light/40">
@@ -42,7 +44,7 @@ export function RequisitionsTable({ rows, saving, onSubmit, onApprove, onCreateR
                 </td>
                 <td className="px-4 py-3 text-paper">{tx(row.project_name ?? row.project)}</td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${priorityClass(row.priority)}`}>{tx(row.priority, "normal")}</span></td>
-                <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${prStatusClass(row.status)}`}>{tx(row.status, "draft")}</span></td>
+                <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${prStatusClass(row.status)}`}>{tx(row.status, "draft").replace(/_/g, " ")}</span></td>
                 <td className="px-4 py-3 text-slate-light">{tx(row.requested_by ?? row.created_by_name)}</td>
                 <td className="px-4 py-3 font-mono text-paper">{money(row.total_estimated ?? row.estimated_total ?? 0)}</td>
                 <td className="px-4 py-3 text-slate-light">{dt(row.required_by_date ?? row.required_by)}</td>
@@ -77,6 +79,12 @@ export function RequisitionsTable({ rows, saving, onSubmit, onApprove, onCreateR
                           <Search className="h-3 w-3" />Get quotes first (optional)
                         </button>
                       </>
+                    )}
+                    {isPartlyOrdered && (
+                      <button onClick={() => onCreatePO(row)} disabled={saving === `po-${row.id}`} title="Some lines are already on purchase orders; order the rest"
+                        className="inline-flex items-center gap-1 border border-signal bg-signal/15 px-2 py-1 font-mono text-[10px] uppercase text-signal hover:bg-signal/25 disabled:opacity-40">
+                        <ShoppingCart className="h-3 w-3" />Order the rest
+                      </button>
                     )}
                     {onEdit && status !== "cancelled" && (
                       <button onClick={() => onEdit(row)} title="Change quantities, prices, dates or lines so the request shows what is actually needed"
@@ -160,7 +168,10 @@ export function RfqsTab({ rows, saving, onQuote, onDecideQuote, onCreatePO, onUp
     <div className="divide-y divide-ink-mid">
       {rows.map((rfq) => {
         const responses: Rec[] = Array.isArray(rfq.responses) ? rfq.responses : [];
-        const selected = responses.find((r) => tx(r.status).toLowerCase() === "selected");
+        // A whole quote becomes a PO only while nothing on the request is
+        // ordered yet; after that it is ordered line by line from the request.
+        const canOrderWholeQuote = !rfq.requisition_status || tx(rfq.requisition_status).toLowerCase() === "approved";
+        const selected = canOrderWholeQuote ? responses.find((r) => tx(r.status).toLowerCase() === "selected") : undefined;
         const priced = responses.filter((r) => num(r.total_amount) > 0 && tx(r.status).toLowerCase() !== "rejected");
         const lowestId = priced.length > 1 ? priced.reduce((a, b) => (num(b.total_amount) < num(a.total_amount) ? b : a)).id : null;
         return (
@@ -222,7 +233,7 @@ export function RfqsTab({ rows, saving, onQuote, onDecideQuote, onCreatePO, onUp
                               <button onClick={() => onDecideQuote(rfq, response, "selected")} disabled={saving === `quote-decision-${response.id}`}
                                 className="border border-emerald-500/40 px-2 py-1 font-mono text-[10px] uppercase text-emerald-300 hover:bg-emerald-950/30 disabled:opacity-40">Select</button>
                             )}
-                            {responseStatus === "selected" && (
+                            {responseStatus === "selected" && canOrderWholeQuote && (
                               <button onClick={() => onCreatePO(response)} disabled={saving === `po-rfq-${response.id}`}
                                 className="border border-signal/40 px-2 py-1 font-mono text-[10px] uppercase text-signal hover:bg-signal/10 disabled:opacity-40">PO</button>
                             )}
@@ -502,44 +513,148 @@ export function RfqResponseModal({ rfq, suppliers, saving, onSubmit, onClose }: 
 }
 
 
-export function CreatePOModal({ pr, suppliers, saving, onCreate, onClose }: { pr: Rec; suppliers: Rec[]; saving: boolean; onCreate: (supplierId: string, supplierSelectionReason: string) => void; onClose: () => void; }) {
-  const [supplierId, setSupplierId] = useState("");
-  const [supplierSelectionReason, setSupplierSelectionReason] = useState("");
+/**
+ * Order a purchase request from one or more suppliers. Each line (or part of
+ * a line, via Split) gets a supplier and a price; one purchase order is raised
+ * per supplier. Lines left without a supplier stay on the request to order later.
+ */
+export function CreatePOModal({ pr, rfqs, suppliers, saving, onCreate, onClose }: { pr: Rec; rfqs: Rec[]; suppliers: Rec[]; saving: boolean; onCreate: (payload: ReturnType<typeof toPayload>) => void; onClose: () => void; }) {
+  const lines = useMemo(() => requestLines(pr), [pr]);
+  const myRfqs = useMemo(() => rfqs.filter((r) => String(r.requisition_id) === String(pr.id)), [rfqs, pr.id]);
+  const quotes = useMemo(() => new Map(lines.map((l) => [l.id, quoteOptions(l, myRfqs)])), [lines, myRfqs]);
+  const [rows, setRows] = useState<Allocation[]>(() => initialAllocations(lines));
+  const [reason, setReason] = useState("");
+  const lineById = useMemo(() => new Map(lines.map((l) => [l.id, l])), [lines]);
+  const supplierName = (id: string) => {
+    const s = suppliers.find((x) => String(x.id) === id);
+    return tx(s?.supplier_name ?? s?.name, "Supplier");
+  };
+  const anyQuotes = [...quotes.values()].some((q) => q.length > 0);
+  const groups = groupBySupplier(rows);
+  const problem = allocationProblem(rows, lines);
+  const reasonNeeded = needsReason(rows);
+  const reasonOk = !reasonNeeded || reason.trim().length >= 12;
+  const unassigned = rows.filter((r) => !r.supplierId && num(r.quantity) > 0).length;
+  const alreadyOrdered = lines.filter((l) => l.ordered > 0);
+
+  const update = (key: string, patch: Partial<Allocation>) => setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const setSupplier = (key: string, supplierId: string) => setRows((prev) => prev.map((r) => (r.key === key ? assignSupplier(r, supplierId, quotes.get(r.lineId) ?? []) : r)));
+  const everyLineTo = (supplierId: string) => { if (supplierId) setRows((prev) => prev.map((r) => assignSupplier(r, supplierId, quotes.get(r.lineId) ?? []))); };
+  const cheapestEach = () => setRows((prev) => prev.map((r) => { const best = (quotes.get(r.lineId) ?? [])[0]; return best ? assignSupplier(r, best.supplierId, [best]) : r; }));
+  const removeRow = (key: string) => setRows((prev) => prev.filter((r) => r.key !== key));
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg border border-ink-mid bg-ink text-paper shadow-2xl">
+      <div className="flex max-h-[92vh] w-full max-w-5xl flex-col border border-ink-mid bg-ink text-paper shadow-2xl">
         <header className="flex items-center justify-between border-b border-ink-mid p-4">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Create Purchase Order</p>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Order from suppliers</p>
             <h2 className="mt-1 text-lg font-semibold">{tx(pr.requisition_number ?? pr.pr_number ?? pr.reference_number, pr.id.slice(0, 8).toUpperCase())}</h2>
+            <p className="mt-1 text-xs text-slate-light">Give each line to a supplier. One purchase order is raised per supplier; use Split to buy part of a line from someone else.</p>
           </div>
           <button onClick={onClose} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
         </header>
-        <div className="space-y-4 p-5">
-          <InfoCard label="Estimated Total" value={money(pr.total_estimated ?? pr.estimated_total ?? 0)} tone="text-signal" />
-          <div>
-            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Supplier *</label>
-            <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper">
-              <option value="">Select supplier…</option>
-              {suppliers.map((s) => <option key={s.id} value={s.id}>{tx(s.supplier_name ?? s.name, s.id)}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Supplier selection rationale *</label>
-            <textarea
-              value={supplierSelectionReason}
-              onChange={(e) => setSupplierSelectionReason(e.target.value)}
-              rows={3}
-              placeholder="Record why this supplier was chosen without comparing quotes."
-              className="w-full resize-none border border-ink-mid bg-ink-light p-3 text-sm text-paper placeholder:text-slate"
-            />
-            <p className="mt-1 text-[11px] text-slate-light">Required for direct POs to avoid unexplained supplier selection.</p>
-          </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+          {rows.length === 0 ? (
+            <p className="text-sm text-slate-light">Everything on this request is already on a purchase order.</p>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Same supplier for every line</label>
+                  <select value="" onChange={(e) => everyLineTo(e.target.value)} className="h-9 w-64 border border-ink-mid bg-ink-light px-2 text-sm text-paper">
+                    <option value="">Choose to fill every line…</option>
+                    {suppliers.map((s) => <option key={s.id} value={s.id}>{tx(s.supplier_name ?? s.name, s.id)}</option>)}
+                  </select>
+                </div>
+                {anyQuotes && (
+                  <button onClick={cheapestEach} className="inline-flex h-9 items-center gap-1 border border-signal/40 px-3 font-mono text-[10px] uppercase text-signal hover:bg-signal/10">
+                    <BadgeCheck className="h-3 w-3" />Cheapest quote per line
+                  </button>
+                )}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[820px] text-sm">
+                  <thead>
+                    <tr className="border-b border-ink-mid text-left">
+                      {["Item", "Still to order", "Qty", "Unit price", "Supplier", "Line total", ""].map((h) => <th key={h} className="px-2 py-2 font-mono text-[10px] uppercase tracking-wider text-slate">{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-ink-mid">
+                    {rows.map((row, i) => {
+                      const line = lineById.get(row.lineId);
+                      const lineQuotes = quotes.get(row.lineId) ?? [];
+                      const firstOfLine = rows.findIndex((r) => r.lineId === row.lineId) === i;
+                      const quotedIds = new Set(lineQuotes.map((q) => q.supplierId));
+                      return (
+                        <tr key={row.key} className={firstOfLine ? "" : "bg-ink-light/30"}>
+                          <td className="px-2 py-2">{firstOfLine ? tx(line?.description) : <span className="pl-3 text-slate-light">↳ split</span>}</td>
+                          <td className="px-2 py-2 font-mono text-xs text-slate-light">{firstOfLine && line ? `${qty(line.remaining)} ${line.uom}` : ""}</td>
+                          <td className="px-2 py-2">
+                            <input type="number" min="0" step="0.001" value={row.quantity} onChange={(e) => update(row.key, { quantity: e.target.value })} className="h-8 w-24 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input type="number" min="0" step="0.0001" value={row.unitPrice} onChange={(e) => update(row.key, { unitPrice: e.target.value, responseId: null })} className="h-8 w-28 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+                            {row.responseId && <span className="ml-1 font-mono text-[9px] uppercase text-emerald-300" title="Price from this supplier's quotation">quoted</span>}
+                          </td>
+                          <td className="px-2 py-2">
+                            <select value={row.supplierId} onChange={(e) => setSupplier(row.key, e.target.value)} className="h-8 w-56 border border-ink-mid bg-ink-light px-2 text-xs text-paper">
+                              <option value="">Not yet - order later</option>
+                              {lineQuotes.length > 0 && (
+                                <optgroup label="Quoted">
+                                  {lineQuotes.map((q) => <option key={q.responseId} value={q.supplierId}>{q.supplierName} · US${q.unitPrice.toFixed(2)}/{line?.uom ?? "unit"}</option>)}
+                                </optgroup>
+                              )}
+                              <optgroup label={lineQuotes.length ? "Other suppliers" : "Suppliers"}>
+                                {suppliers.filter((s) => !quotedIds.has(String(s.id))).map((s) => <option key={s.id} value={s.id}>{tx(s.supplier_name ?? s.name, s.id)}</option>)}
+                              </optgroup>
+                            </select>
+                          </td>
+                          <td className="px-2 py-2 font-mono text-xs">{money(num(row.quantity) * num(row.unitPrice))}</td>
+                          <td className="whitespace-nowrap px-2 py-2">
+                            <button onClick={() => setRows((prev) => splitRow(prev, row.key, lines))} title="Buy part of this line from another supplier" className="font-mono text-[10px] uppercase text-slate-light hover:text-signal">Split</button>
+                            {!firstOfLine && <button onClick={() => removeRow(row.key)} title="Remove this split" className="ml-2 text-slate-light hover:text-red-300"><X className="inline h-3 w-3" /></button>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          {alreadyOrdered.length > 0 && (
+            <p className="text-xs text-slate-light">Already on purchase orders: {alreadyOrdered.map((l) => `${tx(l.description)} (${qty(l.ordered)} ${l.uom})`).join(", ")}.</p>
+          )}
+          {groups.length > 0 && (
+            <div className="border border-ink-mid p-3">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-slate">This creates {groups.length} purchase order{groups.length === 1 ? "" : "s"}</p>
+              <ul className="mt-2 space-y-1 text-sm">
+                {groups.map((g) => (
+                  <li key={g.supplierId} className="flex justify-between gap-3">
+                    <span>{supplierName(g.supplierId)} <span className="text-slate-light">· {g.rows.length} line{g.rows.length === 1 ? "" : "s"}{g.quoted ? " · quoted" : ""}</span></span>
+                    <span className="font-mono">{money(g.subtotal)}</span>
+                  </li>
+                ))}
+              </ul>
+              {unassigned > 0 && <p className="mt-2 text-xs text-amber-300">{unassigned} line{unassigned === 1 ? "" : "s"} with no supplier stay on the request to order later.</p>}
+            </div>
+          )}
+          {reasonNeeded && (
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Supplier selection rationale *</label>
+              <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2}
+                placeholder="Why these suppliers - needed when a line isn't priced from a quotation."
+                className="w-full resize-none border border-ink-mid bg-ink-light p-3 text-sm text-paper placeholder:text-slate" />
+            </div>
+          )}
+          {problem && assigned(rows).length > 0 && <p className="text-xs text-red-300">{problem}</p>}
         </div>
         <footer className="flex justify-end gap-2 border-t border-ink-mid p-4">
           <button onClick={onClose} className="h-9 border border-ink-mid px-3 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
-          <button onClick={() => onCreate(supplierId, supplierSelectionReason)} disabled={saving || !supplierId || supplierSelectionReason.trim().length < 12} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-40">
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}Create PO
+          <button onClick={() => onCreate(toPayload(rows, reason))} disabled={saving || Boolean(problem) || !reasonOk} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-40">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}
+            {groups.length > 1 ? `Create ${groups.length} POs` : "Create PO"}
           </button>
         </footer>
       </div>

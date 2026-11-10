@@ -10,7 +10,7 @@ import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
 import { ThreeWayMatchInspectorModal } from "@/components/supply/ThreeWayMatchInspectorModal";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
-import { signOffPurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getProcurementPlans, getCrmTasks, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
+import { signOffPurchaseOrder, approveProcurementRequisition, createProcurementRfq, createSupplierPurchaseOrders, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getProcurementPlans, getCrmTasks, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
 import { InvoicesTab, PaymentEvidenceModal } from "@/components/procurement/invoices";
 import { OrdersTable, PODetailDrawer, ReceiveGoodsModal, SupplierInvoiceModal } from "@/components/procurement/orders";
 import { buildPurchases, buildTasks, type TaskAction } from "@/components/procurement/journey";
@@ -294,11 +294,11 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
     await load();
   };
 
-  const createPO = async (pr: Rec, supplierId: string, supplierSelectionReason: string) => {
+  const createPO = async (pr: Rec, payload: Record<string, unknown>) => {
     setSaving(`po-${pr.id}`);
     try {
-      await createPurchaseOrderFromRequisition({ requisition_id: pr.id, supplier_id: supplierId, notes: supplierSelectionReason });
-      setNotice("Purchase order created from the approved request.");
+      const res = await createSupplierPurchaseOrders(pr.id, payload);
+      setNotice(res?.message || "Purchase order created from the approved request.");
       setCreatingPOFromPR(null);
       openPurchase(`req-${pr.id}`);
       await load();
@@ -513,7 +513,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   /** What still needs doing in each list, shown on its tab. */
   const subTabCounts = useMemo<Partial<Record<Tab, number>>>(() => ({
     purchases: activePurchases,
-    requisitions: requisitions.filter((r) => ["draft", "submitted", "approved"].includes(tx(r.status, "draft").toLowerCase())).length,
+    requisitions: requisitions.filter((r) => ["draft", "submitted", "approved", "partially_ordered"].includes(tx(r.status, "draft").toLowerCase())).length,
     rfqs: rfqs.filter((r) => ["draft", "issued"].includes(tx(r.status, "draft").toLowerCase())).length,
     orders: orders.filter((r) => ["draft", "approved", "issued", "partially_received"].includes(tx(r.status, "draft").toLowerCase())).length,
     invoices: invoices.filter((r) => ["unmatched", "partial", "disputed"].includes(tx(r.match_status ?? r.matching_status, "unmatched").toLowerCase())).length,
@@ -622,7 +622,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
         )}
         {tab === "requisitions" && (
           <StatusChips value={prStatus} onChange={setPrStatus} rows={requisitions} statusOf={(r) => tx(r.status, "draft").toLowerCase()} amountOf={(r) => num(r.total_estimated ?? r.estimated_total)}
-            options={[["draft", "Draft"], ["submitted", "Awaiting approval"], ["approved", "Approved"], ["ordered", "Ordered"], ["rejected", "Rejected"]]} />
+            options={[["draft", "Draft"], ["submitted", "Awaiting approval"], ["approved", "Approved"], ["partially_ordered", "Part ordered"], ["ordered", "Ordered"], ["rejected", "Rejected"]]} />
         )}
         {tab === "rfqs" && (
           <StatusChips value={rfqStatus} onChange={setRfqStatus} rows={rfqs} statusOf={(r) => tx(r.status, "draft").toLowerCase()}
@@ -756,7 +756,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
         />
       )}
       {creatingRfqFromPR && <CreateRfqModal pr={creatingRfqFromPR} saving={saving === `rfq-${creatingRfqFromPR.id}`} onCreate={(payload) => void createRfq(creatingRfqFromPR, payload)} onClose={() => setCreatingRfqFromPR(null)} />}
-      {creatingPOFromPR && <CreatePOModal pr={creatingPOFromPR} suppliers={suppliers} saving={saving === `po-${creatingPOFromPR.id}`} onCreate={(supplierId, supplierSelectionReason) => void createPO(creatingPOFromPR, supplierId, supplierSelectionReason)} onClose={() => setCreatingPOFromPR(null)} />}
+      {creatingPOFromPR && <CreatePOModal pr={creatingPOFromPR} rfqs={rfqs} suppliers={suppliers} saving={saving === `po-${creatingPOFromPR.id}`} onCreate={(payload) => void createPO(creatingPOFromPR, payload)} onClose={() => setCreatingPOFromPR(null)} />}
       {editingPR && <EditPRModal pr={editingPR} onClose={() => setEditingPR(null)} onSaved={(message) => { setEditingPR(null); setNotice(message); void load(); }} />}
       {uploadingQuotesRfq && <UploadQuotesModal rfq={uploadingQuotesRfq} suppliers={suppliers} onClose={() => { setUploadingQuotesRfq(null); void load(); }} onDone={(message) => { setUploadingQuotesRfq(null); setNotice(message); void load(); }} />}
       {quotingRfq && <RfqResponseModal rfq={quotingRfq} suppliers={suppliers} saving={saving === `quote-${quotingRfq.id}`} onSubmit={(payload) => void recordQuote(quotingRfq, payload)} onClose={() => setQuotingRfq(null)} />}

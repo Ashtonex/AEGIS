@@ -132,11 +132,17 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "Direct purchase order creation requires a supplier selection rationale.",
             PROC,
         )
+        # Ordering from suppliers line by line: a reason is needed unless every
+        # ordered line is priced from that supplier's quotation.
+        self.assertIn(
+            "Give the reason these suppliers were chosen: some lines are not priced from a quotation.",
+            PROC,
+        )
         page = PROCUREMENT_PAGE
-        self.assertIn("supplierSelectionReason", page)
         self.assertIn("Supplier selection rationale", page)
-        self.assertIn("notes: supplierSelectionReason", page)
-        self.assertIn("supplierSelectionReason.trim().length < 12", page)
+        self.assertIn("needsReason(rows)", page)
+        self.assertIn("reason.trim().length >= 12", page)
+        self.assertIn("selection_reason: reason.trim() || null", page)
 
     def test_rfq_frontend_contracts_are_exposed(self):
         for api in [

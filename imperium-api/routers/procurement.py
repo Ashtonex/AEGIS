@@ -153,6 +153,37 @@ class PurchaseOrderFromRequisition(Payload):
     notes: Optional[str] = None
 
 
+class SupplierOrderLinePayload(Payload):
+    """One requisition line (or part of it) given to one supplier."""
+
+    requisition_line_id: UUID
+    supplier_id: UUID
+    quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
+    unit_price: Decimal = Field(ge=0, max_digits=15, decimal_places=4)
+    # The supplier quotation this price came from, when there is one.
+    rfq_response_id: Optional[UUID] = None
+
+
+class SupplierOrderTermsPayload(Payload):
+    """Per-supplier terms for the PO that supplier gets."""
+
+    supplier_id: UUID
+    tax_amount: Decimal = Field(
+        default=Decimal("0"), ge=0, max_digits=15, decimal_places=2
+    )
+    required_by_date: Optional[date] = None
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SupplierOrdersPayload(Payload):
+    lines: list[SupplierOrderLinePayload] = Field(min_length=1, max_length=500)
+    suppliers: list[SupplierOrderTermsPayload] = Field(default_factory=list, max_length=100)
+    delivery_address: Optional[str] = None
+    required_by_date: Optional[date] = None
+    # Required unless every line is priced from a supplier quotation.
+    selection_reason: Optional[str] = Field(default=None, max_length=2000)
+
+
 class IssuePoPayload(Payload):
     notes: Optional[str] = None
     # SUPERADMIN only: issue without the Finance / director sign-offs. The
@@ -691,10 +722,21 @@ async def list_requisitions(
     rows = await db.execute(
         text(f"""
         SELECT pr.*, p.name AS project_name,
-               COALESCE(jsonb_agg(to_jsonb(rl) ORDER BY rl.created_at) FILTER (WHERE rl.id IS NOT NULL), '[]'::jsonb) AS lines
+               COALESCE(jsonb_agg(
+                   to_jsonb(rl) || jsonb_build_object('quantity_ordered', COALESCE(o.ordered, 0))
+                   ORDER BY rl.created_at
+               ) FILTER (WHERE rl.id IS NOT NULL), '[]'::jsonb) AS lines
         FROM procurement.purchase_requisitions pr
         LEFT JOIN projects.projects p ON p.id=pr.project_id AND p.organization_id=pr.organization_id
         LEFT JOIN procurement.requisition_lines rl ON rl.requisition_id=pr.id AND rl.organization_id=pr.organization_id AND rl.is_deleted=false
+        -- How much of each line is on live purchase orders (line-level ordering).
+        LEFT JOIN LATERAL (
+            SELECT SUM(pol.quantity) AS ordered
+            FROM procurement.purchase_order_lines pol
+            JOIN procurement.purchase_orders po ON po.id=pol.po_id AND po.organization_id=pol.organization_id
+            WHERE pol.requisition_line_id=rl.id AND pol.organization_id=rl.organization_id
+              AND pol.is_deleted=false AND po.is_deleted=false AND po.status <> 'cancelled'
+        ) o ON true
         WHERE pr.organization_id=:org_id AND pr.is_deleted=false
           AND ({scope_sql} OR pr.requested_by=CAST(:scope_user_id AS uuid))
           AND (CAST(:status AS varchar) IS NULL OR pr.status=CAST(:status AS varchar))
@@ -1203,13 +1245,17 @@ async def generate_replenishment_drafts(
 
 
 async def requisition_or_404(
-    db: AsyncSession, req_id: UUID, org_id: str
+    db: AsyncSession, req_id: UUID, org_id: str, *, for_update: bool = False
 ) -> dict[str, Any]:
+    # FOR UPDATE serialises PO creation on one requisition, so two buyers (or a
+    # double click) can't both order the same remaining quantity.
+    lock = " FOR UPDATE" if for_update else ""
     row = (
         (
             await db.execute(
                 text(
                     "SELECT * FROM procurement.purchase_requisitions WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+                    + lock
                 ),
                 {"id": req_id, "org_id": org_id},
             )
@@ -1220,6 +1266,104 @@ async def requisition_or_404(
     if not row:
         raise HTTPException(status_code=404, detail="Purchase requisition not found")
     return dict(row)
+
+
+# A requisition can be ordered from in pieces while it is in one of these.
+ORDERABLE_REQUISITION_STATUSES = {"approved", "partially_ordered"}
+# Statuses the ordering progress (approved / partially_ordered / ordered) moves between.
+ORDER_PROGRESS_STATUSES = ("approved", "partially_ordered", "ordered")
+
+
+async def requisition_lines_with_ordered(
+    db: AsyncSession, req_id: UUID, org_id: str
+) -> list[dict[str, Any]]:
+    """The requisition's live lines, each with quantity_ordered (on purchase
+    orders that are not cancelled) and quantity_remaining."""
+    rows = (
+        (
+            await db.execute(
+                text("""
+        SELECT rl.*, COALESCE(o.ordered, 0) AS quantity_ordered
+        FROM procurement.requisition_lines rl
+        LEFT JOIN LATERAL (
+            SELECT SUM(pol.quantity) AS ordered
+            FROM procurement.purchase_order_lines pol
+            JOIN procurement.purchase_orders po
+              ON po.id = pol.po_id AND po.organization_id = pol.organization_id
+            WHERE pol.requisition_line_id = rl.id AND pol.organization_id = rl.organization_id
+              AND pol.is_deleted = false AND po.is_deleted = false AND po.status <> 'cancelled'
+        ) o ON true
+        WHERE rl.requisition_id = :id AND rl.organization_id = :org_id AND rl.is_deleted = false
+        ORDER BY rl.created_at, rl.id
+    """),
+                {"id": req_id, "org_id": org_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    lines = []
+    for row in rows:
+        line = dict(row)
+        quantity = Decimal(str(line["quantity"]))
+        ordered = Decimal(str(line["quantity_ordered"] or 0))
+        line["quantity_ordered"] = ordered
+        line["quantity_remaining"] = max(quantity - ordered, Decimal("0"))
+        lines.append(line)
+    return lines
+
+
+def requisition_order_status(lines: list[dict[str, Any]]) -> str:
+    """approved (nothing on order), partially_ordered, or ordered (every line
+    fully on a purchase order)."""
+    if lines and all(line["quantity_remaining"] <= 0 for line in lines):
+        return "ordered"
+    if any(line["quantity_ordered"] > 0 for line in lines):
+        return "partially_ordered"
+    return "approved"
+
+
+async def refresh_requisition_order_status(
+    db: AsyncSession, *, org_id: str, req_id: UUID
+) -> Optional[str]:
+    """Re-derive a requisition's ordering status from its PO lines.
+
+    Requisitions ordered before line-level ordering (a live PO with lines not
+    linked to a requisition line) keep the status they have: their PO lines
+    can't be counted against the requisition lines. Returns the status after
+    the refresh, or None when it was left alone."""
+    legacy = (
+        await db.execute(
+            text("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM procurement.purchase_order_lines pol
+                JOIN procurement.purchase_orders po
+                  ON po.id = pol.po_id AND po.organization_id = pol.organization_id
+                WHERE po.requisition_id = :id AND po.organization_id = :org_id
+                  AND po.is_deleted = false AND po.status <> 'cancelled'
+                  AND pol.is_deleted = false AND pol.requisition_line_id IS NULL
+            )
+        """),
+            {"id": req_id, "org_id": org_id},
+        )
+    ).scalar()
+    if legacy:
+        return None
+    lines = await requisition_lines_with_ordered(db, req_id, org_id)
+    if not lines:
+        return None
+    new_status = requisition_order_status(lines)
+    await db.execute(
+        text("""
+        UPDATE procurement.purchase_requisitions
+        SET status = CAST(:status AS varchar), updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id
+          AND status = ANY(:progress) AND status <> CAST(:status AS varchar)
+    """),
+        {"id": req_id, "org_id": org_id, "status": new_status, "progress": list(ORDER_PROGRESS_STATUSES)},
+    )
+    return new_status
 
 
 @router.post("/requisitions/{req_id}/submit")
@@ -1465,6 +1609,26 @@ async def amend_requisition(
         if unknown:
             raise HTTPException(status_code=422, detail="One or more lines do not belong to this requisition.")
         removed = existing - kept
+        # What is already on a purchase order can't be taken off the requisition.
+        ordered = {
+            str(line["id"]): line
+            for line in await requisition_lines_with_ordered(db, req_id, user["org_id"])
+            if line["quantity_ordered"] > 0
+        }
+        for line_id in removed & ordered.keys():
+            raise HTTPException(
+                status_code=409,
+                detail=f"'{ordered[line_id]['description']}' is already on a purchase order and can't be removed.",
+            )
+        for line in payload.lines:
+            if line.id and str(line.id) in ordered and line.qty < ordered[str(line.id)]["quantity_ordered"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"'{line.description}': {ordered[str(line.id)]['quantity_ordered'].normalize():f} is already on "
+                        "purchase orders, so the quantity can't go below that."
+                    ),
+                )
         if removed:
             await db.execute(
                 text("""
@@ -1539,6 +1703,11 @@ async def amend_requisition(
             },
         )
     ).first()
+    new_status = req_status
+    if payload.lines is not None and req_status in ORDER_PROGRESS_STATUSES:
+        # Added or enlarged lines put an ordered requisition back to partly
+        # ordered; trimmed ones can finish it.
+        new_status = await refresh_requisition_order_status(db, org_id=user["org_id"], req_id=req_id) or req_status
     await emit_event(
         db,
         user=user,
@@ -1547,7 +1716,8 @@ async def amend_requisition(
         aggregate_id=req_id,
         project_id=req["project_id"],
         payload={
-            "status": req_status,
+            "status": new_status,
+            "status_before": req_status,
             "reason": payload.reason,
             "fields": sorted(fields),
             "lines_replaced": payload.lines is not None,
@@ -1558,7 +1728,7 @@ async def amend_requisition(
     )
     await db.commit()
     return ok(
-        {"id": str(req_id), "status": req_status, "total_estimated": float(new_total.total_estimated),
+        {"id": str(req_id), "status": new_status, "total_estimated": float(new_total.total_estimated),
          "amendment_count": new_total.amendment_count},
         "Purchase requisition amended.",
     )
@@ -1573,7 +1743,7 @@ async def list_rfqs(
 ):
     rows = await db.execute(
         text("""
-        SELECT rfq.*, pr.requisition_number, p.name AS project_name,
+        SELECT rfq.*, pr.requisition_number, pr.status AS requisition_status, p.name AS project_name,
                notice.reference AS notice_reference, notice.is_published AS notice_published,
                COALESCE((
                  SELECT jsonb_agg(
@@ -2453,6 +2623,375 @@ async def link_document(
     )
 
 
+async def insert_supplier_purchase_order(
+    db: AsyncSession,
+    *,
+    user: dict,
+    req: dict[str, Any],
+    supplier_id: UUID,
+    lines: list[dict[str, Any]],
+    title: Optional[str],
+    delivery_address: Optional[str],
+    required_by_date: Optional[date],
+    tax_amount: Decimal,
+    notes: Optional[str],
+    rfq_id: Optional[UUID] = None,
+    rfq_response_id: Optional[UUID] = None,
+) -> dict[str, Any]:
+    """Raise one draft PO to one supplier for some of a requisition's lines.
+
+    Each entry of `lines` is {"req_line": <requisition line row>, "quantity",
+    "unit_price"}; the PO line keeps the requisition line's item, description
+    and unit, and links back to it through requisition_line_id."""
+    priced = []
+    for entry in lines:
+        quantity = Decimal(str(entry["quantity"]))
+        unit_price = Decimal(str(entry["unit_price"]))
+        priced.append((entry, quantity, unit_price, (quantity * unit_price).quantize(Decimal("0.01"))))
+    subtotal = sum((p[3] for p in priced), Decimal("0.00"))
+    po_no = await next_number(db, user["org_id"], "purchase_order", "PO")
+    po_id = (
+        await db.execute(
+            text("""
+        INSERT INTO procurement.purchase_orders (
+            organization_id, po_number, requisition_id, rfq_id, rfq_response_id, supplier_id,
+            project_id, site_id, cost_code_id, title, delivery_address, required_by_date,
+            subtotal, tax_amount, total_amount, notes, created_by
+        ) VALUES (
+            :org_id, :number, :req_id, :rfq_id, :response_id, :supplier_id,
+            :project_id, :site_id, :cost_code_id, :title, :delivery_address, :required_by_date,
+            :subtotal, :tax, :total, :notes, :user_id
+        ) RETURNING id
+    """),
+            {
+                "org_id": user["org_id"],
+                "number": po_no,
+                "req_id": req["id"],
+                "rfq_id": rfq_id,
+                "response_id": rfq_response_id,
+                "supplier_id": supplier_id,
+                "project_id": req["project_id"],
+                "site_id": req["site_id"],
+                "cost_code_id": req["cost_code_id"],
+                "title": title or req["requisition_number"],
+                "delivery_address": delivery_address,
+                "required_by_date": required_by_date or req["required_by_date"],
+                "subtotal": subtotal,
+                "tax": tax_amount,
+                "total": subtotal + tax_amount,
+                "notes": notes,
+                "user_id": user["user_id"],
+            },
+        )
+    ).scalar()
+    for entry, quantity, unit_price, line_total in priced:
+        req_line = entry["req_line"]
+        await db.execute(
+            text("""
+            INSERT INTO procurement.purchase_order_lines (
+                organization_id, po_id, requisition_line_id, item_id, description, quantity,
+                unit_of_measure, unit_price, line_total, notes
+            ) VALUES (
+                :org_id, :po_id, :req_line_id, :item_id, :description, :quantity,
+                :uom, :unit_price, :line_total, :notes
+            )
+        """),
+            {
+                "org_id": user["org_id"],
+                "po_id": po_id,
+                "req_line_id": req_line["id"],
+                "item_id": req_line["item_id"],
+                "description": req_line["description"],
+                "quantity": quantity,
+                "uom": req_line["unit_of_measure"],
+                "unit_price": unit_price,
+                "line_total": line_total,
+                "notes": req_line["notes"],
+            },
+        )
+    return {"id": po_id, "po_number": po_no, "subtotal": subtotal, "line_count": len(priced)}
+
+
+async def flag_rate_outliers(
+    db: AsyncSession,
+    *,
+    user: dict,
+    req: dict[str, Any],
+    po_id: UUID,
+    po_no: str,
+    priced_lines: list[tuple[str, Decimal]],
+) -> list[str]:
+    """CCB rate interception: compare each (description, unit price) on a new
+    PO with the rate library and record any outliers for commercial audit."""
+    outliers = []
+    for description, unit_price in priced_lines:
+        result = RateIntelligenceEngine.evaluate_rate(description or "Item", float(unit_price or 0))
+        if result.get("is_outlier"):
+            outliers.append(result.get("recommendation"))
+    if outliers:
+        try:
+            # A savepoint keeps a failed audit insert from poisoning the PO's
+            # transaction; the audit row is best effort.
+            async with db.begin_nested():
+                await db.execute(
+                    text("""
+                    INSERT INTO finance.commercial_guard_audits (
+                        organization_id, project_id, requester_id, requester_name, document_type,
+                        item_description, input_amount, status, anomaly_reason, evidence_pack
+                    ) VALUES (
+                        :org_id, :project_id, :requester_id, :requester_name, 'PURCHASE_ORDER',
+                        :item, 0, 'FLAGGED', :reason, :evidence
+                    )
+                """),
+                    {
+                        "org_id": user["org_id"],
+                        "project_id": str(req["project_id"]) if req.get("project_id") else None,
+                        "requester_id": user["user_id"],
+                        "requester_name": user.get("email", "Buyer"),
+                        "item": f"PO {po_no} Rate Outlier",
+                        "reason": " | ".join(str(o) for o in outliers),
+                        "evidence": json.dumps({"po_id": str(po_id), "outliers": outliers}, default=str),
+                    },
+                )
+        except Exception:
+            logger.warning("Could not record CCB rate outliers for %s", po_no, exc_info=True)
+    return outliers
+
+
+@router.post("/requisitions/{req_id}/purchase-orders", status_code=status.HTTP_201_CREATED)
+async def create_supplier_purchase_orders(
+    req_id: UUID,
+    payload: SupplierOrdersPayload,
+    user: dict = Depends(require_permission("procurement.po.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Order an approved requisition from several suppliers at once.
+
+    Each payload line gives a requisition line - or part of it - to one
+    supplier at a price. One draft PO is raised per supplier, each going
+    through its own Finance and director sign-off. Lines (or quantities) left
+    out stay on the requisition, which is then 'partially_ordered' until the
+    rest is ordered."""
+    req = await requisition_or_404(db, req_id, user["org_id"], for_update=True)
+    if req["status"] not in ORDERABLE_REQUISITION_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Only an approved requisition with items still to order can be ordered.",
+        )
+    req_lines = {str(line["id"]): line for line in await requisition_lines_with_ordered(db, req_id, user["org_id"])}
+
+    # Each requisition line can go to a supplier once per order run; the
+    # quantities given across suppliers can't exceed what is still to order.
+    seen: set[tuple[str, str]] = set()
+    allocated: dict[str, Decimal] = {}
+    for line in payload.lines:
+        key = str(line.requisition_line_id)
+        if key not in req_lines:
+            raise HTTPException(status_code=422, detail="One or more lines do not belong to this requisition.")
+        pair = (key, str(line.supplier_id))
+        if pair in seen:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{req_lines[key]['description']}' is given to the same supplier twice; combine the quantities.",
+            )
+        seen.add(pair)
+        allocated[key] = allocated.get(key, Decimal("0")) + line.quantity
+    for key, quantity in allocated.items():
+        remaining = req_lines[key]["quantity_remaining"]
+        if quantity > remaining:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"'{req_lines[key]['description']}': {quantity.normalize():f} given to suppliers, "
+                    f"but only {remaining.normalize():f} {req_lines[key]['unit_of_measure']} is still to order."
+                ),
+            )
+
+    supplier_ids = list(dict.fromkeys(str(line.supplier_id) for line in payload.lines))
+    supplier_names = {
+        str(row.id): row.supplier_name
+        for row in await db.execute(
+            text("""
+            SELECT id, supplier_name FROM procurement.suppliers
+            WHERE organization_id = :org_id AND is_deleted = false AND id = ANY(CAST(:ids AS uuid[]))
+        """),
+            {"org_id": user["org_id"], "ids": supplier_ids},
+        )
+    }
+    if len(supplier_names) != len(supplier_ids):
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    terms: dict[str, SupplierOrderTermsPayload] = {}
+    for term in payload.suppliers:
+        key = str(term.supplier_id)
+        if key not in supplier_names:
+            raise HTTPException(status_code=422, detail="Supplier terms were given for a supplier with no lines.")
+        if key in terms:
+            raise HTTPException(status_code=422, detail="Each supplier's terms can be given once.")
+        terms[key] = term
+
+    # Quoted prices must come from a quotation on this requisition, by the
+    # supplier the line is being given to.
+    response_ids = list(dict.fromkeys(str(line.rfq_response_id) for line in payload.lines if line.rfq_response_id))
+    responses: dict[str, Any] = {}
+    if response_ids:
+        responses = {
+            str(row.id): row
+            for row in await db.execute(
+                text("""
+                SELECT rr.id, rr.supplier_id, rr.rfq_id, rr.reference
+                FROM procurement.rfq_responses rr
+                JOIN procurement.rfqs rfq ON rfq.id = rr.rfq_id AND rfq.organization_id = rr.organization_id
+                WHERE rr.organization_id = :org_id AND rr.is_deleted = false AND rfq.is_deleted = false
+                  AND rfq.requisition_id = :req_id AND rfq.status <> 'cancelled'
+                  AND rr.id = ANY(CAST(:ids AS uuid[]))
+            """),
+                {"org_id": user["org_id"], "req_id": req_id, "ids": response_ids},
+            )
+        }
+    for line in payload.lines:
+        if line.rfq_response_id:
+            response = responses.get(str(line.rfq_response_id))
+            if response is None:
+                raise HTTPException(status_code=422, detail="A quotation used for pricing is not on this requisition.")
+            if str(response.supplier_id) != str(line.supplier_id):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{req_lines[str(line.requisition_line_id)]['description']}' is priced from another supplier's quotation.",
+                )
+    reason = (payload.selection_reason or "").strip()
+    if any(line.rfq_response_id is None for line in payload.lines) and len(reason) < 12:
+        raise HTTPException(
+            status_code=422,
+            detail="Give the reason these suppliers were chosen: some lines are not priced from a quotation.",
+        )
+
+    created = []
+    ccb_outliers: list[str] = []
+    for supplier_id in supplier_ids:
+        mine = [line for line in payload.lines if str(line.supplier_id) == supplier_id]
+        quote_ids = {str(line.rfq_response_id) for line in mine if line.rfq_response_id}
+        # The PO is tied to a quotation only when every line came from that one quote.
+        single_quote = (
+            responses[next(iter(quote_ids))]
+            if len(quote_ids) == 1 and all(line.rfq_response_id for line in mine)
+            else None
+        )
+        term = terms.get(supplier_id)
+        notes = (term.notes if term and term.notes else None) or reason or (
+            f"Ordered from quotation {single_quote.reference or single_quote.id}" if single_quote else None
+        )
+        po = await insert_supplier_purchase_order(
+            db,
+            user=user,
+            req=req,
+            supplier_id=UUID(supplier_id),
+            lines=[
+                {"req_line": req_lines[str(line.requisition_line_id)], "quantity": line.quantity, "unit_price": line.unit_price}
+                for line in mine
+            ],
+            title=None,
+            delivery_address=payload.delivery_address,
+            required_by_date=(term.required_by_date if term else None) or payload.required_by_date,
+            tax_amount=term.tax_amount if term else Decimal("0"),
+            notes=notes,
+            rfq_id=single_quote.rfq_id if single_quote else None,
+            rfq_response_id=single_quote.id if single_quote else None,
+        )
+        await emit_event(
+            db,
+            user=user,
+            event_type="procurement.purchase_order.created.v1",
+            aggregate_type="purchase_order",
+            aggregate_id=po["id"],
+            project_id=req["project_id"],
+            payload={
+                "po_number": po["po_number"],
+                "requisition_id": str(req_id),
+                "supplier_id": supplier_id,
+                "requisition_line_ids": [str(line.requisition_line_id) for line in mine],
+                "multi_supplier": len(supplier_ids) > 1,
+            },
+        )
+        ccb_outliers += await flag_rate_outliers(
+            db,
+            user=user,
+            req=req,
+            po_id=po["id"],
+            po_no=po["po_number"],
+            priced_lines=[(req_lines[str(line.requisition_line_id)]["description"], line.unit_price) for line in mine],
+        )
+        created.append({
+            "id": str(po["id"]),
+            "po_number": po["po_number"],
+            "supplier_id": supplier_id,
+            "supplier_name": supplier_names[supplier_id],
+            "subtotal": float(po["subtotal"]),
+            "line_count": po["line_count"],
+        })
+
+    if response_ids:
+        await db.execute(
+            text("""
+            UPDATE procurement.rfq_responses
+            SET status = 'selected', updated_at = NOW()
+            WHERE organization_id = :org_id AND id = ANY(CAST(:ids AS uuid[])) AND status <> 'selected'
+        """),
+            {"org_id": user["org_id"], "ids": response_ids},
+        )
+    new_status = await refresh_requisition_order_status(db, org_id=user["org_id"], req_id=req_id) or req["status"]
+    if new_status == "ordered":
+        # Fully ordered: quotations nobody used are not going to be.
+        await db.execute(
+            text("""
+            UPDATE procurement.rfq_responses rr
+            SET status = 'rejected', updated_at = NOW()
+            FROM procurement.rfqs rfq
+            WHERE rfq.id = rr.rfq_id AND rfq.organization_id = rr.organization_id
+              AND rfq.requisition_id = :req_id AND rr.organization_id = :org_id
+              AND rr.is_deleted = false AND rr.status IN ('received', 'evaluated')
+        """),
+            {"org_id": user["org_id"], "req_id": req_id},
+        )
+        await db.execute(
+            text("""
+            UPDATE procurement.rfqs SET status = 'closed', updated_at = NOW()
+            WHERE organization_id = :org_id AND requisition_id = :req_id
+              AND is_deleted = false AND status = 'issued'
+        """),
+            {"org_id": user["org_id"], "req_id": req_id},
+        )
+
+    po_list = ", ".join(f"{po['po_number']} ({po['supplier_name']})" for po in created)
+    await emit_notification(
+        db,
+        org_id=user["org_id"],
+        user_id=str(req["requested_by"]),
+        title="Requisition ordered" if new_status == "ordered" else "Requisition partly ordered",
+        message=(
+            f"Your requisition {req['requisition_number']} is on purchase order"
+            f"{'s' if len(created) > 1 else ''} {po_list}."
+            + ("" if new_status == "ordered" else " Some items are still to be ordered.")
+        ),
+        action_url="/dashboard/procurement?tab=orders",
+    )
+    await db.commit()
+    return ok(
+        {
+            "requisition_id": str(req_id),
+            "requisition_status": new_status,
+            "purchase_orders": created,
+            "ccb_audit": {
+                "flagged": bool(ccb_outliers),
+                "outliers_count": len(ccb_outliers),
+                "warnings": ccb_outliers,
+            },
+        },
+        f"{len(created)} purchase order{'s' if len(created) > 1 else ''} created."
+        + ("" if new_status == "ordered" else " Some items are still to order."),
+    )
+
+
 @router.post("/purchase-orders/from-rfq", status_code=status.HTTP_201_CREATED)
 async def create_purchase_order_from_rfq(
     payload: PurchaseOrderFromRfq,
@@ -2465,25 +3004,20 @@ async def create_purchase_order_from_rfq(
             status_code=409,
             detail="Purchase order requires a selected supplier quotation.",
         )
-    req = await requisition_or_404(db, response["requisition_id"], user["org_id"])
+    req = await requisition_or_404(db, response["requisition_id"], user["org_id"], for_update=True)
+    if req["status"] == "partially_ordered":
+        # The quote total covers the whole requisition, so it can't price the
+        # part still to order. Those lines are ordered line by line instead.
+        raise HTTPException(
+            status_code=409,
+            detail="Part of this requisition is already on order. Order the rest line by line, using the quoted prices.",
+        )
     if req["status"] != "approved":
         raise HTTPException(
             status_code=409, detail="Purchase order requires an approved requisition."
         )
     rfq = await rfq_or_404(db, response["rfq_id"], user["org_id"])
-    lines = (
-        (
-            await db.execute(
-                text("""
-        SELECT * FROM procurement.requisition_lines
-        WHERE requisition_id=:id AND organization_id=:org_id AND is_deleted=false
-    """),
-                {"id": response["requisition_id"], "org_id": user["org_id"]},
-            )
-        )
-        .mappings()
-        .all()
-    )
+    lines = await requisition_lines_with_ordered(db, response["requisition_id"], user["org_id"])
     subtotal = Decimal(str(response["total_amount"] or 0))
     po_no = await next_number(db, user["org_id"], "purchase_order", "PO")
     po_id = (
@@ -2550,16 +3084,17 @@ async def create_purchase_order_from_rfq(
             await db.execute(
                 text("""
                 INSERT INTO procurement.purchase_order_lines (
-                    organization_id, po_id, item_id, description, quantity,
+                    organization_id, po_id, requisition_line_id, item_id, description, quantity,
                     unit_of_measure, unit_price, line_total, notes
                 ) VALUES (
-                    :org_id, :po_id, :item_id, :description, :quantity,
+                    :org_id, :po_id, :req_line_id, :item_id, :description, :quantity,
                     :uom, :unit_price, :line_total, :notes
                 )
             """),
                 {
                     "org_id": user["org_id"],
                     "po_id": po_id,
+                    "req_line_id": line["id"],
                     "item_id": line["item_id"],
                     "description": line["description"],
                     "quantity": line["quantity"],
@@ -2587,12 +3122,15 @@ async def create_purchase_order_from_rfq(
                 "notes": "Generated from RFQ response total.",
             },
         )
-    await db.execute(
-        text(
-            "UPDATE procurement.purchase_requisitions SET status='ordered', updated_at=NOW() WHERE id=:id"
-        ),
-        {"id": response["requisition_id"]},
-    )
+        # No requisition lines to link the 'lot' line to: ordered outright.
+        await db.execute(
+            text(
+                "UPDATE procurement.purchase_requisitions SET status='ordered', updated_at=NOW() WHERE id=:id"
+            ),
+            {"id": response["requisition_id"]},
+        )
+    if lines:
+        await refresh_requisition_order_status(db, org_id=user["org_id"], req_id=response["requisition_id"])
     await emit_event(
         db,
         user=user,
@@ -2628,8 +3166,13 @@ async def create_purchase_order(
     user: dict = Depends(require_permission("procurement.po.create")),
     db: AsyncSession = Depends(get_db),
 ):
-    req = await requisition_or_404(db, payload.requisition_id, user["org_id"])
-    if req["status"] != "approved":
+    """One supplier for everything still to order on the requisition, at the
+    estimated prices. To split it across suppliers use
+    POST /requisitions/{id}/purchase-orders."""
+    req = await requisition_or_404(db, payload.requisition_id, user["org_id"], for_update=True)
+    if req["status"] == "ordered":
+        raise HTTPException(status_code=409, detail="Everything on this requisition is already on order.")
+    if req["status"] not in ORDERABLE_REQUISITION_STATUSES:
         raise HTTPException(
             status_code=409, detail="Purchase order requires an approved requisition."
         )
@@ -2648,83 +3191,30 @@ async def create_purchase_order(
     ).scalar()
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
-    lines = (
-        (
-            await db.execute(
-                text(
-                    "SELECT * FROM procurement.requisition_lines WHERE requisition_id=:id AND organization_id=:org_id AND is_deleted=false"
-                ),
-                {"id": payload.requisition_id, "org_id": user["org_id"]},
-            )
-        )
-        .mappings()
-        .all()
+    to_order = [
+        line
+        for line in await requisition_lines_with_ordered(db, payload.requisition_id, user["org_id"])
+        if line["quantity_remaining"] > 0
+    ]
+    if not to_order:
+        raise HTTPException(status_code=409, detail="Everything on this requisition is already on order.")
+    po = await insert_supplier_purchase_order(
+        db,
+        user=user,
+        req=req,
+        supplier_id=payload.supplier_id,
+        lines=[
+            {"req_line": line, "quantity": line["quantity_remaining"], "unit_price": line["estimated_unit_cost"] or 0}
+            for line in to_order
+        ],
+        title=payload.title,
+        delivery_address=payload.delivery_address,
+        required_by_date=payload.required_by_date,
+        tax_amount=payload.tax_amount,
+        notes=payload.notes,
     )
-    subtotal = sum(
-        (
-            Decimal(str(line["quantity"])) * Decimal(str(line["estimated_unit_cost"] or 0))
-            for line in lines
-        ),
-        Decimal("0"),
-    )
-    po_no = await next_number(db, user["org_id"], "purchase_order", "PO")
-    po_id = (
-        await db.execute(
-            text("""
-        INSERT INTO procurement.purchase_orders (
-            organization_id, po_number, requisition_id, supplier_id, project_id, site_id, cost_code_id,
-            title, delivery_address, required_by_date, subtotal, tax_amount, total_amount, notes, created_by
-        ) VALUES (
-            :org_id, :number, :req_id, :supplier_id, :project_id, :site_id, :cost_code_id,
-            :title, :delivery_address, :required_by_date, :subtotal, :tax, :total, :notes, :user_id
-        ) RETURNING id
-    """),
-            {
-                "org_id": user["org_id"],
-                "number": po_no,
-                "req_id": payload.requisition_id,
-                "supplier_id": payload.supplier_id,
-                "project_id": req["project_id"],
-                "site_id": req["site_id"],
-                "cost_code_id": req["cost_code_id"],
-                "title": payload.title or req["requisition_number"],
-                "delivery_address": payload.delivery_address,
-                "required_by_date": payload.required_by_date or req["required_by_date"],
-                "subtotal": subtotal,
-                "tax": payload.tax_amount,
-                "total": subtotal + payload.tax_amount,
-                "notes": payload.notes,
-                "user_id": user["user_id"],
-            },
-        )
-    ).scalar()
-    for line in lines:
-        line_total = Decimal(str(line["quantity"])) * Decimal(
-            str(line["estimated_unit_cost"] or 0)
-        )
-        await db.execute(
-            text("""
-            INSERT INTO procurement.purchase_order_lines (organization_id, po_id, item_id, description, quantity, unit_of_measure, unit_price, line_total, notes)
-            VALUES (:org_id, :po_id, :item_id, :description, :quantity, :uom, :unit_price, :line_total, :notes)
-        """),
-            {
-                "org_id": user["org_id"],
-                "po_id": po_id,
-                "item_id": line["item_id"],
-                "description": line["description"],
-                "quantity": line["quantity"],
-                "uom": line["unit_of_measure"],
-                "unit_price": line["estimated_unit_cost"] or 0,
-                "line_total": line_total,
-                "notes": line["notes"],
-            },
-        )
-    await db.execute(
-        text(
-            "UPDATE procurement.purchase_requisitions SET status='ordered', updated_at=NOW() WHERE id=:id"
-        ),
-        {"id": payload.requisition_id},
-    )
+    po_id, po_no = po["id"], po["po_number"]
+    await refresh_requisition_order_status(db, org_id=user["org_id"], req_id=payload.requisition_id)
     await emit_event(
         db,
         user=user,
@@ -2742,43 +3232,14 @@ async def create_purchase_order(
         message=f"Your requisition {req['requisition_number']} is now purchase order {po_no}.",
         action_url="/dashboard/procurement?tab=orders",
     )
-
-    # CCB Rate Interception & Commercial Audit Check
-    ccb_outliers = []
-    for line in lines:
-        desc = str(line.get("description") or "Item")
-        unit_price = float(line.get("estimated_unit_cost") or 0)
-        eval_res = RateIntelligenceEngine.evaluate_rate(desc, unit_price)
-        if eval_res.get("is_outlier"):
-            ccb_outliers.append(eval_res.get("recommendation"))
-
-    if ccb_outliers:
-        try:
-            await db.execute(
-                text(
-                    """
-                    INSERT INTO finance.commercial_guard_audits (
-                        organization_id, project_id, requester_id, requester_name, document_type,
-                        item_description, input_amount, status, anomaly_reason, evidence_pack
-                    ) VALUES (
-                        :org_id, :project_id, :requester_id, :requester_name, 'PURCHASE_ORDER',
-                        :item, 0, 'FLAGGED', :reason, :evidence
-                    )
-                    """
-                ),
-                {
-                    "org_id": user["org_id"],
-                    "project_id": str(req["project_id"]) if req.get("project_id") else None,
-                    "requester_id": user["user_id"],
-                    "requester_name": user.get("email", "Buyer"),
-                    "item": f"PO {po_no} Rate Outlier",
-                    "reason": " | ".join(ccb_outliers),
-                    "evidence": json.dumps({"po_id": str(po_id), "outliers": ccb_outliers}),
-                },
-            )
-        except Exception:
-            pass
-
+    ccb_outliers = await flag_rate_outliers(
+        db,
+        user=user,
+        req=req,
+        po_id=po_id,
+        po_no=po_no,
+        priced_lines=[(str(line.get("description") or "Item"), line["estimated_unit_cost"] or 0) for line in to_order],
+    )
     await db.commit()
     return ok(
         {

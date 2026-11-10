@@ -76,6 +76,7 @@ export function prStatusClass(s: unknown): string {
   if (v === "submitted") return "border-blue-500/40 bg-blue-950/20 text-blue-300";
   if (v === "rejected") return "border-red-500/40 bg-red-950/20 text-red-300";
   if (v === "ordered") return "border-purple-500/40 bg-purple-950/20 text-purple-300";
+  if (v === "partially_ordered") return "border-amber-500/40 bg-amber-950/20 text-amber-300";
   return "border-slate-500/40 bg-slate-800/40 text-slate-400";
 }
 

@@ -242,7 +242,7 @@ async def run_budget_overrun_check(db: AsyncSession, org_id: Optional[str] = Non
 # requisition is no longer in an open state.
 # ---------------------------------------------------------------------------
 
-_OPEN_REQUISITION_STATUSES = ("submitted", "approved", "ordered")
+_OPEN_REQUISITION_STATUSES = ("submitted", "approved", "partially_ordered", "ordered")
 
 
 def _requisition_natural_key(project_id: str, requisition_id: str) -> str:
