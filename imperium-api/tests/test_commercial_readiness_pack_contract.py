@@ -43,6 +43,14 @@ class CommercialReadinessPackContractTests(unittest.TestCase):
         self.assertIn('commercial["status"] != "cleared"', PROJECTS_ROUTER)
         self.assertIn("Commercial readiness must be cleared before mobilisation", PROJECTS_ROUTER)
 
+    def test_fast_track_waiver_names_every_open_item(self):
+        # The server waives open items only when each is named as an accepted
+        # exception by someone who can authorise mobilisation.
+        self.assertIn("set(outstanding) <= accepted", PROJECTS_ROUTER)
+        self.assertIn('user_has_permission(db, user, "projects.registration.approve")', PROJECTS_ROUTER)
+        self.assertIn('statement["executive_waiver"] = waived', PROJECTS_ROUTER)
+        self.assertIn('"waived": waived', PROJECTS_ROUTER)
+
     def test_award_paths_open_commercial_readiness_task_stack(self):
         self.assertIn('"commercial_readiness": "commercial"', TASK_STACKS)
         for source in (TENDER_ROUTER, QUOTATIONS_ROUTER):

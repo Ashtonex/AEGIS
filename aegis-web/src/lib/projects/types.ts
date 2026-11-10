@@ -61,6 +61,8 @@ export type CommercialReadiness = {
   controls?: CommercialReadinessControl[];
   authority_status?: string;
   blockers?: string[];
+  /** Open items an executive accepted as exceptions when clearing (Fast-Track). */
+  waived?: string[];
   ready_count?: number;
   total?: number;
   ready?: boolean;

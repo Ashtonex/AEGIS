@@ -644,6 +644,16 @@ async def _commercial_readiness_summary(
     data = dict(row or {})
     pack = _normalize_commercial_readiness_pack(data.get("commercial_readiness_pack"))
     blockers = list(data.get("commercial_readiness_blockers") or _commercial_readiness_blockers(pack))
+    statement = data.get("commercial_clearance_statement")
+    statement = statement if isinstance(statement, dict) else {}
+    waived: list[str] = []
+    if data.get("commercial_readiness_status") == "cleared" and statement.get("executive_waiver"):
+        # Open items were accepted as executive exceptions: report the audited
+        # list recorded at clearance (it includes manual blockers that the
+        # pack alone cannot reproduce), not live blockers on a cleared pack.
+        recorded = statement.get("executive_exceptions_accepted")
+        waived = [str(item) for item in recorded] if isinstance(recorded, list) and recorded else blockers
+        blockers = []
     complete_count = sum(1 for key in COMMERCIAL_READINESS_CONTROLS if pack.get(key))
     return {
         "status": data.get("commercial_readiness_status") or "not_started",
@@ -654,7 +664,8 @@ async def _commercial_readiness_summary(
         ],
         "authority_status": pack.get("authority_status"),
         "blockers": blockers,
-        "clearance_statement": data.get("commercial_clearance_statement") or {},
+        "waived": waived,
+        "clearance_statement": statement,
         "cleared_at": data.get("commercial_cleared_at"),
         "cleared_by": data.get("commercial_cleared_by"),
         "total": len(COMMERCIAL_READINESS_CONTROLS),
@@ -2072,14 +2083,30 @@ async def clear_commercial_readiness(
     current = await _ensure_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
     pack = _normalize_commercial_readiness_pack(current.get("commercial_readiness_pack"))
     blockers = list(current.get("commercial_readiness_blockers") or _commercial_readiness_blockers(pack))
-    if blockers:
-        raise HTTPException(status_code=409, detail=f"Commercial readiness is blocked: {', '.join(blockers)}")
-
     incomplete = [label for key, label in COMMERCIAL_READINESS_CONTROLS.items() if not pack.get(key)]
-    if incomplete:
-        raise HTTPException(status_code=409, detail=f"Commercial readiness is incomplete: {', '.join(incomplete)}")
+    outstanding = list(dict.fromkeys(blockers + incomplete))
+
+    # Executive waiver (Fast-Track Mobilisation): an executive may clear with
+    # items still open, but only by naming every one of them as an accepted
+    # exception. The controls stay unticked, so the pack keeps showing what
+    # was waived rather than claiming it was done.
+    accepted = {item.strip() for item in payload.executive_exceptions_accepted if item and item.strip()}
+    waived = bool(outstanding) and set(outstanding) <= accepted
+    if waived and not await user_has_permission(db, user, "projects.registration.approve"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only an executive who can authorise mobilisation may waive open commercial readiness items.",
+        )
+    if not waived:
+        if blockers:
+            raise HTTPException(status_code=409, detail=f"Commercial readiness is blocked: {', '.join(blockers)}")
+        if incomplete:
+            raise HTTPException(status_code=409, detail=f"Commercial readiness is incomplete: {', '.join(incomplete)}")
 
     statement = payload.model_dump(mode="json")
+    statement["executive_waiver"] = waived
+    if waived:
+        statement["executive_exceptions_accepted"] = outstanding
     await db.execute(
         text("""
             UPDATE projects.project_profiles
