@@ -86,6 +86,7 @@ CATEGORY_LABELS = {
     "internal_transfer": "Internal transfer", "cash_withdrawal": "Cash withdrawal",
     "supplier_payment": "Supplier / materials", "subcontractor": "Subcontractor",
     "equipment_hire": "Equipment / plant hire", "fuel_transport": "Fuel & transport",
+    "consumables_supplies": "Consumables & supplies (food, water, cleaning, small items)",
     "salaries_wages": "Salaries & wages", "tax_statutory": "Tax & statutory",
     "bank_charges": "Bank charges & IMTT", "card_purchase": "Card / POS purchase",
     "owner_drawings": "Owner drawings", "tithe_donation": "Tithe / donation", "refund": "Refund",

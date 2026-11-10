@@ -7,6 +7,7 @@ update the running balance.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -21,6 +22,7 @@ from core.security import get_current_user, require_permission
 from app.services.finance import bank_reconciliation as reconciliation
 from app.services.finance import bank_books
 from app.services.finance import bank_rules
+from app.services.finance import hq_reserve
 from app.services.finance import project_entries
 from app.services.finance import bank_statement_pdf as statement_pdf
 from app.services.jobs.queue import enqueue_background_job
@@ -1193,3 +1195,57 @@ async def apply_tag_rules(
     if result["lines_tagged"]:
         await _queue_workbook_publish(org_id)
     return ok(result, f"{result['lines_tagged']} line(s) tagged by rules.")
+
+
+# ---------------------------------------------------------------------------
+# HQ office reserve: a % of each project's client receipts (migration 291)
+# ---------------------------------------------------------------------------
+
+class HqReserveProjectRate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: UUID
+    rate_pct: Decimal = Field(ge=0, le=100, decimal_places=2)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class HqReserveSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_active: bool
+    default_rate_pct: Decimal = Field(ge=0, le=100, decimal_places=2)
+    starts_on: date
+    project_rates: list[HqReserveProjectRate] = Field(default_factory=list, max_length=500)
+
+
+@router.get("/reconciliation/hq-reserve", summary="HQ office reserve: policy, contributions and spending")
+async def get_hq_reserve(
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    return ok(await hq_reserve.overview(db, org_id=org_id), "HQ reserve retrieved.")
+
+
+@router.put("/reconciliation/hq-reserve/settings", summary="Set the HQ reserve rate, start date and project overrides")
+async def save_hq_reserve_settings(
+    payload: HqReserveSettings,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    counts = await _entry_write(org_id, db, lambda: hq_reserve.save_settings(
+        db, org_id=org_id, user_id=user["sub"], is_active=payload.is_active,
+        default_rate_pct=payload.default_rate_pct, starts_on=payload.starts_on,
+        project_rates=[r.model_dump() for r in payload.project_rates]))
+    return ok({"counts": counts, **(await hq_reserve.overview(db, org_id=org_id))}, "HQ reserve settings saved.")
+
+
+@router.post("/reconciliation/hq-reserve/sync", summary="Bring HQ reserve contributions up to date")
+async def sync_hq_reserve(
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    counts = await _entry_write(org_id, db, lambda: hq_reserve.sync(db, org_id=org_id, user_id=user["sub"]))
+    return ok({"counts": counts, **(await hq_reserve.overview(db, org_id=org_id))}, "HQ reserve brought up to date.")

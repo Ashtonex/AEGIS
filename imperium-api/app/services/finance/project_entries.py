@@ -40,7 +40,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.finance import bank_books
+from app.services.finance import bank_books, hq_reserve
 from app.services.finance.bank_books import (
     EXCLUDED_FROM_PROJECT_BOOKS, HQ_PETTY, RECEIVABLE, cost_category, money_in_account, money_out_account,
 )
@@ -57,7 +57,7 @@ OUT_EXCLUDED = {"cash_withdrawal", "site_petty_cash", "internal_transfer", "reve
 PAYABLE_CLAIM_STATUSES = ("certified", "invoiced", "submitted")
 # What an office expense (no project) can be: each lands on a head-office
 # expense account (bank_books.money_out_account with has_project=False).
-OFFICE_CATEGORIES = ("rent", "utilities", "office_admin", "professional_fees", "insurance", "travel_accommodation",
+OFFICE_CATEGORIES = ("rent", "utilities", "office_admin", "consumables_supplies", "professional_fees", "insurance", "travel_accommodation",
                      "marketing", "salaries_wages", "bank_charges", "tax_statutory", "tithe_donation", "other")
 
 
@@ -267,6 +267,8 @@ async def create(db: AsyncSession, *, org_id: str, user_id: str, values: dict) -
     await _build(db, org_id, user_id, await _get(db, org_id, entry_id))
     if values["paid_via"] == "bank":
         await match(db, org_id=org_id, user_id=user_id, entry_ids=[entry_id])
+    if values.get("project_id") and values["direction"] == "in":
+        await hq_reserve.safe_sync(db, org_id=org_id, user_id=user_id)
     return await get_entry(db, org_id=org_id, entry_id=entry_id)
 
 
@@ -304,6 +306,8 @@ async def update(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID,
         await _tag_line_from_entry(db, user_id, entry, entry["matched_line_id"])
     elif entry["paid_via"] == "bank":
         await match(db, org_id=org_id, user_id=user_id, entry_ids=[entry_id])
+    if entry["project_id"] or values.get("project_id"):
+        await hq_reserve.safe_sync(db, org_id=org_id, user_id=user_id)
     return await get_entry(db, org_id=org_id, entry_id=entry_id)
 
 
@@ -327,6 +331,8 @@ async def void(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID) -
     if line_id:
         await db.execute(text("UPDATE finance.bank_statement_lines SET project_entry_id = NULL WHERE id = :id"), {"id": line_id})
         await bank_books.sync(db, org_id=org_id, user_id=user_id, line_ids=[line_id])
+    elif entry["project_id"] and entry["direction"] == "in":
+        await hq_reserve.safe_sync(db, org_id=org_id, user_id=user_id)
     return {"id": str(entry_id), "voided": True, "bank_line_kept": bool(line_id)}
 
 

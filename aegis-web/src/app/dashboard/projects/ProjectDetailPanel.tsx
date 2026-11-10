@@ -107,6 +107,8 @@ const PROJECT_CATEGORY_LABELS: Record<string, string> = {
 };
 
 const COST_CATEGORY_OPTIONS = ["labour", "equipment", "materials", "subcontract", "overhead", "other"] as const;
+// Food, water, cleaning items and other consumables are site overhead.
+const COST_CATEGORY_LABEL: Record<string, string> = { overhead: "overhead / consumables & supplies (food, water, cleaning)" };
 
 function ProductionIntakePanel({ project, onRefresh }: { project: Record<string, unknown>; onRefresh: () => void }) {
   const projectId = String(project.id ?? "");
@@ -318,7 +320,7 @@ function ProductionExpensesSection({ projectId }: { projectId: string }) {
 
       <div className="grid gap-2 sm:grid-cols-4">
         <select value={form.cost_category} onChange={(e) => setForm((f) => ({ ...f, cost_category: e.target.value }))} className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper">
-          {COST_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+          {COST_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{COST_CATEGORY_LABEL[c] ?? c}</option>)}
         </select>
         <input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Description" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper sm:col-span-2" />
         <input value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} type="number" min="0" placeholder="Amount ($)" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
@@ -3986,7 +3988,7 @@ export function ProjectDetail({
                         <div className="grid grid-cols-2 gap-2">
                           <input value={pettyCashSpendForm.amount} onChange={(e) => setPettyCashSpendForm((f) => ({ ...f, amount: e.target.value }))} type="number" min="0" placeholder="Amount ($)" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
                           <select value={pettyCashSpendForm.cost_category} onChange={(e) => setPettyCashSpendForm((f) => ({ ...f, cost_category: e.target.value }))} className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper">
-                            {COST_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                            {COST_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{COST_CATEGORY_LABEL[c] ?? c}</option>)}
                           </select>
                         </div>
                         <input value={pettyCashSpendForm.description} onChange={(e) => setPettyCashSpendForm((f) => ({ ...f, description: e.target.value }))} placeholder="Description" className="h-9 w-full border border-ink-mid bg-ink-light px-2 text-xs text-paper" />

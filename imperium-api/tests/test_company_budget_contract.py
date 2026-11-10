@@ -118,11 +118,14 @@ class Phase5AServiceContractTests(unittest.TestCase):
         for leg in ("FROM finance.progress_claims", "FROM finance.cost_transactions", "FROM finance.cashbook_transactions",
                     "FROM finance.payroll_items", "FROM finance.supplier_payment_items"):
             self.assertIn(leg, fn_body)
-        # ledger-only overheads: posted, non-project, from bank lines / vouchers, never HQ salaries
+        # ledger-only overheads: posted, non-project, from bank lines / vouchers
         self.assertIn("je.status = 'posted'", fn_body)
         self.assertIn("COALESCE(orig.source_type, je.source_type) = ANY(:gl_sources)", fn_body)
         self.assertIn("jl.project_id IS NULL", fn_body)
-        self.assertIn("a.account_code <> '6000'", fn_body)
+        # HQ salaries (6000) from the GL only where no posted head-office payroll run covers the month
+        self.assertIn("a.account_code <> '6000' OR NOT EXISTS (", fn_body)
+        self.assertIn("hq_pi.project_id IS NULL", fn_body)
+        self.assertIn("date_trunc('month', hq_pr.payment_date) = date_trunc('month', je.entry_date)", fn_body)
         # voucher cashbook rows and transfers are not counted a second time
         self.assertIn("COALESCE(cb.source_type, '') <> 'project_money_entry'", fn_body)
         self.assertIn("cb.transaction_type NOT IN ('transfer_in', 'transfer_out')", fn_body)

@@ -268,7 +268,9 @@ async def create_revision(db: AsyncSession, *, org_id: str, user_id: str, source
 # row of their own: a bank line tagged straight to an overhead, and office
 # expense vouchers (cash ones included - their cashbook row is skipped below
 # so the voucher's department, which lives on the GL line, is the one used).
-GL_ONLY_SOURCES = ("bank_statement_line", "project_money_entry")
+# hq_reserve_contribution: the 6990 recovery offsets the project cost row the
+# contribution also writes, so company-wide the reserve nets to zero.
+GL_ONLY_SOURCES = ("bank_statement_line", "project_money_entry", "hq_reserve_contribution")
 
 
 async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, department_id: Optional[UUID], fiscal_year: int) -> list[dict]:
@@ -284,7 +286,8 @@ async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, depart
                non-project payroll net pay and supplier payments
                non-project overhead lines in the posted GL that come from a
                bank line or an office voucher (operating/other expense
-               accounts except 6000 HQ salaries, which payroll covers)
+               accounts; 6000 HQ salaries only in a month with no posted
+               head-office payroll run, which would already count them)
     The cashbook/payroll/supplier legs stay because those modules only
     reach the GL once a proposed journal is approved.
     """
@@ -349,7 +352,12 @@ async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, depart
                 WHERE je.organization_id = :org_id AND je.status = 'posted'
                   AND COALESCE(orig.source_type, je.source_type) = ANY(:gl_sources)
                   AND jl.project_id IS NULL
-                  AND a.account_category IN ('operating_expense', 'other_expense') AND a.account_code <> '6000'
+                  AND a.account_category IN ('operating_expense', 'other_expense')
+                  AND (a.account_code <> '6000' OR NOT EXISTS (
+                        SELECT 1 FROM finance.payroll_items hq_pi
+                        JOIN finance.payroll_runs hq_pr ON hq_pr.id = hq_pi.payroll_run_id AND hq_pr.status = 'posted'
+                        WHERE hq_pi.organization_id = :org_id AND hq_pi.project_id IS NULL
+                          AND date_trunc('month', hq_pr.payment_date) = date_trunc('month', je.entry_date)))
                   AND je.entry_date BETWEEN :year_start AND :year_end AND {dept_filter_gl}
             ) combined
             GROUP BY month

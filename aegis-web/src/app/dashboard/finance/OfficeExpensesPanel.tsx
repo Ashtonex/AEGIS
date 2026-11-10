@@ -28,7 +28,7 @@ const cardClass = "bg-ink-light border border-ink-mid rounded-lg";
 // Same mapping as bank_books.money_out_account(category, has_project=False)
 const ACCOUNT_FOR: Record<string, string> = {
   salaries_wages: "6000", rent: "6100", utilities: "6200", professional_fees: "6300", insurance: "6400",
-  travel_accommodation: "6500", office_admin: "6600", marketing: "6700", bank_charges: "6800",
+  travel_accommodation: "6500", office_admin: "6600", consumables_supplies: "6600", marketing: "6700", bank_charges: "6800",
   tax_statutory: "6900", tithe_donation: "7800", other: "7900",
 };
 
