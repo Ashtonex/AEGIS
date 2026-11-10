@@ -297,6 +297,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     subItems: [
       { name: "Banking & Cash", href: "/dashboard/finance/banking", icon: Banknote },
       { name: "Cashbook", href: "/dashboard/finance/cashbook", icon: BookMarked },
+      { name: "Stationery Books", href: "/dashboard/finance/stationery", icon: BookMarked, requiredPermission: "finance.stationery.read" },
       { name: "Bank Statement Review", href: "/dashboard/finance/bank-review", icon: Banknote },
       { name: "Cash Forecast", href: "/dashboard/finance/cash-forecast", icon: TrendingUp },
     ],

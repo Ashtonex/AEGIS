@@ -28,3 +28,4 @@ export * from "./api/projects";
 export * from "./api/invoices";
 export * from "./api/tender-discovery";
 export * from "./api/communications";
+export * from "./api/stationery";
