@@ -89,6 +89,37 @@ weekly hours and the pay profile. PAYE, NSSA and AIDS levy come from the
 existing statutory rate tables. One PDF payslip is produced per person per
 period. Posting reuses the existing GL bridge.
 
+### Payroll engine, phase 1 (2026-11-10, migration 287)
+
+Done (Belina parity on calculation, not yet on returns):
+
+- **Pay codes** (`finance.pay_elements`): earnings, deductions, tax credits,
+  employer costs. Flags decide treatment: taxable, NSSA-insurable, bonus,
+  pre-tax, tax-credit % (medical aid 50%), loan. Starter catalogue seeded per
+  org. Recurring assignments per employee (`finance.employee_pay_elements`),
+  loans with a running balance that closes itself.
+- **Taxable income, not gross**: taxable earnings - tax-free bonus - pre-tax
+  deductions - employee NSSA (org setting). Credits never exceed PAYE. AIDS
+  levy on PAYE after credits, and now accrued as a liability.
+- **USD/ZiG split pay**: share per pay profile; exchange rate and ZiG cash
+  account per run. Two methods (org setting): ZIMRA's "whole salary on USD
+  tables, split by share" (default) or "each portion on its own tables".
+  Cashbook and statutory liabilities are posted per currency.
+- **Controls**: monthly periods that close/reopen (reason recorded); an
+  employee can't be on two runs for overlapping periods; deductions above pay
+  are refused; loan balances re-checked at posting.
+- **Payslip lines** (`finance.payroll_item_lines`) and a calculation trace
+  (`payroll_items.calc_trace`) per employee per run.
+- **Year to date** view (`finance.v_payroll_ytd`) per employee per tax year.
+- Engine: `app/services/finance/payroll_engine.py` (pure, unit-tested);
+  DB side: `payroll_service.py`; setup API: `/api/v1/payroll`.
+  The old `/financial-performance/payroll/runs` create/decide/post now return 410.
+
+Not done yet (next phases): ZIMRA P2/ITF16 and NSSA returns, bank payment
+files, NEC grades/levies, ZIMDEF, FDS year-end averaging, retro pay,
+payslip PDF. All rates must be entered as rate tables before the first run;
+none are hard-coded.
+
 ## Phase 5: Intelligence
 
 - **Org chart.** Interactive and drawn from line-manager links. Clicking a unit

@@ -433,7 +433,7 @@ async def propose_journal_for_payroll_run(
 
     Balances because net_pay = gross_pay - paye_amount - nssa_employee_amount
     - aids_levy_amount - other_deduction per item (routers/payroll_runs.py's
-    own compute_statutory-based arithmetic), and the employer contribution
+    own payroll-engine arithmetic), and the employer contribution
     debit is mirrored by an equal amount folded into the NSSA payable credit.
 
     Known, flagged simplification: employer statutory contributions are
