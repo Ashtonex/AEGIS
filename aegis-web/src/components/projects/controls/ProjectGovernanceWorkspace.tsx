@@ -22,6 +22,7 @@ import {
   updateProjectPreMobilisationCheck,
   approveProjectPreMobilisation,
   clearProjectCommercialReadiness,
+  updateProjectCommercialReadiness,
   confirmProjectDeposit,
 } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -108,13 +109,13 @@ export function ProjectGovernanceWorkspace({
           });
         }
       }
-      try {
+      // Sign-off does not waive anything: if the Commercial Readiness Pack
+      // still has open items the server refuses, and that reason is shown.
+      if (commercial?.status !== "cleared") {
         await clearProjectCommercialReadiness(projectId, {
           authority_relied_upon: "Standard Governance Package Signoff",
           approved_contract_value: contractValue || 0,
         });
-      } catch {
-        // non-fatal if already cleared
       }
       setActionSuccess("All readiness start gates signed off and verified successfully!");
       if (onStatusUpdated) onStatusUpdated();
@@ -137,14 +138,15 @@ export function ProjectGovernanceWorkspace({
     setActionSuccess(null);
 
     try {
-      // 1. Clear commercial readiness with executive waiver statement
-      try {
+      // 1. Clear commercial readiness, naming every open item as an accepted
+      // executive exception (the server only waives items named here).
+      if (commercial?.status !== "cleared") {
         await clearProjectCommercialReadiness(projectId, {
           authority_relied_upon: `Executive fast-track authorization: ${fastTrackReason.trim()}`,
           approved_contract_value: contractValue || Number(fastTrackBudget) || 0,
+          executive_exceptions_accepted: openCommercialItems,
+          outstanding_conditions: openCommercialItems,
         });
-      } catch {
-        // If already cleared, continue
       }
 
       // 2. Mark any remaining incomplete checks as 'complete_with_conditions'
@@ -208,6 +210,72 @@ export function ProjectGovernanceWorkspace({
       setError(err instanceof Error ? err.message : "Failed to confirm deposit.");
     } finally {
       setSubmittingDeposit(false);
+    }
+  };
+
+  // Everything the server still counts as open on the Commercial Readiness
+  // Pack: recorded blockers plus unticked controls.
+  const openCommercialItems = useMemo(() => {
+    if (!commercial || commercial.status === "cleared") return [];
+    const unticked = (commercial.controls ?? []).filter((c) => !c.complete).map((c) => c.label);
+    return Array.from(new Set([...(commercial.blockers ?? []), ...unticked]));
+  }, [commercial]);
+
+  // Commercial Readiness Pack: tick the 14 controls, record the contract
+  // authority, then clear. The server enforces who may do each step.
+  const [authorityStatus, setAuthorityStatus] = useState("");
+  const [authorityReliedUpon, setAuthorityReliedUpon] = useState("");
+  const [savingCommercial, setSavingCommercial] = useState<string | null>(null);
+  useEffect(() => {
+    setAuthorityStatus(String(commercial?.authority_status ?? ""));
+  }, [commercial?.authority_status]);
+
+  const handleToggleControl = async (key: string, done: boolean) => {
+    setSavingCommercial(key);
+    setError(null);
+    try {
+      const res = await updateProjectCommercialReadiness(projectId, { readiness_pack: { [key]: done } });
+      setCommercial(res.data as CommercialReadiness);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update commercial control.");
+    } finally {
+      setSavingCommercial(null);
+    }
+  };
+
+  const handleSaveAuthority = async (value: string) => {
+    setAuthorityStatus(value);
+    if (!value) return;
+    setSavingCommercial("authority");
+    setError(null);
+    try {
+      const res = await updateProjectCommercialReadiness(projectId, { authority_status: value });
+      setCommercial(res.data as CommercialReadiness);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save contract authority.");
+    } finally {
+      setSavingCommercial(null);
+    }
+  };
+
+  const handleClearCommercial = async () => {
+    if (!authorityReliedUpon.trim()) {
+      setError("Enter the authority relied upon (e.g. signed contract reference) before clearing.");
+      return;
+    }
+    setSavingCommercial("clear");
+    setError(null);
+    try {
+      const res = await clearProjectCommercialReadiness(projectId, {
+        authority_relied_upon: authorityReliedUpon.trim(),
+        approved_contract_value: contractValue || undefined,
+      });
+      setCommercial(res.data as CommercialReadiness);
+      setActionSuccess("Commercial readiness cleared.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clear commercial readiness.");
+    } finally {
+      setSavingCommercial(null);
     }
   };
 
@@ -277,7 +345,7 @@ export function ProjectGovernanceWorkspace({
 
                 <button
                   type="button"
-                  onClick={() => setIsFastTrackOpen(true)}
+                  onClick={() => { setError(null); setIsFastTrackOpen(true); }}
                   className="inline-flex items-center gap-1.5 border border-signal bg-signal px-4 py-2 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 transition-colors shadow-lg"
                 >
                   <Sparkles className="h-4 w-4" />
@@ -429,6 +497,82 @@ export function ProjectGovernanceWorkspace({
         </div>
       </section>
 
+      {/* Commercial Readiness Pack */}
+      {commercial && (
+        <section className="border border-ink-mid bg-ink">
+          <div className="border-b border-ink-mid p-4 flex items-center justify-between">
+            <div>
+              <h3 className="font-mono text-sm font-bold uppercase tracking-wider text-paper">
+                Commercial Readiness Pack
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-light">
+                Tick each control as it is done and record the contract authority. Must be cleared before mobilisation.
+              </p>
+            </div>
+            <span className="font-mono text-xs text-slate-light">
+              {commercial.status === "cleared" ? "CLEARED" : `${commercial.ready_count ?? 0} / ${commercial.total ?? 14} Ready`}
+            </span>
+          </div>
+
+          <div className="divide-y divide-ink-mid/40">
+            {(commercial.controls ?? []).map((control) => (
+              <label key={control.key} className="flex items-start gap-3 p-4 hover:bg-ink-light/20 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={control.complete}
+                  disabled={commercial.status === "cleared" || savingCommercial !== null}
+                  onChange={(e) => void handleToggleControl(control.key, e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-signal"
+                />
+                <span className={`text-sm ${control.complete ? "text-emerald-300" : "text-paper"}`}>
+                  {control.complete ? control.label.replace(/ (is|are|has|have) not( been)? /, " ✓ ") : control.label}
+                </span>
+                {savingCommercial === control.key && <Loader2 className="h-4 w-4 animate-spin text-signal" />}
+              </label>
+            ))}
+          </div>
+
+          {(commercial.waived ?? []).length > 0 && (
+            <div className="border-t border-ink-mid p-4 text-xs text-amber-200">
+              Cleared under executive waiver — {commercial.waived!.length} item(s) accepted as exceptions.
+            </div>
+          )}
+
+          {commercial.status !== "cleared" && (
+            <div className="grid gap-3 border-t border-ink-mid p-4 md:grid-cols-2">
+              <select
+                value={authorityStatus}
+                onChange={(e) => void handleSaveAuthority(e.target.value)}
+                disabled={savingCommercial !== null}
+                className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper"
+              >
+                <option value="">Contract authority status…</option>
+                <option value="fully_executed">Fully executed contract</option>
+                <option value="awarded_subject_to_conditions">Awarded subject to conditions</option>
+                <option value="letter_of_intent_only">Letter of intent only</option>
+                <option value="purchase_order_only">Purchase order only</option>
+                <option value="verbal_instruction">Verbal instruction (blocks)</option>
+                <option value="commercially_unacceptable">Commercially unacceptable (blocks)</option>
+              </select>
+              <input
+                value={authorityReliedUpon}
+                onChange={(e) => setAuthorityReliedUpon(e.target.value)}
+                placeholder="Authority relied upon (e.g. contract ref)"
+                className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper"
+              />
+              <button
+                type="button"
+                onClick={() => void handleClearCommercial()}
+                disabled={savingCommercial !== null || !commercial.ready}
+                className="h-10 bg-emerald-500 px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50 md:col-span-2"
+              >
+                {savingCommercial === "clear" ? "Clearing…" : commercial.ready ? "Clear Commercial Readiness" : "Tick all controls + set authority to clear"}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Fast-Track Modal */}
       {isFastTrackOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
@@ -447,6 +591,24 @@ export function ProjectGovernanceWorkspace({
               and immediately moves the project to <strong className="text-emerald-400">ACTIVE</strong> status so site operations,
               procurement, and labour booking can begin at once.
             </p>
+
+            {openCommercialItems.length > 0 && (
+              <div className="border border-amber-500/40 bg-amber-950/20 p-3">
+                <p className="font-mono text-[10px] uppercase tracking-wider text-amber-300">
+                  You are accepting {openCommercialItems.length} open commercial readiness item{openCommercialItems.length === 1 ? "" : "s"} as executive exceptions
+                </p>
+                <ul className="mt-2 max-h-40 list-disc space-y-0.5 overflow-y-auto pl-4 text-xs text-amber-100">
+                  {openCommercialItems.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {error && (
+              <div className="flex items-start gap-2 border border-red-500/40 bg-red-950/20 p-3 text-xs text-red-300">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-mono uppercase text-slate">
