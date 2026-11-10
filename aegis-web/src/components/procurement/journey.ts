@@ -116,6 +116,8 @@ export function purchaseStage(p: Pick<Purchase, "request" | "rfqs" | "orders" | 
   if (unissued.some((o) => poSignoffStep(o) === "finance")) return { stage: "order", waitingOn: "Finance sign-off" };
   if (unissued.some((o) => poSignoffStep(o) === "director")) return { stage: "order", waitingOn: "Director sign-off" };
   if (unissued.length) return { stage: "order", waitingOn: "Send the PO to the supplier" };
+  // Some lines went to suppliers, the rest still need one.
+  if (req === "partially_ordered") return { stage: "order", waitingOn: "Order the remaining items" };
   if (statuses.some((st) => ["issued", "partially_received"].includes(st))) return { stage: "delivery", waitingOn: "Delivery" };
   // Everything ordered has arrived.
   const invoices = p.invoices.filter((i) => s(i.status) !== "rejected" && s(i.status) !== "cancelled");
@@ -236,6 +238,9 @@ export function buildTasks(
       } else if (!openRfq && can("procurement.po.create")) {
         tasks.push({ id: `po-${req.id}`, group: "ordering", verb: "Create the purchase order", title: p.number, meta: label(p), amount: p.amount, urgent: false, action: { type: "createPO", row: req } });
       }
+    }
+    if (req && reqStatus === "partially_ordered" && can("procurement.po.create")) {
+      tasks.push({ id: `po-rest-${req.id}`, group: "ordering", verb: "Order the remaining items", title: p.number, meta: label(p), amount: p.amount, urgent: false, action: { type: "createPO", row: req } });
     }
     for (const po of liveOrders) {
       const st = s(po.status);

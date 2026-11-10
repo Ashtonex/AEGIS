@@ -178,6 +178,15 @@ export async function createPurchaseOrderFromRequisition(payload: Record<string,
   });
 }
 
+/** One purchase order per supplier from a request's lines (each line, or part of one, to one supplier). */
+export async function createSupplierPurchaseOrders(requisitionId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/requisitions/${encodeURIComponent(requisitionId)}/purchase-orders`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getProcurementOrders(params?: { status?: string; supplier_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.status && params.status !== "all") search.set("status", params.status);

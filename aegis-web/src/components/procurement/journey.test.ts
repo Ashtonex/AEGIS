@@ -131,3 +131,13 @@ test("PO sign-off: Finance first, then a director, then it can be sent", () => {
   // Nobody is asked to sign off a PO they raised.
   assert.deepEqual(verbs(draft, only("procurement.po.finance_signoff"), "buyer"), []);
 });
+
+test("a partly ordered request asks for the rest once its POs are out of sign-off", () => {
+  const stage = (orders: Row[]) => purchaseStage({ request: req("1", "partially_ordered"), rfqs: [], orders, invoices: [] });
+  // A PO still in sign-off comes first: that is the step blocking it now.
+  assert.deepEqual(stage([po("a", "1", "draft")]), { stage: "order", waitingOn: "Finance sign-off" });
+  assert.deepEqual(stage([po("a", "1", "issued")]), { stage: "order", waitingOn: "Order the remaining items" });
+  const tasks = buildTasks(buildPurchases([req("1", "partially_ordered")], [], [po("a", "1", "issued")], [], NOW), all, "me", NOW);
+  assert.deepEqual(tasks.map((t) => t.verb), ["Order the remaining items", "Record delivery"]);
+  assert.equal(buildTasks(buildPurchases([req("1", "partially_ordered")], [], [po("a", "1", "issued")], [], NOW), (k) => k === "procurement.grn.create", "me", NOW).length, 1);
+});
