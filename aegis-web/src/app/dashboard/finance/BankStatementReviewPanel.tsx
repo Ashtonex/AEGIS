@@ -34,6 +34,7 @@ export const CATEGORIES: { value: string; label: string }[] = [
   { value: "subcontractor", label: "Subcontractor" },
   { value: "equipment_hire", label: "Equipment / plant hire" },
   { value: "fuel_transport", label: "Fuel & transport" },
+  { value: "consumables_supplies", label: "Consumables & supplies (food, water, cleaning, small items)" },
   { value: "salaries_wages", label: "Salaries & wages" },
   { value: "tax_statutory", label: "Tax & statutory (ZIMRA/NSSA)" },
   { value: "bank_charges", label: "Bank charges & IMTT" },

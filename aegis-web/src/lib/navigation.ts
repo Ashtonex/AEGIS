@@ -6,7 +6,7 @@ import {
   Inbox, Zap, MapPin, LockKeyhole, ClipboardCheck, Calendar, Banknote,
   BookMarked, Receipt, BrainCircuit, Megaphone, Upload, LifeBuoy, Ticket,
   TrendingUp, Brain, Layers, Scale, Bot, FileSearch, Bell, User, Search,
-  Gauge, Fuel, Send, FolderKanban,
+  Gauge, Fuel, Send, FolderKanban, PiggyBank,
 } from "lucide-react";
 
 
@@ -299,6 +299,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Cashbook", href: "/dashboard/finance/cashbook", icon: BookMarked },
       { name: "Bank Statement Review", href: "/dashboard/finance/bank-review", icon: Banknote },
       { name: "Office Expenses", href: "/dashboard/finance/office-expenses", icon: Receipt },
+      { name: "HQ Office Reserve", href: "/dashboard/finance/hq-reserve", icon: PiggyBank },
       { name: "Cash Forecast", href: "/dashboard/finance/cash-forecast", icon: TrendingUp },
     ],
   },

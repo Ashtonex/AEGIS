@@ -384,6 +384,27 @@ export async function createOfficeExpense(entry: OfficeExpenseInput): Promise<Ap
   return fetchApi<ApiResponse<any>>(OFFICE_EXPENSES, { method: "POST", body: JSON.stringify(entry), allowFallback: false });
 }
 
+const HQ_RESERVE = "/api/v1/bank-transactions/reconciliation/hq-reserve";
+
+export type HqReserveSettingsInput = {
+  is_active: boolean;
+  default_rate_pct: number;
+  starts_on: string;
+  project_rates: { project_id: string; rate_pct: number; note?: string | null }[];
+};
+
+export async function getHqReserve(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(HQ_RESERVE, { cache: "no-store", allowFallback: false });
+}
+
+export async function saveHqReserveSettings(settings: HqReserveSettingsInput): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${HQ_RESERVE}/settings`, { method: "PUT", body: JSON.stringify(settings), allowFallback: false });
+}
+
+export async function syncHqReserve(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${HQ_RESERVE}/sync`, { method: "POST", allowFallback: false });
+}
+
 export async function approveMoneyEntry(entryId: string, approved = true): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/approve?approved=${approved ? "true" : "false"}`, { method: "POST", allowFallback: false });
 }

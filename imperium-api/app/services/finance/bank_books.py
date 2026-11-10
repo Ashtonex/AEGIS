@@ -59,6 +59,9 @@ BANK, HQ_PETTY, RECEIVABLE, INTER_ACCOUNT, SUSPENSE = "1000", "1010", "1100", "1
 AWAITING_BANK = "1070"   # money recorded on a project, not yet on a statement (migration 246)
 DIRECTORS, SHAREHOLDERS, REVENUE, OTHER_INCOME = "3200", "3300", "4100", "4900"
 UNCLASSIFIED_PROJECT_COST = "5950"
+# Food, water, cleaning items and other small buys used up on a project
+# (migration 289). On an office voucher the same category is office admin.
+CONSUMABLES, CONSUMABLES_PROJECT, CONSUMABLES_OFFICE = "consumables_supplies", "5910", "6600"
 HISTORICAL_CASH_USE = "historical_cash_use"   # pre-Sept 2026 cash spent without vouchers (migration 245)
 # The balance to show for a cash account aliased `ca`: a bank account with an
 # imported statement shows the bank's own latest running balance (the cashbook
@@ -116,6 +119,7 @@ _COST_CATEGORY = {
     "subcontractor": "subcontract",
     "equipment_hire": "equipment",
     "fuel_transport": "equipment",
+    CONSUMABLES: "overhead",
     "salaries_wages": "labour",
     "tax_statutory": "overhead",
     "bank_charges": "overhead",
@@ -128,6 +132,8 @@ _COST_CATEGORY = {
 def money_out_account(category: Optional[str], has_project: bool) -> str:
     if category == "salaries_wages":
         return "5100" if has_project else "6000"
+    if category == CONSUMABLES:
+        return CONSUMABLES_PROJECT if has_project else CONSUMABLES_OFFICE
     if category == "card_purchase":
         return "5000" if has_project else "6600"
     if category in _MONEY_OUT_ACCOUNTS:
@@ -943,6 +949,9 @@ async def sync(db: AsyncSession, *, org_id: str, user_id: str, line_ids: Optiona
         # claims above may have changed books_claim_id etc.; the ledger only
         # needs amounts/tags, so the loaded rows are still current for it.
         await _sync_ledger(db, org_id, user_id, lines, counts)
+        # client receipts may have moved: the HQ reserve follows (migration 290)
+        from app.services.finance import hq_reserve
+        await hq_reserve.safe_sync(db, org_id=org_id, user_id=user_id)
     return counts
 
 

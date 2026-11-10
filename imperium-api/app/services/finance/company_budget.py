@@ -268,7 +268,9 @@ async def create_revision(db: AsyncSession, *, org_id: str, user_id: str, source
 # row of their own: a bank line tagged straight to an overhead, and office
 # expense vouchers (cash ones included - their cashbook row is skipped below
 # so the voucher's department, which lives on the GL line, is the one used).
-GL_ONLY_SOURCES = ("bank_statement_line", "project_money_entry")
+# hq_reserve_contribution: the 6990 recovery offsets the project cost row the
+# contribution also writes, so company-wide the reserve nets to zero.
+GL_ONLY_SOURCES = ("bank_statement_line", "project_money_entry", "hq_reserve_contribution")
 
 
 async def _get_department_actuals_by_month(db: AsyncSession, org_id: str, department_id: Optional[UUID], fiscal_year: int) -> list[dict]:

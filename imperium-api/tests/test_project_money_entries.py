@@ -71,7 +71,8 @@ def test_summary_counts_only_bank_entries_as_awaiting():
 def test_office_categories_land_on_head_office_expense_accounts():
     from app.services.finance.bank_books import money_out_account
     expected = {"rent": "6100", "utilities": "6200", "professional_fees": "6300", "insurance": "6400",
-                "travel_accommodation": "6500", "office_admin": "6600", "marketing": "6700", "bank_charges": "6800",
+                "travel_accommodation": "6500", "office_admin": "6600", "consumables_supplies": "6600",
+                "marketing": "6700", "bank_charges": "6800",
                 "tax_statutory": "6900", "salaries_wages": "6000", "tithe_donation": "7800", "other": "7900"}
     assert set(project_entries.OFFICE_CATEGORIES) == set(expected)
     for category, code in expected.items():
@@ -146,3 +147,16 @@ def test_approver_cannot_be_supplied_by_the_client():
         assert "approved_by" not in body, model
     assert "approved_by" not in project_entries.ENTRY_FIELDS
 
+
+
+def test_consumables_and_supplies_is_a_project_cost_type():
+    """Food, water, cleaning and petty-cash buys (migration 289): on a project they
+    land on 5910 and count as site overhead; on an office voucher, office admin."""
+    from app.services.finance.bank_books import cost_category, money_out_account
+    from app.services.finance.bank_rules import KNOWN_CATEGORIES
+    from app.services.microsoft.bank_workbook import EDITABLE_CATEGORIES
+    assert money_out_account("consumables_supplies", has_project=True) == "5910"
+    assert money_out_account("consumables_supplies", has_project=False) == "6600"
+    assert cost_category("consumables_supplies") == "overhead"
+    assert "consumables_supplies" in KNOWN_CATEGORIES and "consumables_supplies" in EDITABLE_CATEGORIES
+    assert "consumables_supplies" not in project_entries.OUT_EXCLUDED
