@@ -1,4 +1,4 @@
-"""HQ office reserve (migration 290): the rules that need no database.
+"""HQ office reserve (migration 291): the rules that need no database.
 The ledger behaviour is checked end to end by scripts/verify_hq_reserve.py."""
 
 from decimal import Decimal

@@ -1,5 +1,5 @@
 """
-HQ office reserve funded from project receipts (migration 290).
+HQ office reserve funded from project receipts (migration 291).
 
 Each project pays a percentage of its client receipts into a reserve for
 head-office purchases: a company default rate, which a project can override

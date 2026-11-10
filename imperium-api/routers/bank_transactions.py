@@ -1198,7 +1198,7 @@ async def apply_tag_rules(
 
 
 # ---------------------------------------------------------------------------
-# HQ office reserve: a % of each project's client receipts (migration 290)
+# HQ office reserve: a % of each project's client receipts (migration 291)
 # ---------------------------------------------------------------------------
 
 class HqReserveProjectRate(BaseModel):

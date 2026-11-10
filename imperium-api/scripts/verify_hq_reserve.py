@@ -1,4 +1,4 @@
-"""End-to-end check of the HQ office reserve (migration 290) against an
+"""End-to-end check of the HQ office reserve (migration 291) against an
 ISOLATED database: the migration (twice), nothing happens while the reserve
 is off, contributions follow client receipts recorded on a project and
 arriving on the bank statement, a project override (0 = exempt), voiding a
@@ -40,7 +40,7 @@ ORG = str(uuid.uuid4())
 USER = str(uuid.uuid4())
 A, B = uuid.uuid4(), uuid.uuid4()
 OCT, NOV = date(2026, 10, 1), date(2026, 11, 1)
-MIGRATION = (ROOT / "migrations" / "290_hq_office_reserve.sql").read_text(encoding="utf-8")
+MIGRATION = (ROOT / "migrations" / "291_hq_office_reserve.sql").read_text(encoding="utf-8")
 
 ACCOUNTS = [
     ("1000", "Cash and Bank", "asset", "debit"), ("1010", "HQ Cash", "asset", "debit"),
@@ -121,7 +121,7 @@ async def main() -> None:
                                VALUES (:org, 'BANKABC', 'BancABC USD', 'bank') RETURNING id""")).scalar()
         await db.commit()
 
-        # --- migration 290 -------------------------------------------------------
+        # --- migration 291 -------------------------------------------------------
         raw = await (await db.connection()).get_raw_connection()   # as migrations/run_aegis_migrations.py runs it
         await raw.driver_connection.execute(MIGRATION)
         await raw.driver_connection.execute(MIGRATION)

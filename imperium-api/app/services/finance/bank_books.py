@@ -949,7 +949,7 @@ async def sync(db: AsyncSession, *, org_id: str, user_id: str, line_ids: Optiona
         # claims above may have changed books_claim_id etc.; the ledger only
         # needs amounts/tags, so the loaded rows are still current for it.
         await _sync_ledger(db, org_id, user_id, lines, counts)
-        # client receipts may have moved: the HQ reserve follows (migration 290)
+        # client receipts may have moved: the HQ reserve follows (migration 291)
         from app.services.finance import hq_reserve
         await hq_reserve.safe_sync(db, org_id=org_id, user_id=user_id)
     return counts
