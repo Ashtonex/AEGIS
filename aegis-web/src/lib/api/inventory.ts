@@ -323,6 +323,8 @@ export type ProjectMoneyEntryInput = {
   pays_claim_id?: string | null;
   spent_by?: string | null;
   department_id?: string | null;
+  /** Banking & Cash account it went through; the server sets paid_via from its type. */
+  cash_account_id?: string | null;
 };
 
 const PROJECT_ENTRIES = "/api/v1/bank-transactions/reconciliation/project-entries";
@@ -363,6 +365,7 @@ export async function dismissProjectEntrySuggestion(entryId: string, lineId: str
 // use the project-entry routes above (they work on any entry by id).
 export type OfficeExpenseInput = {
   paid_via: "bank" | "cash";
+  cash_account_id?: string | null;
   entry_date: string;
   amount: number;
   category: string;

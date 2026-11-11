@@ -9,8 +9,11 @@ What an entry puts in the books (all rebuilt from scratch whenever the entry
 changes, and torn down when it is voided):
   money in   -> a paid progress claim (PRJ-...), or marks an existing
                 certified/invoiced claim paid
-  money out  -> a finance.cost_transactions row (source 'project_money_entry')
-  cash entry -> a receipt/payment in HQ Petty Cash
+  money out  -> a finance.cost_transactions row (source 'project_money_entry'),
+                except owner drawings and loans/advances, which are not a
+                cost of the project (bank_books.EXCLUDED_FROM_PROJECT_BOOKS)
+  cash entry -> a receipt/payment in the cash account it names (HQ Cash
+                when none is named), so that account's balance moves
   GL         -> one posted journal:
                   in, new claim      Dr 1070 (or 1010)  Cr revenue
                   in, pays a claim   Dr 1070 (or 1010)  Cr 1100 receivable
@@ -21,6 +24,14 @@ expense voucher - money out with a category. It books the same way, except
 there is no project cost row and the debit goes to the head-office expense
 account for its category (rent 6100, utilities 6200, office admin 6600 ...),
 carrying the entry's department onto the GL line.
+
+Paid from / received into (migration 294):
+  cash_account_id names the Banking & Cash account. Its type decides the
+  route: a bank account makes the entry a bank entry (1070, matched to that
+  account's statement); a cash or mobile money account makes it a cash entry
+  (cashbook row in that account, posted against the account's ledger account:
+  1010 cash on hand unless the account says otherwise, e.g. Employee Advance
+  sits in 1500 Cash Advances Receivable - bank_books.cash_ledger_code).
 
 Pairing with the bank (bank entries only):
   A matched statement line carries project_entry_id; bank_books then posts
@@ -42,7 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.finance import bank_books, hq_reserve
 from app.services.finance.bank_books import (
-    EXCLUDED_FROM_PROJECT_BOOKS, HQ_PETTY, RECEIVABLE, cost_category, money_in_account, money_out_account,
+    EXCLUDED_FROM_PROJECT_BOOKS, RECEIVABLE, cost_category, money_in_account, money_out_account,
 )
 from app.services.finance.general_ledger import GeneralLedgerError
 
@@ -111,7 +122,13 @@ async def _tear_down(db: AsyncSession, org_id: str, user_id: str, entry: dict, r
 async def _build(db: AsyncSession, org_id: str, user_id: str, entry: dict) -> None:
     accounts = await bank_books._account_ids(db, org_id)
     project_id, amount, on = entry["project_id"], _d(entry["amount"]), entry["entry_date"]
-    holding = HQ_PETTY if entry["paid_via"] == "cash" else AWAITING_BANK
+    cash_account = None
+    if entry["paid_via"] == "cash":
+        # the cash account's own ledger account: 1010 cash on hand, or e.g. 1500 for an employee advance
+        cash_account = entry.get("cash_account_id") or await bank_books.ensure_hq_petty_cash(db, org_id, user_id)
+        holding = await bank_books.cash_ledger_code(db, cash_account)
+    else:
+        holding = AWAITING_BANK
     who = entry["counterparty_name"]
     detail = (f"{'Received' if entry['direction'] == 'in' else 'Paid'} {on}"
               f"{' ' + entry['reference'] if entry['reference'] else ''}: "
@@ -158,7 +175,8 @@ async def _build(db: AsyncSession, org_id: str, user_id: str, entry: dict) -> No
         gl = [{"code": holding, "debit_amount": amount, "description": detail},
               {"code": credit, "credit_amount": amount, "project_id": project_id, "description": detail}]
     else:
-        if project_id is not None:
+        # drawings and loans post to the ledger (3200 / 1500) but are not a cost of the project
+        if project_id is not None and (entry["category"] or "") not in EXCLUDED_FROM_PROJECT_BOOKS:
             await db.execute(
                 text("""
                     INSERT INTO finance.cost_transactions (
@@ -171,14 +189,13 @@ async def _build(db: AsyncSession, org_id: str, user_id: str, entry: dict) -> No
                  "cc": cost_category(entry["category"]), "description": detail[:500], "amount": amount, "on": on,
                  "user_id": user_id},
             )
-        gl = [{"code": money_out_account(entry["category"], project_id is not None), "debit_amount": amount,
+        gl = [{"code": money_out_account(entry["category"], project_id is not None, on), "debit_amount": amount,
                "project_id": project_id, "department_id": entry.get("department_id"), "description": detail},
               {"code": holding, "credit_amount": amount, "description": detail}]
 
-    if entry["paid_via"] == "cash":
-        hq = await bank_books.ensure_hq_petty_cash(db, org_id, user_id)
+    if cash_account is not None:
         updates["petty_cashbook_id"] = await bank_books._cashbook_row(
-            db, org_id=org_id, user_id=user_id, cash_account_id=hq,
+            db, org_id=org_id, user_id=user_id, cash_account_id=cash_account,
             tx_type="receipt" if entry["direction"] == "in" else "payment",
             direction="inflow" if entry["direction"] == "in" else "outflow",
             amount=amount, on=on, description=detail, reference=entry["reference"], project_id=project_id,
@@ -200,6 +217,45 @@ async def _build(db: AsyncSession, org_id: str, user_id: str, entry: dict) -> No
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+async def _resolve_account(db: AsyncSession, org_id: str, user_id: str, values: dict) -> None:
+    """Settle which Banking & Cash account the entry went through, and set
+    paid_via from that account's type. With no account named, cash means HQ
+    Cash and bank means the only bank account (or any, if there are several)."""
+    if values.get("cash_account_id"):
+        account = (await db.execute(
+            text("""
+                SELECT id, account_name, account_type, currency, is_active, project_id
+                FROM finance.cash_accounts
+                WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"id": values["cash_account_id"], "org_id": org_id},
+        )).mappings().first()
+        if not account:
+            raise GeneralLedgerError("That bank or cash account was not found.", status_code=404)
+        if not account["is_active"]:
+            raise GeneralLedgerError(f"{account['account_name']} is closed - pick an open account.", status_code=422)
+        if (account["currency"] or "USD").upper() != "USD":
+            raise GeneralLedgerError(f"{account['account_name']} is a {account['currency']} account; "
+                                     "recorded entries are in USD.", status_code=422)
+        if account["project_id"] and str(account["project_id"]) != str(values.get("project_id") or ""):
+            raise GeneralLedgerError(f"{account['account_name']} is another project's petty cash float.",
+                                     status_code=422)
+        values["paid_via"] = "bank" if account["account_type"] == "bank" else "cash"
+        return
+    if values.get("paid_via") == "cash":
+        values["cash_account_id"] = await bank_books.ensure_hq_petty_cash(db, org_id, user_id)
+        return
+    banks = (await db.execute(
+        text("""
+            SELECT id FROM finance.cash_accounts
+            WHERE organization_id = :org_id AND account_type = 'bank' AND is_active AND is_deleted = false
+            LIMIT 2
+        """),
+        {"org_id": org_id},
+    )).scalars().all()
+    values["cash_account_id"] = banks[0] if len(banks) == 1 else None
+
 
 async def _validate(db: AsyncSession, org_id: str, values: dict) -> None:
     category = values.get("category")
@@ -244,12 +300,14 @@ async def _validate(db: AsyncSession, org_id: str, values: dict) -> None:
 
 
 ENTRY_FIELDS = ("project_id", "direction", "paid_via", "entry_date", "amount", "category", "counterparty_name",
-                "reference", "description", "pays_claim_id", "spent_by", "department_id")
+                "reference", "description", "pays_claim_id", "spent_by", "department_id", "cash_account_id")
 # approved_by is deliberately not an entry field: it is only ever set by
 # approve() from the signed-in user, and cleared when the voucher changes.
 
 
 async def create(db: AsyncSession, *, org_id: str, user_id: str, values: dict) -> dict:
+    values = dict(values)
+    await _resolve_account(db, org_id, user_id, values)
     await _validate(db, org_id, values)
     if values.get("pays_claim_id"):
         payable = {str(c["id"]) for c in await payable_claims(db, org_id=org_id, project_id=values["project_id"])}
@@ -277,9 +335,14 @@ async def update(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID,
     if entry["is_void"]:
         raise GeneralLedgerError("This entry has been removed.", status_code=409)
     values = {**{f: entry[f] for f in ENTRY_FIELDS}, **changes}
+    if "paid_via" in changes and "cash_account_id" not in changes and changes["paid_via"] != entry["paid_via"]:
+        values["cash_account_id"] = None   # the old account was the other kind
+    await _resolve_account(db, org_id, user_id, values)
     await _validate(db, org_id, values)
     amount_or_way_changed = (_d(values["amount"]) != _d(entry["amount"]) or values["direction"] != entry["direction"]
-                             or values["paid_via"] != entry["paid_via"])
+                             or values["paid_via"] != entry["paid_via"]
+                             or ("cash_account_id" in changes
+                                 and str(values["cash_account_id"] or "") != str(entry["cash_account_id"] or "")))
     # an approval was for the old amount / way of paying / purpose
     approval_lapses = amount_or_way_changed or values["category"] != entry["category"]
     if entry["matched_line_id"] and amount_or_way_changed:
@@ -357,6 +420,7 @@ _CANDIDATE_SQL = """
      AND l.project_entry_id IS NULL
      AND COALESCE(l.category, '') <> 'cash_withdrawal'
      AND (l.project_id IS NULL OR l.project_id = e.project_id)
+     AND (e.cash_account_id IS NULL OR l.cash_account_id IS NULL OR l.cash_account_id = e.cash_account_id)
      AND NOT EXISTS (SELECT 1 FROM finance.bank_line_allocations a WHERE a.line_id = l.id)
     WHERE e.organization_id = :org_id AND NOT e.is_void AND e.paid_via = 'bank'
       AND e.match_status IN ('awaiting', 'suggested')
@@ -453,9 +517,11 @@ async def confirm(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID
         raise GeneralLedgerError("This entry is already matched - unmatch it first.", status_code=409)
     line = (await db.execute(
         text("""
-            SELECT l.amount, l.project_entry_id, l.project_id, l.category,
+            SELECT l.amount, l.project_entry_id, l.project_id, l.category, l.cash_account_id, ca.account_name,
                    EXISTS (SELECT 1 FROM finance.bank_line_allocations a WHERE a.line_id = l.id) AS split
-            FROM finance.bank_statement_lines l WHERE l.id = :id AND l.organization_id = :org_id
+            FROM finance.bank_statement_lines l
+            LEFT JOIN finance.cash_accounts ca ON ca.id = l.cash_account_id
+            WHERE l.id = :id AND l.organization_id = :org_id
         """),
         {"id": line_id, "org_id": org_id},
     )).mappings().first()
@@ -468,6 +534,10 @@ async def confirm(db: AsyncSession, *, org_id: str, user_id: str, entry_id: UUID
     if line["category"] == "cash_withdrawal":
         raise GeneralLedgerError("A cash withdrawal can't settle a recorded entry - record the entry as cash instead.",
                                  status_code=422)
+    if entry["cash_account_id"] and line["cash_account_id"] and line["cash_account_id"] != entry["cash_account_id"]:
+        raise GeneralLedgerError(
+            f"That line is on the {line['account_name']} statement, but the entry says it went through another "
+            "account. Change the entry's account first.", status_code=422)
     signed = _d(line["amount"])
     if (signed > 0) != (entry["direction"] == "in"):
         raise GeneralLedgerError("That bank line goes the other way.", status_code=422)
@@ -535,6 +605,9 @@ async def candidates(db: AsyncSession, *, org_id: str, entry_id: UUID, q: Option
         AND NOT EXISTS (SELECT 1 FROM finance.bank_line_allocations a WHERE a.line_id = l.id)
         AND (l.project_id IS NULL OR l.project_id = :p)
     """
+    if entry["cash_account_id"]:
+        where += " AND (l.cash_account_id IS NULL OR l.cash_account_id = :account)"
+        params["account"] = entry["cash_account_id"]
     where += " AND l.amount > 0" if entry["direction"] == "in" else " AND l.amount < 0"
     if q and q.strip():
         where += " AND (l.description ILIKE :q OR l.reference ILIKE :q OR l.counterparty_name ILIKE :q OR CAST(abs(l.amount) AS text) LIKE :q)"
@@ -563,6 +636,7 @@ async def candidates(db: AsyncSession, *, org_id: str, entry_id: UUID, q: Option
 
 _LIST_SQL = """
     SELECT e.*, pc.claim_number AS pays_claim_number, dep.name AS department_name,
+           pca.account_name AS cash_account_name, pca.account_type AS cash_account_type,
            COALESCE(au.full_name, au.email) AS approved_by_name,
            (SELECT count(*) FROM core.document_links dl
             WHERE dl.organization_id = e.organization_id AND dl.entity_type = 'money_entry' AND dl.entity_id = e.id
@@ -581,6 +655,7 @@ _LIST_SQL = """
     LEFT JOIN finance.bank_statement_lines l ON l.id = e.matched_line_id
     LEFT JOIN finance.departments dep ON dep.id = e.department_id
     LEFT JOIN core.users au ON au.id = e.approved_by
+    LEFT JOIN finance.cash_accounts pca ON pca.id = e.cash_account_id
 """
 
 
