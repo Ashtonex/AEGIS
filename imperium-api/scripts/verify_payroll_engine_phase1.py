@@ -1,4 +1,4 @@
-"""End-to-end check of the payroll engine (migration 294) against an ISOLATED
+"""End-to-end check of the payroll engine (migration 296) against an ISOLATED
 database: migration + starter codes, run creation with pay codes, loans,
 bonus exemption and USD/ZiG split pay, the double-payment guard, approve and
 post (two-currency cashbook, per-currency statutory liabilities, loan
@@ -8,7 +8,7 @@ the statutory recompute and the retired endpoints.
 Rate tables seeded here are FIXTURES with round numbers, not ZIMRA/NSSA rates.
 
 Needs a local database with production's schema-only definitions of core,
-finance, hr and projects (pg_dump --schema-only), migration 294 NOT applied.
+finance, hr and projects (pg_dump --schema-only), migration 296 NOT applied.
 Refuses to run unless DATABASE_URL is local.
 
     set DATABASE_URL=postgresql://postgres@127.0.0.1:55433/payroll_test
@@ -40,7 +40,7 @@ from core.database import AsyncSessionLocal  # noqa: E402
 from routers import finance_statutory, financial_performance, payroll_config, payroll_runs  # noqa: E402
 
 FAILURES: list[str] = []
-MIGRATION = ROOT / "migrations" / "294_payroll_engine_phase1.sql"
+MIGRATION = ROOT / "migrations" / "296_payroll_engine_phase1.sql"
 ORG = str(uuid.uuid4())
 USER_ID = str(uuid.uuid4())
 USER = {"sub": USER_ID, "org_id": ORG, "role": "SUPERADMIN"}
@@ -135,8 +135,8 @@ def run_payload(month: int, items, **extra):
 
 async def main() -> None:
     await seed_base()
-    psql_file(MIGRATION, "migration 294 applies cleanly")
-    psql_file(MIGRATION, "migration 294 re-applies cleanly (idempotent)")
+    psql_file(MIGRATION, "migration 296 applies cleanly")
+    psql_file(MIGRATION, "migration 296 re-applies cleanly (idempotent)")
     seeded = await sql("SELECT code, is_system FROM finance.pay_elements WHERE organization_id = :org ORDER BY code", org=ORG)
     check("starter codes seeded for existing org", len(seeded) == 13, [r["code"] for r in seeded])
     check("settings row seeded", bool(await sql("SELECT 1 FROM finance.payroll_settings WHERE organization_id = :org", org=ORG)))
