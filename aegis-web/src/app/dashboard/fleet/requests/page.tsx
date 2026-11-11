@@ -81,6 +81,15 @@ function fmtHours(value: number): string {
 }
 
 const CLOSED_STATUSES = ["closed", "cancelled", "rejected"];
+// Same sets as the API: on site under a dispatch note, then back from site.
+const ON_HIRE_STATUSES = ["dispatched", "active", "off_hire_requested"];
+const HIRE_ENDED_STATUSES = ["returned", "under_reconciliation"];
+const HOURS_LOGGABLE_STATUSES = [...ON_HIRE_STATUSES, ...HIRE_ENDED_STATUSES];
+// Machines the API refuses to send to a job (broken down, in repair, disposed...).
+const FLEET_UNUSABLE_STATUSES = [
+  "breakdown", "under_repair", "awaiting_parts", "quarantined", "decommissioned",
+  "disposed", "retired", "out_of_service", "hired_out",
+];
 
 function ReadinessChecklist({ pack, onChange }: { pack: ReadinessPack; onChange: (next: ReadinessPack) => void }) {
   const done = READINESS_CONTROLS.filter(({ key }) => pack[key]).length;
@@ -431,7 +440,7 @@ function PlantRequestsDashboard() {
                         <span className="inline-flex border border-slate/40 bg-ink-light px-2 py-0.5 font-mono text-[10px] uppercase text-paper">
                           {st.replace(/_/g, " ")}
                         </span>
-                        {!CLOSED_STATUSES.includes(st) && !["dispatched", "active", "returned"].includes(st) && (
+                        {!CLOSED_STATUSES.includes(st) && !HOURS_LOGGABLE_STATUSES.includes(st) && (
                           <p className={`mt-1 text-[10px] ${readinessDone === READINESS_CONTROLS.length ? "text-emerald-300" : "text-amber-300"}`}>
                             Readiness {readinessDone}/{READINESS_CONTROLS.length}
                           </p>
@@ -1151,7 +1160,13 @@ function SwitchPlantMachineModal({
   // Internal fleet = owned/leased machines already in the register; hired-in
   // machines from earlier cross-hires are left out (cross-hire a new one instead).
   const internalAssets = useMemo(
-    () => fleetAssets.filter((a) => a.id !== currentFleetId && text(a, "ownership_type") !== "hired_in"),
+    () =>
+      fleetAssets.filter(
+        (a) =>
+          a.id !== currentFleetId &&
+          text(a, "ownership_type") !== "hired_in" &&
+          !FLEET_UNUSABLE_STATUSES.includes(text(a, "operational_status"))
+      ),
     [fleetAssets, currentFleetId]
   );
   const [source, setSource] = useState<"internal" | "cross_hire">("internal");
@@ -1587,6 +1602,9 @@ function PlantReadinessHoursModal({
   onChanged: () => void;
 }) {
   const requestId = request.id;
+  const status = text(request, "status");
+  const onHire = ON_HIRE_STATUSES.includes(status);
+  const hireEnded = HIRE_ENDED_STATUSES.includes(status);
   // POST /fleet/utilization requires fleet.create; Plant and Project Managers
   // can manage readiness (fleet.plant_requests.update) without holding it.
   const { permissions, isSuperAdmin } = useAuth();
@@ -1594,7 +1612,7 @@ function PlantReadinessHoursModal({
   const fleetId = text(request, "current_fleet_id");
   const assignmentId = text(request, "current_assignment_id");
   const [tab, setTab] = useState<"readiness" | "hours">(
-    ["dispatched", "active", "returned"].includes(text(request, "status")) ? "hours" : "readiness"
+    HOURS_LOGGABLE_STATUSES.includes(status) ? "hours" : "readiness"
   );
   const [readiness, setReadiness] = useState<ReadinessPack>(() => readinessFrom(request));
   const [plannedHours, setPlannedHours] = useState(
@@ -1781,7 +1799,14 @@ function PlantReadinessHoursModal({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="mb-1 block font-mono text-[10px] uppercase text-slate">Hire start</label>
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={field} />
+                  <input
+                    type="date"
+                    value={startDate}
+                    disabled={onHire || hireEnded}
+                    title={onHire ? "The machine is on hire - the start date is fixed." : hireEnded ? "The machine has been returned." : undefined}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className={`${field} disabled:opacity-50`}
+                  />
                 </div>
                 <div>
                   <label className="mb-1 block font-mono text-[10px] uppercase text-slate">Hire end (blank = open-ended)</label>
@@ -1789,10 +1814,11 @@ function PlantReadinessHoursModal({
                     type="date"
                     value={endDate}
                     min={startDate || undefined}
+                    disabled={hireEnded}
                     onChange={(e) => setEndDate(e.target.value)}
                     className={`${field} ${endDate && endDate < today ? "border-amber-500/60" : ""}`}
                   />
-                  {endDate && endDate < today && !["dispatched", "active", "returned"].includes(text(request, "status")) && (
+                  {endDate && endDate < today && !onHire && !hireEnded && (
                     <p className="mt-1 text-[11px] text-amber-300">This date has passed — move it forward before dispatching.</p>
                   )}
                 </div>
@@ -1807,6 +1833,10 @@ function PlantReadinessHoursModal({
               {!fleetId ? (
                 <p className="border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
                   Reserve a machine (or cross-hire one with Swap Machine) before logging hours.
+                </p>
+              ) : !HOURS_LOGGABLE_STATUSES.includes(status) ? (
+                <p className="border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+                  Hours are logged once the machine is on site under a dispatch note. Finish the readiness checklist and issue the dispatch note first.
                 </p>
               ) : !canLogHours ? (
                 <p className="border border-ink-mid bg-ink-light p-3 text-xs text-slate-light">
