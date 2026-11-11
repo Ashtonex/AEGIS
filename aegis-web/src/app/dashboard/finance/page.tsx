@@ -24,6 +24,8 @@ import {
   getFinanceVariations,
   createFinanceVariation,
   decideFinanceVariation,
+  reviewSiteVarianceQs,
+  decideSiteVarianceClient,
   getFinanceProgressClaims,
   createFinanceProgressClaim,
   certifyFinanceProgressClaim,
@@ -175,12 +177,23 @@ function loadFailureMessage(reason: unknown) {
   return "Failed to load financial workspace data.";
 }
 
+// Show the server's reason (e.g. "QS review is required before approving
+// this site-originated variance.") so the user knows what to do next; only
+// transport failures fall back to the generic message.
 function normalizeActionError(reason: unknown, fallback: string) {
-  const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
-  if (/aborted|cancelled|timed out|network error|fetch failed|not found/i.test(rawMessage)) {
+  const rawMessage = (reason instanceof Error ? reason.message : String(reason ?? "")).trim();
+  if (!rawMessage || /aborted|timed out|network error|fetch failed|failed to fetch/i.test(rawMessage)) {
     return fallback;
   }
-  return fallback;
+  return `${fallback.replace(/\.$/, "")}: ${rawMessage}`;
+}
+
+// A site-originated variance (raised from a weekly site budget) must be QS
+// reviewed before it can be approved, and client-approved where required.
+function variationNextStep(v: RecordData): "qs_review" | "client_approval" | "decide" {
+  if (v.source_type === "weekly_budget_item" && v.qs_review_status !== "reviewed") return "qs_review";
+  if (v.client_approval_required && v.client_approval_status !== "approved") return "client_approval";
+  return "decide";
 }
 
 function statusClass(status: string) {
@@ -310,6 +323,14 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const [showCostCodeModal, setShowCostCodeModal] = useState(false);
   const [showVariationModal, setShowVariationModal] = useState(false);
   const [showClaimModal, setShowClaimModal] = useState(false);
+  const [qsReview, setQsReview] = useState<{
+    variation: RecordData;
+    cost_impact: string;
+    time_impact_days: string;
+    notes: string;
+    saving: boolean;
+    error: string | null;
+  } | null>(null);
 
   // Form Fields
   const [newCostCode, setNewCostCode] = useState({ code: "", name: "", category: "materials" });
@@ -398,6 +419,43 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       await loadData();
     } catch (err) {
       setNotice(normalizeActionError(err, `Failed to ${decision} variation.`));
+    }
+  };
+
+  const submitQsReview = async (decision: "reviewed" | "rejected") => {
+    if (!qsReview) return;
+    if (decision === "rejected" && !qsReview.notes.trim()) {
+      setQsReview({ ...qsReview, error: "Give a reason in the notes when rejecting." });
+      return;
+    }
+    setQsReview({ ...qsReview, saving: true, error: null });
+    try {
+      await reviewSiteVarianceQs(String(qsReview.variation.id), {
+        decision,
+        cost_impact: Number(qsReview.cost_impact) || 0,
+        time_impact_days: Math.round(Number(qsReview.time_impact_days) || 0),
+        notes: qsReview.notes.trim() || undefined,
+      });
+      setNotice(
+        decision === "reviewed"
+          ? `${qsReview.variation.variation_number || "Variation"} QS reviewed - it can now be approved.`
+          : `${qsReview.variation.variation_number || "Variation"} rejected at QS review.`,
+      );
+      setQsReview(null);
+      await loadData();
+    } catch (err) {
+      setQsReview({ ...qsReview, saving: false, error: normalizeActionError(err, "Failed to save QS review.") });
+    }
+  };
+
+  const handleClientApproval = async (variation: RecordData) => {
+    if (!window.confirm(`Record that the client has approved ${variation.variation_number || "this variation"}?`)) return;
+    try {
+      await decideSiteVarianceClient(String(variation.id), "approved");
+      setNotice("Client approval recorded - the variation can now be approved.");
+      await loadData();
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to record client approval."));
     }
   };
 
@@ -872,11 +930,36 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                             <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(v.status)}`}>
                               {v.status}
                             </span>
+                            {["pending", "submitted"].includes(String(v.status)) && variationNextStep(v) !== "decide" && (
+                              <p className="mt-1 text-[10px] text-amber-300">
+                                {variationNextStep(v) === "qs_review" ? "Needs QS review first" : "Needs client approval first"}
+                              </p>
+                            )}
                           </td>
                           <td className="p-4 text-right whitespace-nowrap">
                             {["pending", "submitted"].includes(String(v.status)) ? (
                               <div className="inline-flex gap-1.5">
-                                <button onClick={() => void handleVariationDecision(v, "approve")} className="border border-emerald-500/40 text-emerald-300 px-2 py-0.5 rounded-sm text-[11px] hover:bg-emerald-950/30">Approve</button>
+                                {variationNextStep(v) === "qs_review" && (
+                                  <button
+                                    onClick={() => setQsReview({
+                                      variation: v,
+                                      cost_impact: String(v.cost_impact ?? 0),
+                                      time_impact_days: String(v.time_impact_days ?? 0),
+                                      notes: "",
+                                      saving: false,
+                                      error: null,
+                                    })}
+                                    className="border border-amber-500/50 text-amber-200 px-2 py-0.5 rounded-sm text-[11px] hover:bg-amber-950/30"
+                                  >
+                                    QS Review
+                                  </button>
+                                )}
+                                {variationNextStep(v) === "client_approval" && (
+                                  <button onClick={() => void handleClientApproval(v)} className="border border-blue-500/40 text-blue-200 px-2 py-0.5 rounded-sm text-[11px] hover:bg-blue-950/30">Client Approved</button>
+                                )}
+                                {variationNextStep(v) === "decide" && (
+                                  <button onClick={() => void handleVariationDecision(v, "approve")} className="border border-emerald-500/40 text-emerald-300 px-2 py-0.5 rounded-sm text-[11px] hover:bg-emerald-950/30">Approve</button>
+                                )}
                                 <button onClick={() => void handleVariationDecision(v, "reject")} className="border border-red-500/40 text-red-300 px-2 py-0.5 rounded-sm text-[11px] hover:bg-red-950/30">Reject</button>
                               </div>
                             ) : <span className="text-slate text-xs">—</span>}
@@ -1073,6 +1156,77 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* QS review of a site-originated variance */}
+      {qsReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg space-y-4">
+            <div className="flex justify-between items-center border-b border-ink-mid pb-3">
+              <div>
+                <span className="text-base font-semibold text-paper">QS Review</span>
+                <p className="text-xs text-slate mt-0.5">{qsReview.variation.variation_number} · {qsReview.variation.title}</p>
+              </div>
+              <button onClick={() => setQsReview(null)} className="text-slate hover:text-paper" aria-label="Close">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-light">
+              Confirm or adjust the priced impact. Marking it reviewed sends it back to the register for approval.
+            </p>
+            {qsReview.error && <div className="border border-red-500/40 bg-red-950/30 p-2 text-xs text-red-200">{qsReview.error}</div>}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Cost impact (USD)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={qsReview.cost_impact}
+                  onChange={(e) => setQsReview({ ...qsReview, cost_impact: e.target.value })}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Time impact (days)</label>
+                <input
+                  type="number"
+                  step="1"
+                  value={qsReview.time_impact_days}
+                  onChange={(e) => setQsReview({ ...qsReview, time_impact_days: e.target.value })}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-mono uppercase text-slate mb-1">Notes</label>
+              <textarea
+                rows={3}
+                value={qsReview.notes}
+                onChange={(e) => setQsReview({ ...qsReview, notes: e.target.value })}
+                placeholder="Entitlement, rates used, measurement basis..."
+                className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal resize-none"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-3 border-t border-ink-mid">
+              <button
+                type="button"
+                disabled={qsReview.saving}
+                onClick={() => void submitQsReview("rejected")}
+                className="px-3 py-2 border border-red-500/40 text-red-300 rounded text-sm hover:bg-red-950/30 disabled:opacity-50"
+              >
+                Reject
+              </button>
+              <button
+                type="button"
+                disabled={qsReview.saving}
+                onClick={() => void submitQsReview("reviewed")}
+                className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95 disabled:opacity-50"
+              >
+                {qsReview.saving ? "Saving..." : "Mark QS reviewed"}
+              </button>
+            </div>
           </div>
         </div>
       )}

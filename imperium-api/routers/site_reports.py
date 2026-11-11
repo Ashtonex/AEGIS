@@ -1888,6 +1888,10 @@ async def review_site_variance_qs(
     if not row:
         raise HTTPException(status_code=404, detail="Variance not found.")
     await require_project_access(db, user, row["project_id"])
+    # Review only while the variance is undecided - re-reviewing would put an
+    # approved or rejected variation back to 'submitted'.
+    if row["status"] not in ("pending", "submitted"):
+        raise HTTPException(status_code=409, detail=f"This variance is already {row['status']}.")
     status_value = "submitted" if payload.decision == "reviewed" else "rejected"
     await db.execute(
         text("""
@@ -1956,6 +1960,8 @@ async def decide_site_variance_client(
     await require_project_access(db, user, row["project_id"])
     if not row["client_approval_required"]:
         raise HTTPException(status_code=409, detail="Client approval is not required for this variance.")
+    if row["status"] not in ("pending", "submitted"):
+        raise HTTPException(status_code=409, detail=f"This variance is already {row['status']}.")
     status_value = "submitted" if payload.decision == "approved" else "rejected"
     await db.execute(
         text("""

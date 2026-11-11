@@ -1,7 +1,7 @@
 """Tenant-scoped fleet asset, dispatch, compliance and cost controls."""
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import json
 from typing import Any, Literal, Mapping, Optional
@@ -562,10 +562,41 @@ class PlantReservationPayload(Payload):
         return self
 
 
+class CrossHireAssetPayload(Payload):
+    """A machine hired in from an outside supplier for this request. It is
+    registered in the fleet register as ownership_type 'hired_in' so dispatch,
+    hour logs, fuel and off-hire all work the same as for an owned machine."""
+
+    supplier_name: str = Field(min_length=1, max_length=255)
+    supplier_contact: Optional[str] = Field(default=None, max_length=255)
+    agreement_reference: Optional[str] = Field(default=None, max_length=120)
+    asset_type: Optional[str] = Field(default=None, max_length=100)
+    make_model: Optional[str] = Field(default=None, max_length=160)
+    registration_or_serial: str = Field(min_length=1, max_length=50)
+    hire_rate: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    hire_rate_unit: Literal["hourly", "daily", "weekly", "monthly"] = "hourly"
+    meter_reading: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+
+
 class SwitchPlantMachinePayload(Payload):
-    new_fleet_id: UUID
+    new_fleet_id: Optional[UUID] = None
+    cross_hire: Optional[CrossHireAssetPayload] = None
     reason: Optional[str] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if bool(self.new_fleet_id) == bool(self.cross_hire):
+            raise ValueError("Choose either an internal fleet machine or a cross-hire machine")
+        return self
+
+
+class PlantReadinessUpdatePayload(Payload):
+    readiness_pack: Optional[dict] = None
+    planned_hours: Optional[Decimal] = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    # Hire period. Sending end_date as null makes the hire open-ended.
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
 
 
 class PlantDispatchPayload(Payload):
@@ -2606,12 +2637,45 @@ async def record_utilization(
         user["org_id"],
         "Plant request",
     )
+    # A day's grace: the server runs on UTC, site users two hours ahead.
+    if payload.occurred_on > date.today() + timedelta(days=1):
+        raise HTTPException(status_code=422, detail="Hours cannot be logged for a future date.")
+    explicit_project_id = payload.project_id
+    if payload.plant_request_id:
+        # Hours against a plant request count once the machine is on site
+        # under a dispatch note (the readiness controls run at dispatch), and
+        # are costed to the request's project.
+        plant_req = (
+            await db.execute(
+                text("""
+                SELECT pr.status, pr.project_id, pr.request_number,
+                       (SELECT MIN(COALESCE(d.dispatch_at, d.created_at))::date FROM fleet.dispatch_notes d
+                        WHERE d.plant_request_id = pr.id AND d.organization_id = pr.organization_id
+                          AND d.is_deleted = false) AS first_dispatch_on
+                FROM fleet.plant_requests pr
+                WHERE pr.id = :id AND pr.organization_id = :org_id
+            """),
+                {"id": payload.plant_request_id, "org_id": user["org_id"]},
+            )
+        ).first()
+        if plant_req.status not in PLANT_ON_HIRE_STATUSES + PLANT_HIRE_ENDED_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Hours are logged once the machine is dispatched - {plant_req.request_number or 'this request'} is {plant_req.status.replace('_', ' ')}.",
+            )
+        if plant_req.first_dispatch_on and payload.occurred_on < plant_req.first_dispatch_on:
+            raise HTTPException(
+                status_code=422,
+                detail=f"The machine was dispatched on {plant_req.first_dispatch_on:%d %b %Y}; hours cannot be logged before that.",
+            )
+        if not payload.assignment_id:
+            explicit_project_id = explicit_project_id or plant_req.project_id
     project_id = await resolve_project_id(
         db,
         org_id=user["org_id"],
         fleet_id=payload.fleet_id,
         assignment_id=payload.assignment_id,
-        explicit_project_id=payload.project_id,
+        explicit_project_id=explicit_project_id,
     )
     hourly_cost = asset.get("hourly_operating_cost") or Decimal("0")
     idle_cost = asset.get("idle_hour_cost") or Decimal("0")
@@ -2748,6 +2812,7 @@ async def record_utilization(
 async def list_utilization_logs(
     fleet_id: Optional[UUID] = Query(default=None),
     project_id: Optional[UUID] = Query(default=None),
+    plant_request_id: Optional[UUID] = Query(default=None),
     date_from: Optional[date] = Query(default=None),
     date_to: Optional[date] = Query(default=None),
     approval_status: Optional[str] = Query(default=None),
@@ -2765,9 +2830,10 @@ async def list_utilization_logs(
           AND ul.is_deleted = false
           AND (CAST(:fleet_id AS uuid) IS NULL OR ul.fleet_id = :fleet_id)
           AND (CAST(:project_id AS uuid) IS NULL OR ul.project_id = :project_id)
+          AND (CAST(:plant_request_id AS uuid) IS NULL OR ul.plant_request_id = :plant_request_id)
           AND (CAST(:date_from AS date) IS NULL OR ul.occurred_on >= :date_from)
           AND (CAST(:date_to AS date) IS NULL OR ul.occurred_on <= :date_to)
-          AND (:approval_status IS NULL OR COALESCE(ul.approval_status, 'submitted') = :approval_status)
+          AND (CAST(:approval_status AS varchar) IS NULL OR COALESCE(ul.approval_status, 'submitted') = CAST(:approval_status AS varchar))
         ORDER BY ul.occurred_on DESC, ul.created_at DESC
         LIMIT :limit
     """)
@@ -2775,6 +2841,7 @@ async def list_utilization_logs(
         "org_id": user["org_id"],
         "fleet_id": fleet_id,
         "project_id": project_id,
+        "plant_request_id": plant_request_id,
         "date_from": date_from,
         "date_to": date_to,
         "approval_status": approval_status,
@@ -3001,6 +3068,10 @@ async def list_plant_requests(
           COALESCE(res.reservations_count, 0) AS reservations_count,
           COALESCE(dispatch.dispatch_count, 0) AS dispatch_count,
           COALESCE(util.daily_logs_count, 0) AS daily_logs_count,
+          COALESCE(util.hours_worked, 0) AS hours_worked,
+          cur.current_fleet_id, cur.current_asset_code, cur.current_asset_registration,
+          cur.current_asset_type, cur.current_asset_ownership, cur.current_asset_supplier,
+          asg.current_assignment_id,
           COALESCE(fuel.fuel_transactions_count, 0) AS fuel_transactions_count,
           COALESCE(inc.open_incidents_count, 0) AS open_incidents_count,
           COALESCE(cl.status, 'not_started') AS closure_status
@@ -3016,9 +3087,39 @@ async def list_plant_requests(
           WHERE d.plant_request_id=pr.id AND d.organization_id=pr.organization_id AND d.is_deleted=false
         ) dispatch ON true
         LEFT JOIN LATERAL (
-          SELECT COUNT(*) AS daily_logs_count FROM fleet.utilization_logs u
+          SELECT COUNT(*) AS daily_logs_count,
+                 COALESCE(SUM(u.operating_hours) FILTER (
+                   WHERE COALESCE(u.approval_status, 'submitted') <> 'rejected'
+                 ), 0) AS hours_worked
+          FROM fleet.utilization_logs u
           WHERE u.plant_request_id=pr.id AND u.organization_id=pr.organization_id AND u.is_deleted=false
         ) util ON true
+        LEFT JOIN LATERAL (
+          -- The machine on site (live assignment) wins over the reservation:
+          -- a dispatch can name a machine that was never reserved.
+          SELECT m.fleet_id AS current_fleet_id, f.asset_code AS current_asset_code,
+                 f.vehicle_registration AS current_asset_registration,
+                 COALESCE(f.asset_type, f.vehicle_type) AS current_asset_type,
+                 f.ownership_type AS current_asset_ownership,
+                 f.supplier_name AS current_asset_supplier
+          FROM (
+            SELECT a.fleet_id, 0 AS pri, a.created_at FROM fleet.fleet_assignments a
+            WHERE a.plant_request_id=pr.id AND a.organization_id=pr.organization_id
+              AND a.is_deleted=false AND a.status IN ('dispatched','active')
+            UNION ALL
+            SELECT r.fleet_id, 1 AS pri, r.created_at FROM fleet.plant_reservations r
+            WHERE r.plant_request_id=pr.id AND r.organization_id=pr.organization_id
+              AND r.is_deleted=false AND r.status IN ('provisional','confirmed')
+          ) m
+          JOIN fleet.fleet f ON f.id=m.fleet_id AND f.organization_id=pr.organization_id
+          ORDER BY m.pri, m.created_at DESC LIMIT 1
+        ) cur ON true
+        LEFT JOIN LATERAL (
+          SELECT a.id AS current_assignment_id FROM fleet.fleet_assignments a
+          WHERE a.plant_request_id=pr.id AND a.organization_id=pr.organization_id
+            AND a.is_deleted=false AND a.status IN ('dispatched','active')
+          ORDER BY a.created_at DESC LIMIT 1
+        ) asg ON true
         LEFT JOIN LATERAL (
           SELECT COUNT(*) AS fuel_transactions_count FROM fleet.fuel_transactions ft
           WHERE ft.plant_request_id=pr.id AND ft.organization_id=pr.organization_id AND ft.is_deleted=false
@@ -3445,6 +3546,309 @@ def _check_plant_management_authority(user: dict):
         )
 
 
+# The machine is on site under a dispatch note in these states; once it has
+# come back the hire period is history and its dates no longer move.
+PLANT_ON_HIRE_STATUSES = ("dispatched", "active", "off_hire_requested")
+PLANT_HIRE_ENDED_STATUSES = ("returned", "under_reconciliation")
+# A machine can be swapped while it is being allocated or while on hire.
+PLANT_SWAPPABLE_STATUSES = ("approved", "reserved", "ready_for_dispatch", "dispatched", "active")
+# A machine in one of these states cannot be sent to a job.
+FLEET_UNUSABLE_STATUSES = (
+    "breakdown", "under_repair", "awaiting_parts", "quarantined", "decommissioned",
+    "disposed", "retired", "out_of_service", "hired_out",
+)
+
+
+# Job statuses the plant workflow itself sets on a machine. Releasing a
+# machine only resets these - a disposed or broken-down machine stays so.
+FLEET_JOB_STATUSES = ("assigned", "deployed", "reserved", "mobilisation_pending", "operating", "idle_on_site")
+
+
+# Hire-period boundaries in UTC. A naive datetime bound to timestamptz is
+# read in the client's local zone, which shifted dates by a day off-server.
+def _day_start(d: Optional[date]) -> Optional[datetime]:
+    return datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc) if d else None
+
+
+def _day_end(d: Optional[date]) -> Optional[datetime]:
+    return datetime.combine(d, datetime.max.time(), tzinfo=timezone.utc) if d else None
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def _machine_booking_clash(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    fleet_id: UUID,
+    plant_request_id: UUID,
+    period_from: datetime,
+    period_to: Optional[datetime],
+) -> Optional[str]:
+    """Name the other job a machine is booked on within the period, if any.
+    Reads both live reservations (of requests still in play) and live
+    assignments, ignoring this request's own bookings. A null period_to is
+    open-ended."""
+    row = (
+        await db.execute(
+            text("""
+            SELECT pr.request_number AS ref FROM fleet.plant_reservations r
+            JOIN fleet.plant_requests pr ON pr.id = r.plant_request_id AND pr.organization_id = r.organization_id
+            WHERE r.organization_id = :org_id AND r.fleet_id = :fleet_id AND r.is_deleted = false
+              AND r.status IN ('provisional','confirmed')
+              AND r.plant_request_id <> :plant_request_id
+              AND pr.is_deleted = false
+              AND pr.status NOT IN ('returned','under_reconciliation','closed','cancelled','rejected')
+              AND tstzrange(r.reserved_from, COALESCE(r.reserved_until, 'infinity'::timestamptz), '[]')
+                  && tstzrange(CAST(:period_from AS timestamptz), COALESCE(CAST(:period_to AS timestamptz), 'infinity'::timestamptz), '[]')
+            UNION ALL
+            SELECT COALESCE(pr.request_number, a.dispatch_reference, 'another assignment') AS ref
+            FROM fleet.fleet_assignments a
+            LEFT JOIN fleet.plant_requests pr ON pr.id = a.plant_request_id AND pr.organization_id = a.organization_id
+            WHERE a.organization_id = :org_id AND a.fleet_id = :fleet_id AND a.is_deleted = false
+              AND a.status IN ('planned','dispatched','active')
+              AND a.plant_request_id IS DISTINCT FROM CAST(:plant_request_id AS uuid)
+              AND tstzrange(a.starts_at, COALESCE(a.ends_at, 'infinity'::timestamptz), '[]')
+                  && tstzrange(CAST(:period_from AS timestamptz), COALESCE(CAST(:period_to AS timestamptz), 'infinity'::timestamptz), '[]')
+            LIMIT 1
+        """),
+            {
+                "org_id": org_id,
+                "fleet_id": fleet_id,
+                "plant_request_id": plant_request_id,
+                "period_from": period_from,
+                "period_to": period_to,
+            },
+        )
+    ).first()
+    return row.ref if row else None
+
+
+async def _register_cross_hire_asset(
+    db: AsyncSession, user: dict, plant_request_id: UUID, hire: CrossHireAssetPayload
+) -> UUID:
+    """Register a hired-in machine in the fleet register and return its id.
+    An hourly hire rate becomes the asset's hourly operating cost so logged
+    hours are costed at what the supplier charges."""
+    hourly_cost = hire.hire_rate if hire.hire_rate_unit == "hourly" else Decimal("0")
+    rate_note = f"Hire rate {hire.hire_rate} {hire.hire_rate_unit}" if hire.hire_rate else "Hire rate not recorded"
+    notes = " | ".join(
+        part
+        for part in (
+            f"Cross-hired for plant request {plant_request_id}",
+            f"Supplier contact: {hire.supplier_contact}" if hire.supplier_contact else None,
+            f"Agreement: {hire.agreement_reference}" if hire.agreement_reference else None,
+            rate_note,
+        )
+        if part
+    )
+    make, _, model = (hire.make_model or "").partition(" ")
+    row = await db.execute(
+        text("""
+            INSERT INTO fleet.fleet (
+                organization_id, vehicle_registration, vehicle_type, asset_type, asset_code,
+                ownership_type, operational_status, make, model, serial_number,
+                supplier_name, lease_contract_reference, hourly_operating_cost,
+                current_meter_reading, engine_hours, notes, created_by
+            ) VALUES (
+                :org_id, :registration, :asset_type, :asset_type, :asset_code,
+                'hired_in', 'hired_in', :make, :model, :registration,
+                :supplier_name, :agreement, :hourly_cost,
+                :meter, :meter, :notes, :user_id
+            ) RETURNING id
+        """),
+        {
+            "org_id": user["org_id"],
+            "registration": hire.registration_or_serial,
+            "asset_type": hire.asset_type,
+            "asset_code": f"XH-{hire.registration_or_serial}"[:80],
+            "make": make or None,
+            "model": model or None,
+            "supplier_name": hire.supplier_name,
+            "agreement": hire.agreement_reference,
+            "hourly_cost": hourly_cost,
+            "meter": hire.meter_reading or Decimal("0"),
+            "notes": notes,
+            "user_id": user["sub"],
+        },
+    )
+    return row.scalar_one()
+
+
+@router.patch("/plant/requests/{plant_request_id}/readiness")
+async def update_plant_request_readiness(
+    plant_request_id: UUID,
+    payload: PlantReadinessUpdatePayload,
+    user: dict = Depends(require_permission("fleet.plant_requests.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the pre-mobilisation readiness checklist and planned hours
+    without changing the request's workflow status. The status endpoint
+    only accepts pre-approval states, so once a machine is reserved or
+    dispatched this is the only way to tick readiness items off."""
+    current = (
+        (
+            await db.execute(
+                text("""
+        SELECT id, project_id, status, operator_required, readiness_pack, start_date, end_date
+        FROM fleet.plant_requests
+        WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+          AND status NOT IN ('closed','cancelled','rejected')
+    """),
+                {"id": plant_request_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not current:
+        raise HTTPException(status_code=404, detail="Plant request not found or closed")
+    sent = payload.model_fields_set
+    new_start = payload.start_date if "start_date" in sent and payload.start_date else current["start_date"]
+    new_end = payload.end_date if "end_date" in sent else current["end_date"]
+    if new_start and new_end and new_end < new_start:
+        raise HTTPException(status_code=422, detail="The hire end date cannot be before the start date.")
+    dates_changed = new_start != current["start_date"] or new_end != current["end_date"]
+    on_hire = current["status"] in PLANT_ON_HIRE_STATUSES
+    if dates_changed and current["status"] in PLANT_HIRE_ENDED_STATUSES:
+        raise HTTPException(status_code=409, detail="The machine has been returned, so the hire dates can no longer change.")
+    if on_hire and new_start != current["start_date"]:
+        raise HTTPException(status_code=409, detail="The machine is already on hire, so the start date can no longer change.")
+    if on_hire and new_end != current["end_date"]:
+        # The live assignment carries the booked range that availability
+        # checks read, so it moves with the end date - unless that would run
+        # into another booking of the same machine.
+        new_ends_at = _day_end(new_end)
+        live = (
+            await db.execute(
+                text("""
+            SELECT id, fleet_id, starts_at FROM fleet.fleet_assignments
+            WHERE organization_id = :org_id AND plant_request_id = :id
+              AND is_deleted = false AND status IN ('dispatched','active')
+            ORDER BY created_at DESC LIMIT 1
+        """),
+                {"org_id": user["org_id"], "id": plant_request_id},
+            )
+        ).first()
+        if live:
+            if new_ends_at and new_ends_at < live.starts_at:
+                raise HTTPException(status_code=422, detail="The hire end date cannot be before the machine was dispatched.")
+            clash = await _machine_booking_clash(
+                db, org_id=user["org_id"], fleet_id=live.fleet_id, plant_request_id=plant_request_id,
+                period_from=live.starts_at, period_to=new_ends_at,
+            )
+            if clash:
+                raise HTTPException(status_code=409, detail=f"The machine is booked for another job in the extended period ({clash}).")
+            await db.execute(
+                text("""
+                UPDATE fleet.fleet_assignments
+                SET ends_at = CAST(:ends_at AS timestamptz), updated_at = NOW()
+                WHERE id = :assignment_id AND organization_id = :org_id
+            """),
+                {"org_id": user["org_id"], "assignment_id": live.id, "ends_at": new_ends_at},
+            )
+    elif dates_changed:
+        # Before dispatch the reservation holds the machine for the hire
+        # period, so it follows the new dates - unless the machine is booked
+        # for another job in them.
+        res = (
+            await db.execute(
+                text("""
+            SELECT id, fleet_id FROM fleet.plant_reservations
+            WHERE organization_id = :org_id AND plant_request_id = :id
+              AND is_deleted = false AND status IN ('provisional','confirmed')
+            ORDER BY created_at DESC LIMIT 1
+        """),
+                {"org_id": user["org_id"], "id": plant_request_id},
+            )
+        ).first()
+        if res:
+            period_from = _day_start(new_start) or _utcnow()
+            period_to = _day_end(new_end)
+            clash = await _machine_booking_clash(
+                db, org_id=user["org_id"], fleet_id=res.fleet_id, plant_request_id=plant_request_id,
+                period_from=period_from, period_to=period_to,
+            )
+            if clash:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"The reserved machine is booked for another job in those dates ({clash}). Swap the machine or pick other dates.",
+                )
+            await db.execute(
+                text("""
+                UPDATE fleet.plant_reservations
+                SET reserved_from = CAST(:period_from AS timestamptz),
+                    reserved_until = CAST(:period_to AS timestamptz),
+                    updated_at = NOW()
+                WHERE id = :res_id AND organization_id = :org_id
+            """),
+                {"org_id": user["org_id"], "res_id": res.id, "period_from": period_from, "period_to": period_to},
+            )
+    readiness_pack = merge_plant_readiness_pack(current.get("readiness_pack"), payload.readiness_pack)
+    readiness_blockers = plant_readiness_blockers(
+        readiness_pack,
+        operator_required=bool(current["operator_required"]),
+        has_operator=bool(readiness_pack.get("operator_verified")),
+    )
+    readiness_state = plant_readiness_status(readiness_blockers, readiness_pack)
+    await db.execute(
+        text("""
+        UPDATE fleet.plant_requests
+        SET readiness_pack = CAST(:readiness_pack AS jsonb),
+            readiness_blockers = CAST(:readiness_blockers AS jsonb),
+            readiness_status = CAST(:readiness_status AS varchar),
+            planned_hours = CASE WHEN CAST(:set_hours AS boolean)
+                                 THEN CAST(:planned_hours AS numeric) ELSE planned_hours END,
+            start_date = CAST(:start_date AS date),
+            end_date = CAST(:end_date AS date),
+            plant_manager_ready_at = CASE
+                WHEN CAST(:readiness_status AS varchar) = 'ready'
+                THEN COALESCE(plant_manager_ready_at, NOW()) ELSE NULL END,
+            plant_manager_ready_by = CASE
+                WHEN CAST(:readiness_status AS varchar) = 'ready'
+                THEN COALESCE(plant_manager_ready_by, CAST(:user_id AS uuid)) ELSE NULL END,
+            updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id
+    """),
+        {
+            "readiness_pack": json.dumps(readiness_pack),
+            "readiness_blockers": json.dumps(readiness_blockers),
+            "readiness_status": readiness_state,
+            "set_hours": "planned_hours" in sent,
+            "planned_hours": payload.planned_hours,
+            "start_date": new_start,
+            "end_date": new_end,
+            "id": plant_request_id,
+            "org_id": user["org_id"],
+            "user_id": user["sub"],
+        },
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="plant.readiness_updated.v1",
+        aggregate_type="plant_request",
+        aggregate_id=plant_request_id,
+        project_id=current["project_id"],
+        event_payload={
+            "readiness_pack": readiness_pack,
+            "planned_hours": str(payload.planned_hours) if payload.planned_hours is not None else None,
+        },
+    )
+    await db.commit()
+    return result(
+        {
+            "id": str(plant_request_id),
+            "readiness_pack": readiness_pack,
+            "readiness_blockers": readiness_blockers,
+            "readiness_status": readiness_state,
+        },
+        "Readiness saved." if readiness_blockers else "Readiness saved - ready for dispatch.",
+    )
+
+
 @router.post("/plant/requests/{plant_request_id}/switch-machine", status_code=status.HTTP_200_OK)
 async def switch_plant_machine(
     plant_request_id: UUID,
@@ -3457,8 +3861,6 @@ async def switch_plant_machine(
     the allocated machine on a plant request or dispatch.
     """
     _check_plant_management_authority(user)
-    new_asset = await asset_or_404(db, payload.new_fleet_id, user["org_id"])
-    
     plant_request = (
         (
             await db.execute(
@@ -3474,6 +3876,26 @@ async def switch_plant_machine(
     )
     if not plant_request:
         raise HTTPException(status_code=404, detail="Plant request not found.")
+    if plant_request["status"] not in PLANT_SWAPPABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A machine cannot be swapped on a request that is {plant_request['status'].replace('_', ' ')}.",
+        )
+    on_hire = plant_request["status"] in PLANT_ON_HIRE_STATUSES
+
+    # The machine on the job now: the live assignment once dispatched (a
+    # dispatch can name a machine without a reservation), else the reservation.
+    live_assignment = (
+        await db.execute(
+            text("""
+                SELECT id, fleet_id, starts_at FROM fleet.fleet_assignments
+                WHERE plant_request_id = :id AND organization_id = :org_id
+                  AND status IN ('dispatched','active') AND is_deleted = false
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"id": plant_request_id, "org_id": user["org_id"]},
+        )
+    ).first()
 
     # 1. Look up existing active reservation
     curr_res = (
@@ -3492,86 +3914,173 @@ async def switch_plant_machine(
         .first()
     )
 
-    old_fleet_id = curr_res["fleet_id"] if curr_res else None
+    old_fleet_id = (
+        live_assignment.fleet_id if live_assignment else (curr_res["fleet_id"] if curr_res else None)
+    )
+    if old_fleet_id and old_fleet_id == payload.new_fleet_id:
+        raise HTTPException(status_code=409, detail="That machine is already on this request.")
 
-    # 2. Release/update reservation to new asset
+    if payload.cross_hire:
+        payload.new_fleet_id = await _register_cross_hire_asset(db, user, plant_request_id, payload.cross_hire)
+    new_asset = await asset_or_404(db, payload.new_fleet_id, user["org_id"])
+
+    if not payload.cross_hire:
+        if new_asset.get("operational_status") in FLEET_UNUSABLE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{new_asset.get('asset_code') or 'That machine'} is {str(new_asset.get('operational_status')).replace('_', ' ')} and cannot be sent to a job.",
+            )
+        if await _count_critical_defects(user["org_id"], payload.new_fleet_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{new_asset.get('asset_code') or 'That machine'} has open critical defects. Close them or pick another machine.",
+            )
+        period_from = _utcnow() if on_hire else (_day_start(plant_request["start_date"]) or _utcnow())
+        clash = await _machine_booking_clash(
+            db, org_id=user["org_id"], fleet_id=payload.new_fleet_id, plant_request_id=plant_request_id,
+            period_from=period_from, period_to=_day_end(plant_request["end_date"]),
+        )
+        if clash:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{new_asset.get('asset_code') or 'That machine'} is booked for another job in this hire period ({clash}).",
+            )
+
+    old_fleet_label = str(old_fleet_id) if old_fleet_id else "no machine"
+    if old_fleet_id:
+        old_code = (
+            await db.execute(
+                text("SELECT asset_code FROM fleet.fleet WHERE id = :id AND organization_id = :org_id"),
+                {"id": old_fleet_id, "org_id": user["org_id"]},
+            )
+        ).scalar()
+        old_fleet_label = old_code or old_fleet_label
+    reason = payload.reason or payload.notes or "Operational substitution"
+
+    # 2. Move the reservation to the new machine (or hold it with one)
     if curr_res:
         await db.execute(
             text("""
                 UPDATE fleet.plant_reservations
                 SET fleet_id = :new_fleet_id,
-                    conditions = COALESCE(conditions, '') || ' | Switched from ' || CAST(:old_fleet_id AS text) || ' (Reason: ' || :reason || ')',
+                    conditions = COALESCE(conditions, '') || ' | Switched from ' || CAST(:old_fleet_label AS text) || ' (Reason: ' || CAST(:reason AS text) || ')',
                     updated_at = NOW()
                 WHERE id = :res_id AND organization_id = :org_id
             """),
             {
                 "new_fleet_id": payload.new_fleet_id,
-                "old_fleet_id": old_fleet_id,
-                "reason": payload.reason or payload.notes or "Operational substitution",
+                "old_fleet_label": old_fleet_label,
+                "reason": reason,
                 "res_id": curr_res["id"],
                 "org_id": user["org_id"],
             },
         )
     else:
-        # Create a new reservation if none existed
         await db.execute(
             text("""
                 INSERT INTO fleet.plant_reservations (
                     organization_id, plant_request_id, fleet_id, reservation_number,
-                    status, reserved_from, conditions, created_by
+                    status, reserved_from, reserved_until, conditions, created_by
                 ) VALUES (
                     :org_id, :plant_request_id, :new_fleet_id,
                     'PA-' || LPAD(nextval('fleet.plant_allocation_seq')::text, 6, '0'),
-                    'confirmed', NOW(), :reason, :user_id
+                    'confirmed', CAST(:reserved_from AS timestamptz), CAST(:reserved_until AS timestamptz),
+                    :reason, :user_id
                 )
             """),
             {
                 "org_id": user["org_id"],
                 "plant_request_id": plant_request_id,
                 "new_fleet_id": payload.new_fleet_id,
-                "reason": payload.reason or payload.notes or "Allocated via machine switch",
+                "reserved_from": (
+                    live_assignment.starts_at if live_assignment
+                    else (_day_start(plant_request["start_date"]) or _utcnow())
+                ),
+                "reserved_until": _day_end(plant_request["end_date"]),
+                "reason": reason,
                 "user_id": user["sub"],
             },
         )
 
-    # 3. Restore old asset to available
-    if old_fleet_id and old_fleet_id != payload.new_fleet_id:
-        await db.execute(
-            text("""
-                UPDATE fleet.fleet
-                SET operational_status = 'available', updated_at = NOW()
-                WHERE id = :old_id AND organization_id = :org_id
-            """),
-            {"old_id": old_fleet_id, "org_id": user["org_id"]},
-        )
-
-    # 4. Set new asset status
-    target_status = 'deployed' if plant_request["status"] in ('dispatched', 'active') else 'assigned'
-    await db.execute(
-        text("""
-            UPDATE fleet.fleet
-            SET operational_status = :st, updated_at = NOW()
-            WHERE id = :new_id AND organization_id = :org_id
-        """),
-        {"st": target_status, "new_id": payload.new_fleet_id, "org_id": user["org_id"]},
-    )
-
-    # 5. Update active fleet assignments if already dispatched
-    if old_fleet_id:
+    # 3. Move this request's live assignment to the new machine. Scoped to
+    # this request: the old machine's other bookings stay on it.
+    if live_assignment:
         await db.execute(
             text("""
                 UPDATE fleet.fleet_assignments
                 SET fleet_id = :new_fleet_id,
-                    purpose = COALESCE(purpose, '') || ' [Switched from ' || CAST(:old_fleet_id AS text) || ']',
+                    purpose = COALESCE(purpose, '') || ' [Switched from ' || CAST(:old_fleet_label AS text) || ']',
                     updated_at = NOW()
-                WHERE organization_id = :org_id AND fleet_id = :old_fleet_id AND status IN ('planned', 'dispatched', 'active')
+                WHERE id = :assignment_id AND organization_id = :org_id
             """),
             {
                 "new_fleet_id": payload.new_fleet_id,
-                "old_fleet_id": old_fleet_id,
+                "old_fleet_label": old_fleet_label,
+                "assignment_id": live_assignment.id,
                 "org_id": user["org_id"],
             },
         )
+
+    # 4. Release the old machine - but only back to 'available' when no other
+    # job has it. A cross-hired machine goes back to its supplier.
+    if old_fleet_id:
+        await db.execute(
+            text("""
+                UPDATE fleet.fleet f
+                SET operational_status = CASE
+                        WHEN f.operational_status <> ALL(CAST(:job_statuses AS text[])) THEN f.operational_status
+                        WHEN f.ownership_type = 'hired_in' THEN 'hired_in'
+                        WHEN EXISTS (
+                            SELECT 1 FROM fleet.fleet_assignments a
+                            WHERE a.organization_id = f.organization_id AND a.fleet_id = f.id
+                              AND a.is_deleted = false AND a.status IN ('dispatched','active')
+                        ) THEN f.operational_status
+                        WHEN EXISTS (
+                            SELECT 1 FROM fleet.plant_reservations r
+                            JOIN fleet.plant_requests pr ON pr.id = r.plant_request_id AND pr.organization_id = r.organization_id
+                            WHERE r.organization_id = f.organization_id AND r.fleet_id = f.id
+                              AND r.is_deleted = false AND r.status IN ('provisional','confirmed')
+                              AND pr.is_deleted = false
+                              AND pr.status NOT IN ('returned','under_reconciliation','closed','cancelled','rejected')
+                        ) THEN 'assigned'
+                        ELSE 'available'
+                    END,
+                    current_assignment_id = CASE
+                        WHEN f.current_assignment_id = CAST(:assignment_id AS uuid) THEN NULL
+                        ELSE f.current_assignment_id END,
+                    current_project_id = CASE
+                        WHEN f.current_assignment_id = CAST(:assignment_id AS uuid) THEN NULL
+                        ELSE f.current_project_id END,
+                    updated_at = NOW()
+                WHERE f.id = :old_id AND f.organization_id = :org_id
+            """),
+            {
+                "old_id": old_fleet_id,
+                "job_statuses": list(FLEET_JOB_STATUSES),
+                "assignment_id": live_assignment.id if live_assignment else None,
+                "org_id": user["org_id"],
+            },
+        )
+
+    # 5. The new machine is on the job (on site when already on hire)
+    await db.execute(
+        text("""
+            UPDATE fleet.fleet
+            SET operational_status = CAST(:st AS varchar),
+                current_assignment_id = COALESCE(CAST(:assignment_id AS uuid), current_assignment_id),
+                current_project_id = CASE WHEN CAST(:assignment_id AS uuid) IS NOT NULL
+                                          THEN CAST(:project_id AS uuid) ELSE current_project_id END,
+                updated_at = NOW()
+            WHERE id = :new_id AND organization_id = :org_id
+        """),
+        {
+            "st": "deployed" if live_assignment else "assigned",
+            "assignment_id": live_assignment.id if live_assignment else None,
+            "project_id": plant_request["project_id"],
+            "new_id": payload.new_fleet_id,
+            "org_id": user["org_id"],
+        },
+    )
 
     # 6. Append audit note to plant request
     switch_note = f"\n[Machine Switched by {user.get('email', 'Authorized User')} at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}: {new_asset.get('asset_code', '')} ({new_asset.get('name', '')}). Reason: {payload.reason or payload.notes or 'Operational requirement'}]"
@@ -3653,6 +4162,9 @@ async def dispatch_plant_asset(
             fleet_id = row.fleet_id
         else:
             raise HTTPException(status_code=400, detail="No machine specified or reserved for this plant request.")
+    # The inspection and dispatch-note inserts below read payload.fleet_id, so
+    # it must carry the reserved machine when the caller did not name one.
+    payload.fleet_id = fleet_id
 
     asset = await asset_or_404(db, fleet_id, user["org_id"])
     if not request:
@@ -3683,6 +4195,10 @@ async def dispatch_plant_asset(
     )
     if critical_defects_count > 0:
         readiness_blockers.append("Critical defects remain open")
+    if asset.get("operational_status") in FLEET_UNUSABLE_STATUSES:
+        readiness_blockers.append(
+            f"{asset.get('asset_code') or 'The machine'} is {str(asset['operational_status']).replace('_', ' ')} - swap the machine"
+        )
     if readiness_blockers:
         await db.execute(
             text("""
@@ -3708,7 +4224,17 @@ async def dispatch_plant_asset(
             detail=f"Plant mobilisation blocked: {', '.join(readiness_blockers)}",
         )
     starts_at = payload.dispatch_at or datetime.utcnow()
-    ends_at = datetime.combine(request["end_date"], datetime.min.time()) if request["end_date"] else None
+    # The hire runs through its end date, so the assignment ends at the end of
+    # that day (midnight made a same-day dispatch "end before it starts").
+    ends_at = datetime.combine(request["end_date"], datetime.max.time()) if request["end_date"] else None
+    if ends_at and ends_at.date() < starts_at.date():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The hire period ended on {request['end_date']:%d %b %Y}. "
+                "Update the end date (Readiness & Hours) before dispatching."
+            ),
+        )
     destination_location = payload.destination_location or request["work_location"] or "Project Site"
     transport_instr = payload.transport_instructions or ""
     if payload.transporter_name:
