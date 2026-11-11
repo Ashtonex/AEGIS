@@ -139,6 +139,11 @@ async def main() -> None:
     check("pay profile list masks the legacy account number", bob_profile.get("bank_account_number") == "••••7766", bob_profile)
 
     try:
+        account(ALICE, "USD", bank_name="FBC", account_number="1", effective_from=date(2099, 1, 1))
+        check("future-dated payment account is refused", False)
+    except ValidationError:
+        check("future-dated payment account is refused", True)
+    try:
         account(ALICE, "USD", bank_name="FBC")
         check("bank account without a number is refused", False)
     except ValidationError:
@@ -212,8 +217,14 @@ async def main() -> None:
                               payload=payroll_exports.BankFileRequest(currency="USD", confirm_recent_changes=True))
     check("second USD file needs confirmation", status == 409 and "already produced" in str(body), (status, body))
 
-    status, body = await call(payroll_exports.produce_bank_file, user=USER, run_id=run_uuid,
-                              payload=payroll_exports.BankFileRequest(currency="ZWG", confirm_recent_changes=True))
+    # Two simultaneous first requests for the ZWG file: only one may pass.
+    results = await asyncio.gather(*(
+        call(payroll_exports.produce_bank_file, user=USER, run_id=run_uuid,
+             payload=payroll_exports.BankFileRequest(currency="ZWG", confirm_recent_changes=True))
+        for _ in range(2)))
+    check("concurrent ZWG files: one produced, the other refused as a repeat",
+          sorted(s for s, _ in results) == [200, 409] and any("already produced" in str(b) for _, b in results), results)
+    status, body = next(((s, b) for s, b in results if s == 200), results[0])
     zwg_cash = (await sql("SELECT net_pay_secondary FROM finance.payroll_items WHERE payroll_run_id = :r AND employee_id = :a",
                           r=run, a=ALICE))[0]["net_pay_secondary"] if run else None
     check("ZWG bank file: Alice's ZWG net only",

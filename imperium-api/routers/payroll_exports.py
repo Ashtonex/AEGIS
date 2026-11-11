@@ -5,7 +5,7 @@ Mounted at /api/v1/payroll next to payroll_config (same prefix, distinct paths).
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -235,6 +235,12 @@ class PaymentAccountCreate(BaseModel):
     def check_method(self) -> "PaymentAccountCreate":
         if self.method == "bank" and not (self.bank_name and self.account_number):
             raise ValueError("A bank account needs the bank name and account number.")
+        # A new account replaces the current one at once, so it can't start
+        # in the future: the old account would stop before the new one
+        # applies. Zimbabwe is UTC+2 with no daylight saving.
+        today_harare = datetime.now(timezone(timedelta(hours=2))).date()
+        if self.effective_from and self.effective_from > today_harare:
+            raise ValueError("A payment account can't start in the future. Add it on the day it takes effect.")
         if self.method == "mobile_money" and not self.mobile_number:
             raise ValueError("Mobile money needs the wallet number.")
         if self.account_number and not self.account_number.replace(" ", "").replace("-", "").isalnum():
@@ -337,6 +343,9 @@ async def produce_bank_file(
     org_id = _org(user)
     currency = _currency(payload.currency)
     try:
+        # One file at a time per run: two simultaneous requests must not both
+        # pass the "already produced" check before either is logged.
+        await px.lock_run_for_export(db, org_id, str(run_id))
         layout = await px.get_layout(db, org_id, "bank", payload.layout_id)
         preview = await px.bank_file_preview(db, org_id, str(run_id), currency)
         if preview["problems"]:

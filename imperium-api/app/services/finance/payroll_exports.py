@@ -530,6 +530,22 @@ def _person(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+async def lock_run_for_export(db: AsyncSession, org_id: str, run_id: str) -> None:
+    """Row-locks the run until the transaction ends, so bank files for one
+    run are produced one after another and each sees the export logged by
+    the one before."""
+    locked = (await db.execute(
+        text("""
+            SELECT id FROM finance.payroll_runs
+            WHERE id = CAST(:id AS uuid) AND organization_id = :org_id AND is_deleted = false
+            FOR UPDATE
+        """),
+        {"id": run_id, "org_id": org_id},
+    )).first()
+    if not locked:
+        raise PayrollServiceError(404, "Payroll run not found.")
+
+
 async def _run_header(db: AsyncSession, org_id: str, run_id: str) -> Mapping[str, Any]:
     run = (await db.execute(
         text("""
