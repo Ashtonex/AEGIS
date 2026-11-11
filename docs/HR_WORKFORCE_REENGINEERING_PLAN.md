@@ -89,7 +89,7 @@ weekly hours and the pay profile. PAYE, NSSA and AIDS levy come from the
 existing statutory rate tables. One PDF payslip is produced per person per
 period. Posting reuses the existing GL bridge.
 
-### Payroll engine, phase 1 (2026-11-10, migration 287)
+### Payroll engine, phase 1 (2026-11-10, migration 294)
 
 Done (Belina parity on calculation, not yet on returns):
 

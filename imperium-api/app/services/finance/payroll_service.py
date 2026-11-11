@@ -318,7 +318,7 @@ def build_lines(
         el = elements_by_code.get(code)
         if el:
             return _line_from_element(el, amount, **extra)
-        # Org created after migration 287 without its starter catalogue:
+        # Org created after migration 294 without its starter catalogue:
         # basic and overtime are still taxable, NSSA-insurable pay.
         return PayLine(kind="earning", code=code, name=fallback_name, amount=amount, is_taxable=True,
                        is_nssa_insurable=True, sort_order=order, **extra)
