@@ -38,6 +38,8 @@ import {
   updateDailyReportLabour,
   updateDailyReportMaterial,
   updateDailySiteReport,
+  setDailyReportLabourHours,
+  resetDailyReportLabourHours,
 } from "@/lib/api";
 import {
   Btn,
@@ -152,6 +154,52 @@ export function ActiveDailyReport({
     }
   }, [detail?.labour]);
 
+  // Set the same hours for everyone (or the ticked workers) in one go.
+  const [bulkHours, setBulkHours] = useState({ regular: "8", ot: "0" });
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const overriddenCount = (detail?.labour ?? []).filter((l) => l.hours_overridden).length;
+
+  const handleBulkHours = async () => {
+    const regular = Number(bulkHours.regular || 0);
+    const ot = Number(bulkHours.ot || 0);
+    if (regular + ot <= 0) {
+      setNotice({ tone: "error", text: "Hours must add up to more than zero." });
+      return;
+    }
+    const ids = Array.from(bulkSelected);
+    const who = ids.length ? `${ids.length} selected worker(s)` : `all ${detail?.labour.length ?? 0} workers`;
+    if (!confirm(`Set ${regular}h regular + ${ot}h overtime for ${who}? These hours stay as set when the register syncs.`)) return;
+    setSavingAction("bulk-hours");
+    try {
+      const res = await setDailyReportLabourHours(reportId, {
+        regular_hours: regular,
+        overtime_hours: ot,
+        ...(ids.length ? { line_ids: ids } : {}),
+      });
+      setBulkSelected(new Set());
+      setNotice({ tone: "success", text: res?.message || "Hours set." });
+      await onRefresh();
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err, "Failed to set hours.") });
+    } finally {
+      setSavingAction(null);
+    }
+  };
+
+  const handleResetHours = async () => {
+    if (!confirm("Put every hand-set line back on the register's clock-in/clock-out hours?")) return;
+    setSavingAction("reset-hours");
+    try {
+      const res = await resetDailyReportLabourHours(reportId);
+      setNotice({ tone: "success", text: res?.message || "Hours reset to the register." });
+      await onRefresh();
+    } catch (err) {
+      setNotice({ tone: "error", text: errorText(err, "Failed to reset hours.") });
+    } finally {
+      setSavingAction(null);
+    }
+  };
+
   // Equipment hours editing state: [lineId] -> { operating, idle, fuel, dirty }
   const [equipEdits, setEquipEdits] = useState<Record<string, { op: string; idle: string; fuel: string; dirty: boolean }>>({});
   useEffect(() => {
@@ -234,7 +282,8 @@ export function ActiveDailyReport({
       labourCost,
       equipCost,
       materialCost,
-      totalSpend: labourCost + equipCost + materialCost,
+      // Materials were costed when bought or issued; usage is not new spend.
+      totalSpend: labourCost + equipCost,
       headcount: labourLines.length,
       fleetCount: equipLines.length,
       materialCount: matLines.length,
@@ -586,7 +635,7 @@ export function ActiveDailyReport({
 
         <div className="border border-ink-mid bg-ink p-3">
           <div className="flex items-center justify-between text-slate">
-            <span className="font-mono text-[10px] uppercase">Plant & Fleet</span>
+            <span className="font-mono text-[10px] uppercase">Plant &amp; Machines</span>
             <Truck className="h-4 w-4 text-signal" />
           </div>
           <p className="mt-1 font-mono text-xl text-paper">{totals.fleetCount} units</p>
@@ -595,16 +644,16 @@ export function ActiveDailyReport({
 
         <div className="border border-ink-mid bg-ink p-3">
           <div className="flex items-center justify-between text-slate">
-            <span className="font-mono text-[10px] uppercase">Materials Consumed</span>
+            <span className="font-mono text-[10px] uppercase">Materials Used</span>
             <PackageCheck className="h-4 w-4 text-signal" />
           </div>
           <p className="mt-1 font-mono text-xl text-paper">{totals.materialCount} items</p>
-          <p className="mt-0.5 text-xs text-emerald-300 font-mono">{usd(totals.materialCost)} spend</p>
+          <p className="mt-0.5 text-xs text-slate-light font-mono">{usd(totals.materialCost)} value (costed at purchase)</p>
         </div>
 
         <div className="border border-signal/40 bg-signal/5 p-3">
           <div className="flex items-center justify-between text-slate">
-            <span className="font-mono text-[10px] uppercase font-bold text-signal">Total Day Spend</span>
+            <span className="font-mono text-[10px] uppercase font-bold text-signal">Labour + Plant Cost</span>
             <DollarSign className="h-4 w-4 text-signal" />
           </div>
           <p className="mt-1 font-mono text-xl font-bold text-paper">{usd(totals.totalSpend)}</p>
@@ -655,7 +704,7 @@ export function ActiveDailyReport({
               </h3>
             </div>
             <p className="mt-0.5 text-[11px] text-slate-light">
-              Automatically synced from morning attendance. Adjust regular or overtime hours if needed.
+              Synced from the labour register. Hours you change here are kept (marked <b className="text-amber-300">set by hand</b>) and also go to HR for acceptance.
             </p>
           </div>
           {isDraft && (
@@ -665,7 +714,7 @@ export function ActiveDailyReport({
               icon={<Plus className="h-3.5 w-3.5" />}
               className="h-8 text-[11px]"
             >
-              {showAddLabour ? "Cancel" : "+ Add Worker"}
+              {showAddLabour ? "Cancel" : "Add Worker"}
             </Btn>
           )}
         </header>
@@ -742,6 +791,36 @@ export function ActiveDailyReport({
           </div>
         )}
 
+        {/* Set everyone's hours */}
+        {isDraft && (detail?.labour?.length ?? 0) > 0 && (
+          <div className="flex flex-wrap items-end gap-3 border-b border-ink-mid bg-signal/5 px-4 py-3">
+            <div className="text-[11px] text-slate-light">
+              <p className="font-mono uppercase tracking-wider text-signal">Set hours for {bulkSelected.size ? `${bulkSelected.size} selected` : "everyone"}</p>
+              <p>Tick workers in the table to set only theirs.</p>
+            </div>
+            <label className="grid gap-1 text-[10px] font-mono uppercase text-slate">
+              Regular (h)
+              <input type="number" step="0.5" min="0" max="24" value={bulkHours.regular}
+                onChange={(e) => setBulkHours({ ...bulkHours, regular: e.target.value })}
+                className="h-8 w-20 border border-ink-mid bg-ink px-2 text-center font-mono text-xs text-paper focus:border-signal" />
+            </label>
+            <label className="grid gap-1 text-[10px] font-mono uppercase text-slate">
+              Overtime (h)
+              <input type="number" step="0.5" min="0" max="24" value={bulkHours.ot}
+                onChange={(e) => setBulkHours({ ...bulkHours, ot: e.target.value })}
+                className="h-8 w-20 border border-ink-mid bg-ink px-2 text-center font-mono text-xs text-paper focus:border-signal" />
+            </label>
+            <Btn tone="primary" className="h-8 text-xs" busy={savingAction === "bulk-hours"} icon={<Clock className="h-3.5 w-3.5" />} onClick={handleBulkHours}>
+              Apply to {bulkSelected.size ? `${bulkSelected.size} selected` : "all"}
+            </Btn>
+            {overriddenCount > 0 && (
+              <Btn tone="ghost" className="h-8 text-xs" busy={savingAction === "reset-hours"} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={handleResetHours}>
+                Back to register hours ({overriddenCount})
+              </Btn>
+            )}
+          </div>
+        )}
+
         {/* Labour Table */}
         {!detail?.labour?.length ? (
           <div className="p-6 text-center text-xs text-slate-light">
@@ -752,6 +831,13 @@ export function ActiveDailyReport({
             <table className="w-full text-left text-xs">
               <thead className="border-b border-ink-mid bg-ink-light/20 text-slate">
                 <tr>
+                  {isDraft && (
+                    <th className="w-8 pl-4 py-2.5">
+                      <input type="checkbox" aria-label="Select all workers"
+                        checked={bulkSelected.size > 0 && bulkSelected.size === detail.labour.length}
+                        onChange={(e) => setBulkSelected(e.target.checked ? new Set(detail.labour.map((l) => String(l.id))) : new Set())} />
+                    </th>
+                  )}
                   <th className="px-4 py-2.5 font-mono uppercase">Worker Name</th>
                   <th className="px-3 py-2.5 font-mono uppercase">Role / Trade</th>
                   <th className="px-3 py-2.5 font-mono uppercase">Type</th>
@@ -772,8 +858,20 @@ export function ActiveDailyReport({
 
                   return (
                     <tr key={l.id} className="hover:bg-ink-light/20 transition">
+                      {isDraft && (
+                        <td className="pl-4 py-2">
+                          <input type="checkbox" aria-label={`Select ${l.worker_name || "worker"}`}
+                            checked={bulkSelected.has(String(l.id))}
+                            onChange={(e) => setBulkSelected((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(String(l.id)); else next.delete(String(l.id));
+                              return next;
+                            })} />
+                        </td>
+                      )}
                       <td className="px-4 py-2 font-medium">
                         {l.worker_name || l.employee_name || "Site Worker"}
+                        {l.hours_overridden ? <span className="ml-2 font-mono text-[10px] uppercase text-amber-300" title="Hours set by hand; the register sync leaves them alone">set by hand</span> : null}
                       </td>
                       <td className="px-3 py-2 text-slate-light">
                         {l.role_on_site || "-"}
@@ -873,11 +971,11 @@ export function ActiveDailyReport({
             <div className="flex items-center gap-2">
               <Truck className="h-4 w-4 text-signal" />
               <h3 className="font-mono text-xs font-bold uppercase tracking-widest text-paper">
-                2. Plant & Equipment in Use ({detail?.equipment.length ?? 0} Assets)
+                2. Plant, Machines &amp; Small Tools Used Today ({detail?.equipment.length ?? 0})
               </h3>
             </div>
             <p className="mt-0.5 text-[11px] text-slate-light">
-              Automatically synced from active project plant assignments. Adjust operating/idle hours and fuel consumed.
+              One line per machine that worked today: heavy plant on this project and small plant (compactors, vibrators, mixers, floats). Operating hours include idle time; fuel is litres put in today. Recorded when the day is closed.
             </p>
           </div>
           {isDraft && (
@@ -887,7 +985,7 @@ export function ActiveDailyReport({
               icon={<Plus className="h-3.5 w-3.5" />}
               className="h-8 text-[11px]"
             >
-              {showAddEquip ? "Cancel" : "+ Add Plant Line"}
+              {showAddEquip ? "Cancel" : "Add Machine"}
             </Btn>
           )}
         </header>
@@ -895,8 +993,9 @@ export function ActiveDailyReport({
         {/* Add Equipment Form */}
         {showAddEquip && isDraft && (
           <div className="border-b border-ink-mid bg-ink-light/20 p-4">
-            <h4 className="font-mono text-[11px] uppercase tracking-wider text-signal mb-2">Record Additional Equipment Line</h4>
+            <h4 className="font-mono text-[11px] uppercase tracking-wider text-signal mb-2">Add a machine used today</h4>
             <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-6">
+              <FieldLabel label="Machine / asset" className="md:col-span-2">
               <select
                 value={newEquip.fleet_id}
                 onChange={(e) => {
@@ -904,66 +1003,63 @@ export function ActiveDailyReport({
                   setNewEquip({
                     ...newEquip,
                     fleet_id: e.target.value,
-                    cost_rate: asset?.hourly_rate ? String(asset.hourly_rate) : newEquip.cost_rate,
+                    cost_rate: String(asset?.hourly_charge_rate ?? asset?.hourly_operating_cost ?? asset?.hourly_rate ?? newEquip.cost_rate),
                   });
                 }}
                 className={fieldClass}
               >
-                <option value="">Select Fleet Asset...</option>
+                <option value="">Choose the machine…</option>
                 {fleet.map((f) => (
                   <option key={f.id} value={f.id}>
-                    {f.asset_code || f.vehicle_registration || f.name} · {f.asset_type || "Machinery"}
+                    {assetLabel(f)}
                   </option>
                 ))}
               </select>
+              </FieldLabel>
+              <FieldLabel label="Operator">
               <select
                 value={newEquip.operator_employee_id}
                 onChange={(e) => setNewEquip({ ...newEquip, operator_employee_id: e.target.value })}
                 className={fieldClass}
               >
-                <option value="">Operator (optional)...</option>
+                <option value="">No operator / not recorded</option>
                 {employees.map((e) => (
                   <option key={e.id} value={e.id}>
-                    {e.full_name || e.name}
+                    {e.full_name || e.name || e.employee_name}
                   </option>
                 ))}
               </select>
+              </FieldLabel>
+              <FieldLabel label="Hours worked">
               <input
                 type="number"
                 step="0.5"
                 min="0"
                 value={newEquip.operating_hours}
                 onChange={(e) => setNewEquip({ ...newEquip, operating_hours: e.target.value })}
-                placeholder="Operating (h)"
                 className={fieldClass}
               />
+              </FieldLabel>
+              <FieldLabel label="of which idle (h)">
               <input
                 type="number"
                 step="0.5"
                 min="0"
                 value={newEquip.idle_hours}
                 onChange={(e) => setNewEquip({ ...newEquip, idle_hours: e.target.value })}
-                placeholder="Idle (h)"
                 className={fieldClass}
               />
+              </FieldLabel>
+              <FieldLabel label="Fuel added (L)">
               <input
                 type="number"
                 step="1"
                 min="0"
                 value={newEquip.fuel_litres}
                 onChange={(e) => setNewEquip({ ...newEquip, fuel_litres: e.target.value })}
-                placeholder="Fuel (L)"
                 className={fieldClass}
               />
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={newEquip.cost_rate}
-                onChange={(e) => setNewEquip({ ...newEquip, cost_rate: e.target.value })}
-                placeholder="Rate ($/h)"
-                className={fieldClass}
-              />
+              </FieldLabel>
             </div>
             <div className="mt-3 flex justify-end">
               <Btn
@@ -972,7 +1068,7 @@ export function ActiveDailyReport({
                 busy={savingAction === "add-equip"}
                 className="h-8 text-xs"
               >
-                Save Equipment Line
+                Save machine
               </Btn>
             </div>
           </div>
@@ -981,20 +1077,21 @@ export function ActiveDailyReport({
         {/* Equipment Table */}
         {!detail?.equipment?.length ? (
           <div className="p-6 text-center text-xs text-slate-light">
-            No equipment lines recorded for this report. Request plant in the Plant &amp; Equipment tab or click &ldquo;+ Add Plant Line&rdquo;.
+            No machines recorded yet. Add each machine or small tool used today, or record them when you close the site day.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-ink-mid bg-ink-light/20 text-slate">
                 <tr>
-                  <th className="px-4 py-2.5 font-mono uppercase">Asset Code &amp; Model</th>
+                  <th className="px-4 py-2.5 font-mono uppercase">Machine</th>
+                  <th className="px-3 py-2.5 font-mono uppercase">Type</th>
                   <th className="px-3 py-2.5 font-mono uppercase">Operator</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-center w-24">Operating (h)</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-center w-24">Idle (h)</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-center w-24">Fuel (L)</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-right">Rate ($/h)</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-right">Line Total</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-center w-24">Hours worked</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-center w-24">of which idle</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-center w-24">Fuel added (L)</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-right">Hire rate</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-right">Day cost</th>
                   {isDraft && <th className="px-4 py-2.5 font-mono uppercase text-right w-24">Actions</th>}
                 </tr>
               </thead>
@@ -1008,11 +1105,15 @@ export function ActiveDailyReport({
 
                   return (
                     <tr key={e.id} className="hover:bg-ink-light/20 transition">
-                      <td className="px-4 py-2 font-medium">
-                        {e.fleet_code || e.fleet_name || "Machinery Asset"}
+                      <td className="px-4 py-2">
+                        <p className="font-medium">{e.fleet_name || e.asset_type || "Machine"}</p>
+                        <p className="font-mono text-[10px] text-slate-light">{[e.fleet_code, e.vehicle_registration].filter(Boolean).join(" · ") || "No asset code"}</p>
+                      </td>
+                      <td className="px-3 py-2">
+                        <Pill tone={e.is_small_plant ? "gold" : "slate"}>{e.is_small_plant ? "Small plant" : (e.asset_category || "Plant")}</Pill>
                       </td>
                       <td className="px-3 py-2 text-slate-light">
-                        {e.operator_name || "Unassigned"}
+                        {e.operator_name || "—"}
                       </td>
                       <td className="px-3 py-2 text-center">
                         {isDraft ? (
@@ -1074,7 +1175,7 @@ export function ActiveDailyReport({
                         )}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-slate-light">
-                        {usd(e.cost_rate)}/h
+                        {Number(e.cost_rate) > 0 ? `${usd(e.cost_rate, 2)}/h` : "no rate"}
                       </td>
                       <td className="px-3 py-2 text-right font-mono font-medium text-emerald-300">
                         {usd(lineTotal)}
@@ -1123,11 +1224,11 @@ export function ActiveDailyReport({
             <div className="flex items-center gap-2">
               <PackageCheck className="h-4 w-4 text-signal" />
               <h3 className="font-mono text-xs font-bold uppercase tracking-widest text-paper">
-                3. Materials Consumed on Site ({detail?.materials.length ?? 0} Items)
+                3. Materials Used Today ({detail?.materials.length ?? 0})
               </h3>
             </div>
             <p className="mt-0.5 text-[11px] text-slate-light">
-              Materials consumed directly impact project cost performance (ACWP). Synced from stock ledger store issues or logged on site.
+              What was built into the works today. Material taken from a site store comes off that store&apos;s stock; material already issued to the project is recorded without moving stock again. Costs were booked when the material was bought or issued.
             </p>
           </div>
           {isDraft && (
@@ -1137,7 +1238,7 @@ export function ActiveDailyReport({
               icon={<Plus className="h-3.5 w-3.5" />}
               className="h-8 text-[11px]"
             >
-              {showAddMaterial ? "Cancel" : "+ Log Consumed Material"}
+              {showAddMaterial ? "Cancel" : "Add Material Used"}
             </Btn>
           )}
         </header>
@@ -1145,8 +1246,9 @@ export function ActiveDailyReport({
         {/* Add Material Form */}
         {showAddMaterial && isDraft && (
           <div className="border-b border-ink-mid bg-ink-light/20 p-4">
-            <h4 className="font-mono text-[11px] uppercase tracking-wider text-signal mb-2">Log Material Consumed Today</h4>
+            <h4 className="font-mono text-[11px] uppercase tracking-wider text-signal mb-2">Add material used today</h4>
             <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-6">
+              <FieldLabel label="Material" className="md:col-span-2">
               <select
                 value={newMaterial.item_id}
                 onChange={(e) => {
@@ -1159,58 +1261,66 @@ export function ActiveDailyReport({
                 }}
                 className={fieldClass}
               >
-                <option value="">Select Inventory Item...</option>
+                <option value="">Choose the material…</option>
                 {inventoryItems.map((item) => (
                   <option key={item.id} value={item.id}>
-                    {item.item_name || item.name} {item.stock_quantity !== undefined ? `(Stock: ${item.stock_quantity})` : ""}
+                    {item.item_name || item.name}{item.item_code ? ` (${item.item_code})` : ""}{item.unit_of_measure ? ` · ${item.unit_of_measure}` : ""}
                   </option>
                 ))}
               </select>
+              </FieldLabel>
+              <FieldLabel label="Taken from store">
               <select
                 value={newMaterial.store_id}
                 onChange={(e) => setNewMaterial({ ...newMaterial, store_id: e.target.value })}
                 className={fieldClass}
               >
-                <option value="">Store (optional)...</option>
+                <option value="">Already issued to site (no store)</option>
                 {stores.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name || s.store_code}
                   </option>
                 ))}
               </select>
+              </FieldLabel>
+              <FieldLabel label="Quantity used">
               <input
                 type="number"
                 step="0.01"
                 min="0.01"
                 value={newMaterial.quantity_used}
                 onChange={(e) => setNewMaterial({ ...newMaterial, quantity_used: e.target.value })}
-                placeholder="Quantity Used"
                 className={fieldClass}
               />
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={newMaterial.unit_cost}
-                onChange={(e) => setNewMaterial({ ...newMaterial, unit_cost: e.target.value })}
-                placeholder="Unit Cost ($)"
-                className={fieldClass}
-              />
+              </FieldLabel>
+              <FieldLabel label="of which wasted">
               <input
                 type="number"
                 step="0.01"
                 min="0"
                 value={newMaterial.wastage_quantity}
                 onChange={(e) => setNewMaterial({ ...newMaterial, wastage_quantity: e.target.value })}
-                placeholder="Wastage Qty"
                 className={fieldClass}
               />
+              </FieldLabel>
+              <FieldLabel label="Unit cost ($)">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={newMaterial.unit_cost}
+                onChange={(e) => setNewMaterial({ ...newMaterial, unit_cost: e.target.value })}
+                className={fieldClass}
+              />
+              </FieldLabel>
+              <FieldLabel label="Work package / where used" className="md:col-span-3">
               <input
                 value={newMaterial.work_package}
                 onChange={(e) => setNewMaterial({ ...newMaterial, work_package: e.target.value })}
-                placeholder="Work Package (e.g. Slab)"
+                placeholder="e.g. Unit 10 slab, blockwork level 2"
                 className={fieldClass}
               />
+              </FieldLabel>
             </div>
             <div className="mt-3 flex justify-end">
               <Btn
@@ -1219,7 +1329,7 @@ export function ActiveDailyReport({
                 busy={savingAction === "add-material"}
                 className="h-8 text-xs"
               >
-                Record Material
+                Save material used
               </Btn>
             </div>
           </div>
@@ -1228,20 +1338,20 @@ export function ActiveDailyReport({
         {/* Materials Table */}
         {!detail?.materials?.length ? (
           <div className="p-6 text-center text-xs text-slate-light">
-            No materials recorded as consumed today. Click &ldquo;+ Log Consumed Material&rdquo; or ensure store issues have been posted.
+            No material use recorded yet. Add it here, or record it when you close the site day.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-ink-mid bg-ink-light/20 text-slate">
                 <tr>
-                  <th className="px-4 py-2.5 font-mono uppercase">Material Description</th>
-                  <th className="px-3 py-2.5 font-mono uppercase">Store</th>
-                  <th className="px-3 py-2.5 font-mono uppercase">Work Package</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-right">Quantity Used</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-right">Wastage</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-right">Unit Cost</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-right">Total Cost</th>
+                  <th className="px-4 py-2.5 font-mono uppercase">Material</th>
+                  <th className="px-3 py-2.5 font-mono uppercase">Taken from</th>
+                  <th className="px-3 py-2.5 font-mono uppercase">Where used</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-right">Qty used</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-right">Wasted</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-right">Unit cost</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-right">Value used</th>
                   {isDraft && <th className="px-4 py-2.5 font-mono uppercase text-right w-16">Action</th>}
                 </tr>
               </thead>
@@ -1253,11 +1363,14 @@ export function ActiveDailyReport({
 
                   return (
                     <tr key={m.id} className="hover:bg-ink-light/20 transition">
-                      <td className="px-4 py-2 font-medium">
-                        {m.item_name || m.item_code || "Material Item"}
+                      <td className="px-4 py-2">
+                        <p className="font-medium">{m.item_name || "Material"}</p>
+                        {m.item_code ? <p className="font-mono text-[10px] text-slate-light">{m.item_code}</p> : null}
                       </td>
                       <td className="px-3 py-2 text-slate-light">
-                        {m.store_name || "-"}
+                        {m.consumes_stock === false || !m.store_id
+                          ? <Pill tone="slate">Issued to site</Pill>
+                          : <span>{m.store_name || "Site store"}</span>}
                       </td>
                       <td className="px-3 py-2 text-slate-light">
                         {m.work_package || "-"}
@@ -1457,4 +1570,19 @@ export function ActiveDailyReport({
       )}
     </div>
   );
+}
+
+function FieldLabel({ label, className = "", children }: { label: string; className?: string; children: ReactNode }) {
+  return (
+    <label className={`grid gap-1 text-[10px] font-mono uppercase tracking-wider text-slate ${className}`}>
+      {label}
+      {children}
+    </label>
+  );
+}
+
+function assetLabel(f: ApiRecord) {
+  const name = [f.make, f.model].filter(Boolean).join(" ") || f.asset_type || f.vehicle_type || "Machine";
+  const code = f.asset_code || f.vehicle_registration;
+  return `${name}${code ? ` · ${code}` : ""}${f.asset_category ? ` (${f.asset_category})` : ""}`;
 }

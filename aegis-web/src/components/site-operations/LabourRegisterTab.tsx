@@ -6,10 +6,11 @@ import {
   Square, Timer, Trash2, UserPlus, Users,
 } from "lucide-react";
 import {
-  addSiteDayAttendance, addSiteDayAttendanceBatch, clockOutSiteDayAttendance, closeSiteDay, openSiteDay, registerProjectHire,
+  addSiteDayAttendance, addSiteDayAttendanceBatch, clockOutSiteDayAttendance, openSiteDay, registerProjectHire,
   removeSiteDayAttendance, startSiteDay, updateSiteDay, updateSiteDayAttendance,
 } from "@/lib/api";
 import { ApiRecord, Btn, Locked, Notice, Panel, Pill, Toggle, areaClass, errorText, fieldClass, num, qty, timeOf } from "./ui";
+import { CloseDayReconciliation } from "./CloseDayReconciliation";
 
 export type SiteDay = {
   briefing: ApiRecord | null;
@@ -39,6 +40,8 @@ type Props = {
   day: SiteDay | null;
   onDay: (day: Partial<SiteDay>) => void;
   reload: () => Promise<void>;
+  inventoryItems?: ApiRecord[];
+  onOpenRecon?: () => void;
 };
 
 /** Ticks from clock-in to now (or clock-out) without asking the server. */
@@ -63,7 +66,8 @@ function elapsed(from: unknown, to: unknown, now: number) {
 
 const EMPTY_HIRE = { full_name: "", national_id: "", phone: "", trade: "", hourly_rate: "", payment_method: "cash", payment_details: "" };
 
-export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props) {
+export function LabourRegisterTab({ projectId, date, day, onDay, reload, inventoryItems = [], onOpenRecon }: Props) {
+  const [closing, setClosing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "error" | "success" | "info"; text: string } | null>(null);
   const [search, setSearch] = useState("");
@@ -183,7 +187,14 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
   if (!briefing) {
     return (
       <div className="space-y-4">
-        {message ? <Notice tone={message.tone} onClose={() => setMessage(null)}>{message.text}</Notice> : null}
+        {message ? (
+          <div className="space-y-2">
+            <Notice tone={message.tone} onClose={() => setMessage(null)}>{message.text}</Notice>
+            {message.tone === "error" && /weekly/i.test(message.text) && onOpenRecon ? (
+              <Btn tone="ghost" onClick={onOpenRecon}>Open the Weekly Recon tab</Btn>
+            ) : null}
+          </div>
+        ) : null}
         <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
           <div className="flex flex-col justify-center gap-4 border border-signal/30 bg-gradient-to-br from-signal/10 via-ink to-ink p-6">
             <Pill tone="gold"><Clock3 className="h-3 w-3" /> First thing on site</Pill>
@@ -497,7 +508,7 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
               </Btn>
             </Panel>
           ) : running ? (
-            <Panel title="End of day" subtitle="Clocks out everyone still on site and sends the hours to HR for acceptance and billing.">
+            <Panel title="End of day" subtitle="Record today's material and plant usage, then clock out everyone still on site and send the hours to HR.">
               {lateClose ? (
                 <label className="mb-3 grid gap-1.5 text-sm text-amber-200">
                   This site day is from an earlier date. When did people actually leave site?
@@ -507,14 +518,38 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
                 </label>
               ) : null}
               <Btn className="w-full" tone="danger" busy={busy === "close"} disabled={needsLeftTime} icon={<Square className="h-4 w-4" />}
-                onClick={() => { if (window.confirm(`Clock out ${clockedIn} people and close the site day?`)) void run("close", () => closeSiteDay(briefing.id, leftSiteIso)); }}>
+                onClick={() => setClosing(true)}>
                 Close site day
               </Btn>
+              <p className="mt-2 text-[11px] text-slate-light">
+                {briefing.materials_reconciled_at && briefing.plant_reconciled_at
+                  ? "Today's usage is recorded. You can still change it when closing."
+                  : "You'll be asked for today's material usage and plant / small machine hours first."}
+              </p>
             </Panel>
           ) : null}
           <TodayTargetsCard targets={day?.targets ?? []} />
         </div>
       </div>
+      {closing && briefing ? (
+        <CloseDayReconciliation
+          briefingId={String(briefing.id)}
+          clockedIn={clockedIn}
+          leftSiteIso={leftSiteIso}
+          inventoryItems={inventoryItems}
+          onClose={() => setClosing(false)}
+          onOpenRecon={onOpenRecon}
+          onDone={async (payload) => {
+            if (payload && ("attendance" in payload || "briefing" in payload)) {
+              onDay(payload);
+              setMessage({ tone: "success", text: "Usage recorded and site day closed. Hours sent to HR for acceptance." });
+            } else {
+              await reload();
+              setMessage({ tone: "success", text: "Today's material and plant usage recorded. Site stock updated." });
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }

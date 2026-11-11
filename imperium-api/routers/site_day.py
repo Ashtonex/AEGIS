@@ -416,6 +416,7 @@ async def _sync_attendance_rows(
                    COALESCE(a.hourly_rate, w.hourly_rate, 0) AS hourly_rate,
                    COALESCE(a.regular_hours, 0) AS calc_regular_hours,
                    COALESCE(a.overtime_hours, 0) AS calc_overtime_hours,
+                   a.hours_overridden AS register_overridden,
                    a.notes
             FROM projects.site_day_attendance a
             LEFT JOIN finance.site_workers w ON w.id = a.site_worker_id
@@ -454,11 +455,14 @@ async def _sync_attendance_rows(
         reg_hours = Decimal(str(att["calc_regular_hours"] or 0))
         ot_hours = Decimal(str(att["calc_overtime_hours"] or 0))
         if reg_hours + ot_hours <= 0:
+            # Nothing recorded yet. A line whose hours someone set by hand
+            # stays: the clerk's figure is the answer, not the empty register.
             await db.execute(
                 text("""
                 UPDATE projects.daily_report_labour SET is_deleted = true
                 WHERE report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
                   AND attendance_id = :att_id AND is_deleted = false
+                  AND hours_overridden = false
             """),
                 {"report_id": report_id, "org_id": org_id, "att_id": att["attendance_id"]},
             )
@@ -496,8 +500,8 @@ async def _sync_attendance_rows(
             await db.execute(
                 text("""
                 UPDATE projects.daily_report_labour
-                SET regular_hours = :reg_hours,
-                    overtime_hours = :ot_hours,
+                SET regular_hours = CASE WHEN hours_overridden THEN regular_hours ELSE :reg_hours END,
+                    overtime_hours = CASE WHEN hours_overridden THEN overtime_hours ELSE :ot_hours END,
                     cost_rate = :cost_rate,
                     role_on_site = :trade,
                     attendance_id = COALESCE(attendance_id, :att_id),
@@ -526,11 +530,11 @@ async def _sync_attendance_rows(
                         INSERT INTO projects.daily_report_labour (
                             organization_id, report_id, employee_id, site_worker_id,
                             attendance_id, worker_name, worker_kind, role_on_site,
-                            regular_hours, overtime_hours, cost_rate, notes
+                            regular_hours, overtime_hours, cost_rate, notes, hours_overridden
                         ) VALUES (
                             CAST(:org_id AS uuid), :report_id, :employee_id, :site_worker_id,
                             :att_id, :worker_name, :worker_kind, :trade,
-                            :reg_hours, :ot_hours, :cost_rate, :notes
+                            :reg_hours, :ot_hours, :cost_rate, :notes, :overridden
                         )
                     """),
                         {
@@ -546,6 +550,7 @@ async def _sync_attendance_rows(
                             "ot_hours": ot_hours,
                             "cost_rate": cost_rate,
                             "notes": att["notes"] or "",
+                            "overridden": bool(att["register_overridden"]),
                         },
                     )
             except Exception as exc_inner:
@@ -574,7 +579,7 @@ async def _day_payload(db: AsyncSession, org_id: str, briefing: Optional[dict[st
     def regular_of(r: dict[str, Any]) -> Decimal:
         # Recorded hours once clocked out (0 is a real answer); a full
         # regular day is projected only for people still on site.
-        if r.get("clock_out_at"):
+        if r.get("clock_out_at") or r.get("hours_overridden"):
             return Decimal(str(r.get("regular_hours") or 0))
         return projected_cap if r.get("clock_in_at") else Decimal("0")
 
@@ -735,6 +740,18 @@ async def open_site_day(
     on_date = payload.briefing_date or harare_today()
     if on_date > harare_today():
         raise HTTPException(status_code=422, detail="A site day can't be opened in advance.")
+    already = (
+        await db.execute(
+            text("""SELECT 1 FROM projects.site_day_briefings
+                    WHERE organization_id=:org_id AND project_id=:project_id AND briefing_date=:on_date
+                      AND shift=:shift AND NOT is_deleted"""),
+            {"org_id": org_id, "project_id": payload.project_id, "on_date": on_date, "shift": payload.shift},
+        )
+    ).scalar()
+    if not already:
+        from routers.site_reconciliation import guard_open_site_day  # circular at import time
+
+        await guard_open_site_day(db, org_id, payload.project_id, on_date)
     briefing_id = (
         await db.execute(
             text("""
@@ -1091,9 +1108,13 @@ async def _clock_out(db: AsyncSession, row: dict[str, Any], at: datetime, cap: D
     if not row["clock_in_at"] or row["clock_out_at"]:
         return
     regular, overtime = split_hours(row["clock_in_at"], at, cap=Decimal(str(cap)), break_minutes=int(break_minutes))
+    # Hours a clerk already set by hand are kept; only the clock-out time is stamped.
     await db.execute(
         text("""UPDATE projects.site_day_attendance
-                SET clock_out_at=:at, regular_hours=:regular, overtime_hours=:overtime, updated_at=NOW()
+                SET clock_out_at=:at,
+                    regular_hours=CASE WHEN hours_overridden THEN regular_hours ELSE :regular END,
+                    overtime_hours=CASE WHEN hours_overridden THEN overtime_hours ELSE :overtime END,
+                    updated_at=NOW()
                 WHERE id=:id AND organization_id=:org_id"""),
         {"at": at, "regular": regular, "overtime": overtime, "id": row["id"], "org_id": row["organization_id"]},
     )
@@ -1135,6 +1156,13 @@ async def close_site_day(
     briefing = await _briefing(db, org_id, briefing_id, user=user)
     if briefing["status"] != "started":
         raise HTTPException(status_code=409, detail="Only a started site day can be closed.")
+    report_id = await _linked_report_id(db, org_id, briefing_id)
+    report_status = (
+        await db.execute(text("SELECT status FROM projects.daily_site_reports WHERE id=:id"), {"id": report_id})
+    ).scalar() if report_id else None
+    from routers.site_reconciliation import guard_close_site_day  # circular at import time
+
+    await guard_close_site_day(db, org_id, briefing, report_status)
     now = datetime.now(timezone.utc)
     left_at = clock_out_time(
         briefing_date=briefing["briefing_date"], shift=briefing.get("shift"), clock_in_at=briefing.get("started_at"),
@@ -1155,7 +1183,6 @@ async def close_site_day(
                 WHERE id=:id AND organization_id=:org_id"""),
         {"now": now, "user_id": user["user_id"], "id": briefing_id, "org_id": org_id},
     )
-    report_id = await _linked_report_id(db, org_id, briefing_id)
     if report_id:
         await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=report_id)
     project_name = await _project_name(db, org_id, briefing["project_id"], user=user)

@@ -40,6 +40,7 @@ import { title, text, number } from "@/lib/projects/types";
 import { getProjectProgressPack, type ProjectProgressPackData } from "@/lib/api/projects";
 import { ProgressPackModal } from "@/components/projects/ProgressPackModal";
 import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
+import { isActiveAllocation, isProjectHireRow, uniqueHeadcount } from "@/lib/projects/headcount";
 
 export default function ProjectMissionControlPage() {
   const params = useParams();
@@ -121,18 +122,11 @@ export default function ProjectMissionControlPage() {
   // Workforce headcount deduplicated across permanent staff and site hires
   const workforceCount = useMemo(() => {
     if (!team || team.length === 0) return 0;
-    const uniqueIds = new Set<string>();
-    for (const member of team) {
-      const key = String(
-        (member as any).employee_id ??
-          (member as any).employee_number ??
-          (member as any).allocation_id ??
-          (member as any).employee_name ??
-          ""
-      ).toLowerCase();
-      if (key) uniqueIds.add(key);
-    }
-    return uniqueIds.size || team.length;
+    const current = team.filter((m: any) => isActiveAllocation(m));
+    return uniqueHeadcount({
+      permanent: current.filter((m: any) => !isProjectHireRow(m)),
+      hires: current.filter((m: any) => isProjectHireRow(m)).map((m: any) => ({ id: m.allocation_id, national_id: m.employee_number })),
+    });
   }, [team]);
 
   const exec = packData?.executive_summary;

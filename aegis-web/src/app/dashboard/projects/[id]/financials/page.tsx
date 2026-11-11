@@ -57,6 +57,8 @@ export default function ProjectFinancialsPage() {
   const [variationAmount, setVariationAmount] = useState("");
   const [variationType, setVariationType] = useState("addition");
   const [savingVariation, setSavingVariation] = useState(false);
+  const [variationDays, setVariationDays] = useState("0");
+  const [variationError, setVariationError] = useState<string | null>(null);
 
   const [isClaimModalOpen, setIsClaimModalOpen] = useState(false);
   const [claimAmount, setClaimAmount] = useState("");
@@ -136,21 +138,27 @@ export default function ProjectFinancialsPage() {
   };
 
   const handleCreateVariation = async () => {
-    if (!variationTitle.trim() || !variationAmount) return;
+    if (!variationTitle.trim()) { setVariationError("Describe the variation."); return; }
+    if (variationAmount === "" || Number.isNaN(Number(variationAmount))) { setVariationError("Enter the cost impact (0 if not yet priced)."); return; }
     setSavingVariation(true);
+    setVariationError(null);
     try {
       await createFinanceVariation({
         project_id: projectId,
+        title: variationTitle.trim(),
         description: variationTitle.trim(),
-        cost_impact: Number(variationAmount) || 0,
+        cost_impact: Math.abs(Number(variationAmount) || 0),
+        time_impact_days: Math.max(0, Math.round(Number(variationDays) || 0)),
         type: variationType,
+        initiated_by: "client",
       });
       setIsVariationModalOpen(false);
       setVariationTitle("");
       setVariationAmount("");
+      setVariationDays("0");
       await reloadData();
-    } catch {
-      // non-fatal
+    } catch (err) {
+      setVariationError(err instanceof Error && err.message ? err.message : "The variation could not be saved.");
     } finally {
       setSavingVariation(false);
     }
@@ -398,7 +406,7 @@ export default function ProjectFinancialsPage() {
 
           {!subconSummary.items || subconSummary.items.length === 0 ? (
             <div className="py-6 text-center text-xs text-slate-light font-mono">
-              No subcontractor claims recorded for this project yet.
+              No subcontractor payments or claims recorded for this project yet.
             </div>
           ) : (
             <div className="divide-y divide-ink-mid/40">
@@ -406,11 +414,14 @@ export default function ProjectFinancialsPage() {
                 <div key={idx} className="py-2.5 flex items-center justify-between text-xs">
                   <div>
                     <span className="font-mono font-medium text-paper">
-                      {String(sub.subcontractor_name || "Subcontractor")}
+                      {String(sub.subcontractor_name || (sub.status === "paid" ? "Subcontractor payment" : "Subcontractor claim"))}
                     </span>
                     <p className="text-[11px] text-slate-light">
                       {String(sub.reference_description || "Specialist trade package")}
                     </p>
+                    {sub.paid_on || sub.submitted_at ? (
+                      <p className="font-mono text-[10px] text-slate">{formatDate(String(sub.paid_on || sub.submitted_at))}</p>
+                    ) : null}
                   </div>
                   <div className="text-right font-mono">
                     <span className="font-bold text-paper">
@@ -627,10 +638,12 @@ export default function ProjectFinancialsPage() {
                 <div key={idx} className="py-2.5 flex items-center justify-between text-xs">
                   <div>
                     <span className="font-mono font-medium text-paper">
-                      {String(v.variation_number || `VO-${idx + 1}`)}: {String(v.description || "Variation")}
+                      {String(v.variation_number || `VO-${idx + 1}`)}: {String(v.title || v.description || "Variation")}
                     </span>
                     <p className="text-[11px] text-slate-light">
-                      Type: {String(v.type || "addition")}
+                      {String(v.scope_impact || (Number(v.cost_impact) < 0 ? "Omission" : "Addition"))}
+                      {Number(v.time_impact_days) ? ` · ${Number(v.time_impact_days)} day(s)` : ""}
+                      {v.source_type === "site_operations" ? " · logged on site" : ""}
                     </p>
                   </div>
                   <div className="text-right font-mono">
@@ -751,6 +764,16 @@ export default function ProjectFinancialsPage() {
               />
             </div>
             <div>
+              <label className="block text-xs font-mono uppercase text-slate">Time Impact (days)</label>
+              <input
+                type="number"
+                min="0"
+                value={variationDays}
+                onChange={(e) => setVariationDays(e.target.value)}
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+              />
+            </div>
+            <div>
               <label className="block text-xs font-mono uppercase text-slate">Variation Type</label>
               <select
                 value={variationType}
@@ -762,10 +785,13 @@ export default function ProjectFinancialsPage() {
                 <option value="substitution">Substitution</option>
               </select>
             </div>
+            {variationError ? (
+              <p className="border border-red-500/40 bg-red-950/30 p-2.5 text-xs text-red-200">{variationError}</p>
+            ) : null}
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setIsVariationModalOpen(false)}
+                onClick={() => { setIsVariationModalOpen(false); setVariationError(null); }}
                 className="border border-ink-mid px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs text-slate-light hover:text-paper"
               >
                 Cancel

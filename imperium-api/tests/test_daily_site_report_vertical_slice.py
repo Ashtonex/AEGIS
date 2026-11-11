@@ -190,7 +190,8 @@ class DailySiteReportVerticalSliceTests(unittest.TestCase):
         self.assertIn("'site_operations.material.request'", MATERIAL_REQUEST_MIGRATION)
         self.assertIn("requestSiteMaterial", WEB_API)
         self.assertIn("/api/v1/site-operations/material-requests", WEB_API)
-        self.assertIn("Scenario A bridge", SITE_PAGE)
+        self.assertIn("requestSiteMaterialsBatch", SITE_PAGE)
+        self.assertIn("Add to list", SITE_PAGE)
         self.assertIn("Request material", SITE_PAGE)
 
     def test_site_operations_page_degrades_supporting_sources_without_killing_report_list(
