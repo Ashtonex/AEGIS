@@ -142,6 +142,39 @@ async def run() -> None:
                 check(str(note) == str(new_id), f"dispatch note {out['data'].get('dispatch_number', '')} uses the reserved machine")
             except HTTPException as exc:
                 check(False, f"dispatch succeeded ({exc.status_code}: {exc.detail})")
+                return finish()
+
+            print("\n== 6. dates after dispatch")
+            await db.execute(text("UPDATE fleet.plant_requests SET status = 'dispatched' WHERE id = :i"), {"i": req.id})
+            try:
+                await update_plant_request_readiness(req.id, PlantReadinessUpdatePayload(start_date=date.today() + timedelta(days=1)), user=user, db=db)
+                check(False, "start date change on hire refused")
+            except HTTPException as exc:
+                check(exc.status_code == 409, "start date change on hire refused")
+            new_end = date.today() + timedelta(days=45)
+            await update_plant_request_readiness(req.id, PlantReadinessUpdatePayload(end_date=new_end), user=user, db=db)
+            ends = (await db.execute(text("""
+                SELECT ends_at::date FROM fleet.fleet_assignments
+                WHERE plant_request_id = :r AND status IN ('dispatched','active') AND is_deleted = false
+            """), {"r": req.id})).scalar()
+            check(ends == new_end, f"live assignment end moved with the hire end ({ends})")
+
+            print("\n== 7. swap only moves this request's assignment")
+            other = (await db.execute(text("""
+                INSERT INTO fleet.fleet_assignments (organization_id, fleet_id, starts_at, ends_at, status, purpose, created_by)
+                VALUES (:o, :f, now() + interval '400 days', now() + interval '410 days', 'planned', 'verify other job', :u) RETURNING id
+            """), {"o": req.org_id, "f": new_id, "u": uid})).scalar()
+            internal = (await db.execute(text("""
+                SELECT id FROM fleet.fleet WHERE organization_id = :o AND is_deleted = false
+                  AND ownership_type <> 'hired_in' AND id <> :f LIMIT 1
+            """), {"o": req.org_id, "f": new_id})).scalar()
+            await switch_plant_machine(req.id, SwitchPlantMachinePayload(new_fleet_id=internal, reason="verify"), user=user, db=db)
+            mine = (await db.execute(text("""
+                SELECT fleet_id FROM fleet.fleet_assignments WHERE plant_request_id = :r AND status IN ('dispatched','active') AND is_deleted = false
+            """), {"r": req.id})).scalar()
+            theirs = (await db.execute(text("SELECT fleet_id FROM fleet.fleet_assignments WHERE id = :i"), {"i": other})).scalar()
+            check(str(mine) == str(internal), "this request's assignment moved to the replacement")
+            check(str(theirs) == str(new_id), "the old machine's other booking stayed on it")
     finish()
 
 

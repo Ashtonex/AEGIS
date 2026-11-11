@@ -44,6 +44,16 @@ class PlantReadinessHoursContract(unittest.TestCase):
         self.assertIn("dispatch_pack: { readiness_pack: readiness }", PLANT_PAGE)
         self.assertIn("payload.fleet_id = fleet_id", FLEET)
 
+    def test_swap_only_moves_this_requests_assignment(self):
+        self.assertIn("AND plant_request_id = :plant_request_id\n                  AND status IN ('planned', 'dispatched', 'active')", FLEET)
+
+    def test_end_date_change_on_hire_moves_assignment(self):
+        self.assertIn("The machine is booked for another job in the extended period.", FLEET)
+        self.assertIn("SET ends_at = CAST(:ends_at AS timestamptz)", FLEET)
+
+    def test_hour_log_form_gated_on_fleet_create(self):
+        self.assertIn('permissions?.has("fleet.create")', PLANT_PAGE)
+
     def test_untyped_binds_fixed(self):
         self.assertNotIn("CAST(:old_fleet_id AS text)", FLEET)
         self.assertNotIn("(:approval_status IS NULL", FLEET)

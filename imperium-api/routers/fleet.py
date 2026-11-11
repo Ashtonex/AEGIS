@@ -3571,7 +3571,7 @@ async def update_plant_request_readiness(
         (
             await db.execute(
                 text("""
-        SELECT id, project_id, operator_required, readiness_pack, start_date, end_date
+        SELECT id, project_id, status, operator_required, readiness_pack, start_date, end_date
         FROM fleet.plant_requests
         WHERE id=:id AND organization_id=:org_id AND is_deleted=false
           AND status NOT IN ('closed','cancelled','rejected')
@@ -3589,6 +3589,40 @@ async def update_plant_request_readiness(
     new_end = payload.end_date if "end_date" in sent else current["end_date"]
     if new_start and new_end and new_end < new_start:
         raise HTTPException(status_code=422, detail="The hire end date cannot be before the start date.")
+    on_hire = current["status"] in ("dispatched", "active")
+    if on_hire and new_start != current["start_date"]:
+        raise HTTPException(status_code=409, detail="The machine is already on hire, so the start date can no longer change.")
+    if on_hire and new_end != current["end_date"]:
+        # The live assignment carries the booked range that availability
+        # checks read, so it moves with the end date - unless that would run
+        # into another booking of the same machine.
+        new_ends_at = datetime.combine(new_end, datetime.max.time()) if new_end else None
+        clash = await db.execute(
+            text("""
+            SELECT 1 FROM fleet.fleet_assignments other
+            JOIN fleet.fleet_assignments mine
+              ON mine.organization_id = other.organization_id AND mine.fleet_id = other.fleet_id
+            WHERE mine.organization_id = :org_id AND mine.plant_request_id = :id
+              AND mine.is_deleted = false AND mine.status IN ('dispatched','active')
+              AND other.id <> mine.id AND other.is_deleted = false
+              AND other.status IN ('planned','dispatched','active')
+              AND tstzrange(mine.starts_at, COALESCE(CAST(:ends_at AS timestamptz), 'infinity'::timestamptz), '[]')
+                  && tstzrange(other.starts_at, COALESCE(other.ends_at, 'infinity'::timestamptz), '[]')
+            LIMIT 1
+        """),
+            {"org_id": user["org_id"], "id": plant_request_id, "ends_at": new_ends_at},
+        )
+        if clash.scalar():
+            raise HTTPException(status_code=409, detail="The machine is booked for another job in the extended period.")
+        await db.execute(
+            text("""
+            UPDATE fleet.fleet_assignments
+            SET ends_at = CAST(:ends_at AS timestamptz), updated_at = NOW()
+            WHERE organization_id = :org_id AND plant_request_id = :id
+              AND is_deleted = false AND status IN ('dispatched','active')
+        """),
+            {"org_id": user["org_id"], "id": plant_request_id, "ends_at": new_ends_at},
+        )
     readiness_pack = merge_plant_readiness_pack(current.get("readiness_pack"), payload.readiness_pack)
     readiness_blockers = plant_readiness_blockers(
         readiness_pack,
@@ -3773,14 +3807,19 @@ async def switch_plant_machine(
                 SET fleet_id = :new_fleet_id,
                     purpose = COALESCE(purpose, '') || ' [Switched from ' || CAST(:old_fleet_label AS text) || ']',
                     updated_at = NOW()
-                WHERE organization_id = :org_id AND fleet_id = :old_fleet_id AND status IN ('planned', 'dispatched', 'active')
+                WHERE organization_id = :org_id AND fleet_id = :old_fleet_id
+                  AND plant_request_id = :plant_request_id
+                  AND status IN ('planned', 'dispatched', 'active')
             """),
             {
                 # Separate binds: asyncpg types each parameter once, so one
                 # value cannot serve both a text concat and a uuid compare.
+                # Scoped to this request: the old machine's other bookings
+                # must not move to the replacement.
                 "new_fleet_id": payload.new_fleet_id,
                 "old_fleet_id": old_fleet_id,
                 "old_fleet_label": str(old_fleet_id),
+                "plant_request_id": plant_request_id,
                 "org_id": user["org_id"],
             },
         )

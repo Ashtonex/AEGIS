@@ -1587,6 +1587,10 @@ function PlantReadinessHoursModal({
   onChanged: () => void;
 }) {
   const requestId = request.id;
+  // POST /fleet/utilization requires fleet.create; Plant and Project Managers
+  // can manage readiness (fleet.plant_requests.update) without holding it.
+  const { permissions, isSuperAdmin } = useAuth();
+  const canLogHours = isSuperAdmin || Boolean(permissions?.has("fleet.create"));
   const fleetId = text(request, "current_fleet_id");
   const assignmentId = text(request, "current_assignment_id");
   const [tab, setTab] = useState<"readiness" | "hours">(
@@ -1803,6 +1807,10 @@ function PlantReadinessHoursModal({
               {!fleetId ? (
                 <p className="border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
                   Reserve a machine (or cross-hire one with Swap Machine) before logging hours.
+                </p>
+              ) : !canLogHours ? (
+                <p className="border border-ink-mid bg-ink-light p-3 text-xs text-slate-light">
+                  Logging hours needs the fleet &quot;create&quot; permission, which your role does not have. Ask an administrator to log them or grant it.
                 </p>
               ) : (
                 <div className="space-y-3 border border-ink-mid p-3">
