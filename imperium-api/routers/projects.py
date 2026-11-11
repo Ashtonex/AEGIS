@@ -1527,7 +1527,8 @@ async def get_project_team(
           wc.name AS category_name, wc.payroll_eligible,
           pos.name AS position_name, pos.trade, pos.grade,
           cu.email AS assigned_by_email,
-          (a.status IN ('planned','active') AND (a.ends_on IS NULL OR a.ends_on >= CURRENT_DATE)) AS is_current
+          (a.status IN ('planned','active') AND (a.ends_on IS NULL OR a.ends_on >= CURRENT_DATE)) AS is_current,
+          e.linked_user_id AS user_id
         FROM hr.project_allocations a
         JOIN hr.employees e ON e.id = a.employee_id AND e.organization_id = a.organization_id
         LEFT JOIN hr.worker_categories wc ON wc.id = e.category_id AND wc.organization_id = a.organization_id
@@ -1545,7 +1546,8 @@ async def get_project_team(
           'Project Hire' AS category_name, false AS payroll_eligible,
           w.trade AS position_name, w.trade, 'Site' AS grade,
           NULL::character varying AS assigned_by_email,
-          (w.status = 'active' AND (w.end_date IS NULL OR w.end_date >= CURRENT_DATE)) AS is_current
+          (w.status = 'active' AND (w.end_date IS NULL OR w.end_date >= CURRENT_DATE)) AS is_current,
+          NULL::uuid AS user_id
         FROM finance.site_workers w
         WHERE w.organization_id = :org_id AND w.project_id = :project_id AND w.is_deleted = false
 

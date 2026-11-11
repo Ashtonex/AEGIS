@@ -9,7 +9,9 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardCheck,
+  CalendarCheck,
   ClipboardList,
+  FileDiff,
   FileText,
   FolderKanban,
   HardHat,
@@ -21,9 +23,9 @@ import {
   Search,
   Send,
   Target,
+  Trash2,
   Truck,
   Users,
-  Wrench,
   X,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
@@ -52,8 +54,9 @@ import {
   getSitePlantRequests,
   getWeeklySiteBudgetItems,
   getWeeklySiteBudgets,
+  getWeeklyReconciliation,
   getWorkforce,
-  requestSiteMaterial,
+  requestSiteMaterialsBatch,
   suggestMaterials,
   submitDailySiteReport,
   syncDailyReport,
@@ -67,6 +70,8 @@ import { LabourRegisterTab, type SiteDay } from "@/components/site-operations/La
 import { PlantTab } from "@/components/site-operations/PlantTab";
 import { ActiveDailyReport } from "@/components/site-operations/ActiveDailyReport";
 import { TargetsTab } from "@/components/site-operations/TargetsTab";
+import { VariationsTab } from "@/components/site-operations/VariationsTab";
+import { WeeklyReconTab } from "@/components/site-operations/WeeklyReconTab";
 import { Btn, Locked, Notice, Panel, Pill, areaClass, errorText, fieldClass, qty, usd } from "@/components/site-operations/ui";
 
 type ApiRecord = Record<string, any> & { id: string };
@@ -90,7 +95,22 @@ type Detail = {
     is_ready_for_submission: boolean;
   };
 };
-type TabKey = "register" | "report" | "plant" | "materials" | "targets";
+type TabKey = "register" | "report" | "plant" | "materials" | "variations" | "recon" | "targets";
+const TAB_KEYS: TabKey[] = ["register", "report", "plant", "materials", "variations", "recon", "targets"];
+const isTab = (value: string | null | undefined): value is TabKey => !!value && (TAB_KEYS as string[]).includes(value);
+
+type BasketLine = {
+  key: string;
+  item_id: string;
+  material_description: string;
+  specifications: string;
+  unit_of_measure: string;
+  quantity: string;
+  unit_cost: string;
+  work_package: string;
+  weekly_budget_item_id: string;
+  store_id: string;
+};
 
 const EMPTY_DETAIL: Detail = {
   report: {} as ApiRecord,
@@ -172,10 +192,7 @@ function SiteOperationsWorkspace() {
   const queryTab = searchParams?.get("tab") || "";
 
   const [tab, setTab] = useState<TabKey>(() => {
-    if (queryTab === "register" || queryTab === "report" || queryTab === "plant" || queryTab === "materials" || queryTab === "targets") {
-      return queryTab;
-    }
-    return "register";
+    return isTab(queryTab) ? queryTab : "register";
   });
   const [projectId, setProjectId] = useState(queryProjectId);
   const [workDate, setWorkDate] = useState(harareToday());
@@ -279,6 +296,8 @@ function SiteOperationsWorkspace() {
     justification: "",
     weekly_budget_item_id: "",
   });
+  const [basket, setBasket] = useState<BasketLine[]>([]);
+  const [weeklyRecon, setWeeklyRecon] = useState<{ required: boolean; completed: boolean; blocking: boolean; due: string } | null>(null);
   const [materialSearch, setMaterialSearch] = useState("");
   const [suggestions, setSuggestions] = useState<{ catalogue: any[]; candidates: any[] }>({ catalogue: [], candidates: [] });
   const [searchingMaterials, setSearchingMaterials] = useState(false);
@@ -342,9 +361,7 @@ function SiteOperationsWorkspace() {
   // Deep links from mobile bottom dock / Teams cards: ?tab=…&projectId=…&date=…
   useEffect(() => {
     const t = searchParams?.get("tab");
-    if (t === "register" || t === "report" || t === "plant" || t === "materials" || t === "targets") {
-      setTab(t);
-    }
+    if (isTab(t)) setTab(t);
     const p = searchParams?.get("projectId") || searchParams?.get("project");
     if (p) setProjectId(p);
     const d = searchParams?.get("date");
@@ -444,8 +461,20 @@ function SiteOperationsWorkspace() {
     }
   }, [projectId, workDate]);
 
+  const loadWeeklyRecon = useCallback(async () => {
+    if (!projectId) { setWeeklyRecon(null); return; }
+    try {
+      const res = await getWeeklyReconciliation(projectId);
+      const d = res.data;
+      setWeeklyRecon(d ? { required: !!d.required, completed: !!d.completed, blocking: !!d.blocking, due: String(d.week_ending) } : null);
+    } catch {
+      setWeeklyRecon(null);
+    }
+  }, [projectId]);
+
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void loadDay(); }, [loadDay]);
+  useEffect(() => { void loadWeeklyRecon(); }, [loadWeeklyRecon]);
   useLiveTable("projects.daily_site_reports", () => void load());
   useLiveTable("projects.site_day_briefings", () => void loadDay());
   useLiveTable("projects.site_day_attendance", () => void loadDay());
@@ -598,90 +627,111 @@ function SiteOperationsWorkspace() {
     }
   };
 
+  const currentLine = (): BasketLine | null => {
+    const desc = (materialRequest.material_description || materialSearch || "").trim();
+    if (!materialRequest.item_id && !desc) return null;
+    return {
+      key: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `line-${Date.now()}`,
+      item_id: materialRequest.item_id,
+      material_description: desc,
+      specifications: materialRequest.specifications,
+      unit_of_measure: materialRequest.unit_of_measure || "each",
+      quantity: materialRequest.quantity,
+      unit_cost: materialRequest.unit_cost,
+      work_package: materialRequest.work_package,
+      weekly_budget_item_id: materialRequest.weekly_budget_item_id,
+      store_id: materialRequest.store_id,
+    };
+  };
+
+  const clearLineFields = () => {
+    setMaterialRequest((m) => ({ ...m, item_id: "", material_description: "", specifications: "", quantity: "1", unit_cost: "0", unit_of_measure: "each" }));
+    setMaterialSearch("");
+    setSuggestions({ catalogue: [], candidates: [] });
+  };
+
+  const addToBasket = () => {
+    const line = currentLine();
+    if (!line) { setNotice({ tone: "error", text: "Enter or pick a material first." }); return; }
+    if (!(Number(line.quantity) > 0)) { setNotice({ tone: "error", text: "Enter a quantity above zero." }); return; }
+    setBasket((b) => [...b, line]);
+    clearLineFields();
+    setNotice(null);
+  };
+
   const submitMaterialRequest = async () => {
     if (!projectId) { setNotice({ tone: "error", text: "Select a project before requesting site materials." }); return; }
-    const desc = (materialRequest.material_description || materialSearch || "").trim();
-    if (!materialRequest.item_id && !desc) { setNotice({ tone: "error", text: "Enter or select a material description before requesting site materials." }); return; }
-    
+    const pending = currentLine();
+    const lines = [...basket, ...(pending ? [pending] : [])];
+    if (!lines.length) { setNotice({ tone: "error", text: "Add at least one material to the request." }); return; }
+    const bad = lines.find((l) => !(Number(l.quantity) > 0));
+    if (bad) { setNotice({ tone: "error", text: `Enter a quantity above zero for ${bad.material_description || "every line"}.` }); return; }
+
     const payload = {
       project_id: projectId,
-      item_id: materialRequest.item_id || null,
-      material_description: desc || null,
-      specifications: materialRequest.specifications || null,
-      unit_of_measure: materialRequest.unit_of_measure || "each",
       store_id: materialRequest.store_id || null,
-      quantity: Number(materialRequest.quantity),
-      unit_cost: Number(materialRequest.unit_cost),
       required_by_date: materialRequest.required_by_date,
       priority: materialRequest.priority,
-      work_package: materialRequest.work_package || null,
       justification: materialRequest.justification || null,
-      weekly_budget_item_id: materialRequest.weekly_budget_item_id || null,
-      auto_submit_requisition: true,
+      lines: lines.map((l) => ({
+        item_id: l.item_id || null,
+        material_description: l.material_description || null,
+        specifications: l.specifications || null,
+        unit_of_measure: l.unit_of_measure || "each",
+        store_id: l.store_id || null,
+        weekly_budget_item_id: l.weekly_budget_item_id || null,
+        quantity: Number(l.quantity),
+        unit_cost: Number(l.unit_cost || 0),
+        work_package: l.work_package || null,
+      })),
+    };
+    const resetForm = () => {
+      setBasket([]);
+      clearLineFields();
+      setMaterialRequest((m) => ({ ...m, justification: "", work_package: "" }));
+    };
+    const queueOffline = async (text: string) => {
+      await enqueueOutbox({
+        operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
+        organizationId: "snc",
+        userId: session?.user?.id || "site-engineer",
+        projectId,
+        entityType: "site_material_request",
+        action: "create",
+        endpoint: "/api/v1/site-operations/material-requests/batch",
+        payload,
+      });
+      setNotice({ tone: "info", text });
+      resetForm();
     };
 
     setSaving("material-request");
     try {
       if (typeof navigator !== "undefined" && !navigator.onLine) {
-        await enqueueOutbox({
-          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
-          organizationId: "snc",
-          userId: session?.user?.id || "site-engineer",
-          projectId,
-          entityType: "site_material_request",
-          action: "create",
-          endpoint: "/api/v1/site-operations/material-requests",
-          payload,
-        });
-        setNotice({
-          tone: "info",
-          text: `Offline: Material request for "${desc || "Item"}" saved to local outbox. It will synchronize once connected.`,
-        });
-        setMaterialRequest((m) => ({ ...m, item_id: "", material_description: "", specifications: "", quantity: "1", justification: "", work_package: "" }));
-        setMaterialSearch("");
+        await queueOffline(`Offline: request for ${lines.length} material(s) saved to the outbox. It will send once connected.`);
         return;
       }
-
-      // CCB Commercial Guard audit; continue if the audit service is unreachable.
-      try {
-        await auditSiteRequest({
-          requester_name: "Site Supervisor",
-          document_type: "SITE_MATERIAL_REQUEST",
-          item: materialRequest.work_package || desc || "Site Material Request",
-          requested_quantity: Number(materialRequest.quantity),
-          earned_quantity: Number(materialRequest.quantity) * 0.65,
-          unit_rate: Number(materialRequest.unit_cost),
-          project_id: projectId,
-        });
-      } catch {
-        // audit is advisory
-      }
-      const response = await requestSiteMaterial(payload);
-      const data = response.data ?? {};
-      const issued = data.issued_quantity ?? "0";
-      const shortfall = data.shortfall_quantity ?? "0";
-      setNotice({ tone: "success", text: `Material request ${text(data.request_number, "")} processed. Issued ${issued}; shortfall ${shortfall}${data.purchase_requisition_number ? `; PR ${data.purchase_requisition_number} raised for approval.` : "."}` });
-      setMaterialRequest((m) => ({ ...m, item_id: "", material_description: "", specifications: "", quantity: "1", justification: "", work_package: "" }));
-      setMaterialSearch("");
+      // CCB Commercial Guard audit per line; advisory only.
+      await Promise.allSettled(lines.map((l) => auditSiteRequest({
+        requester_name: "Site Supervisor",
+        document_type: "SITE_MATERIAL_REQUEST",
+        item: l.work_package || l.material_description || "Site Material Request",
+        requested_quantity: Number(l.quantity),
+        earned_quantity: Number(l.quantity) * 0.65,
+        unit_rate: Number(l.unit_cost || 0),
+        project_id: projectId,
+      })));
+      const response = await requestSiteMaterialsBatch(payload);
+      const created: ApiRecord[] = response.data?.requests ?? [];
+      setNotice({
+        tone: "success",
+        text: `${created.length || lines.length} material request(s) sent for Site Engineer sign-off${created.length ? `: ${created.map((c) => c.request_number).join(", ")}` : ""}.`,
+      });
+      resetForm();
       await load();
     } catch (reason) {
       if (typeof navigator !== "undefined" && !navigator.onLine) {
-        await enqueueOutbox({
-          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
-          organizationId: "snc",
-          userId: session?.user?.id || "site-engineer",
-          projectId,
-          entityType: "site_material_request",
-          action: "create",
-          endpoint: "/api/v1/site-operations/material-requests",
-          payload,
-        });
-        setNotice({
-          tone: "info",
-          text: `Connection lost: Material request saved to local outbox. Will sync automatically.`,
-        });
-        setMaterialRequest((m) => ({ ...m, item_id: "", material_description: "", specifications: "", quantity: "1", justification: "", work_package: "" }));
-        setMaterialSearch("");
+        await queueOffline("Connection lost: the material request is in the outbox and will send automatically.");
         return;
       }
       setNotice({ tone: "error", text: errorText(reason, "Material request failed.") });
@@ -713,6 +763,9 @@ function SiteOperationsWorkspace() {
     { key: "report", label: "Daily Report", icon: <ClipboardList className="h-4 w-4" />, locked: !unlocked },
     { key: "plant", label: "Plant & Equipment", icon: <Truck className="h-4 w-4" />, locked: !unlocked },
     { key: "materials", label: "Material Requests", icon: <PackageCheck className="h-4 w-4" />, locked: !unlocked },
+    { key: "variations", label: "Variations", icon: <FileDiff className="h-4 w-4" />, locked: false },
+    { key: "recon", label: "Weekly Recon", icon: <CalendarCheck className="h-4 w-4" />, locked: false,
+      badge: !weeklyRecon ? undefined : weeklyRecon.completed ? "done" : weeklyRecon.blocking ? "overdue" : weeklyRecon.required ? "due" : undefined },
     { key: "targets", label: "Budgets & Targets", icon: <Target className="h-4 w-4" />, locked: false, badge: metrics.targets ? `${metrics.targetsDone}/${metrics.targets}` : undefined },
   ];
 
@@ -781,7 +834,7 @@ function SiteOperationsWorkspace() {
               {t.icon}
               <span className="font-medium">{t.label}</span>
               {t.locked ? <Lock className="h-3.5 w-3.5 text-amber-400" /> : null}
-              {t.badge ? <span className="font-mono text-[10px] uppercase text-slate">{t.badge}</span> : null}
+              {t.badge ? <span className={`font-mono text-[10px] uppercase ${t.badge === "overdue" ? "text-red-300" : t.badge === "due" ? "text-amber-300" : "text-slate"}`}>{t.badge}</span> : null}
             </button>
           ))}
         </nav>
@@ -801,14 +854,30 @@ function SiteOperationsWorkspace() {
           <Notice tone="info">You are not assigned to any project yet. Ask your project manager to add you to a project team - you will then see that project here.</Notice>
         ) : null}
         {notice ? <Notice tone={notice.tone} onClose={() => setNotice(null)}>{notice.text}</Notice> : null}
+        {projectId && weeklyRecon && !weeklyRecon.completed && (weeklyRecon.blocking || weeklyRecon.required) && tab !== "recon" ? (
+          <div className={`flex flex-wrap items-center justify-between gap-3 border px-4 py-3 text-sm ${weeklyRecon.blocking ? "border-red-500/50 bg-red-950/30 text-red-100" : "border-amber-500/40 bg-amber-950/20 text-amber-100"}`}>
+            <span className="flex items-center gap-2">
+              <CalendarCheck className="h-4 w-4" />
+              {weeklyRecon.blocking
+                ? `The weekly stores count and material usage reconciliation for the week ending ${dateValue(weeklyRecon.due)} is overdue. No new site day can be opened until it is done.`
+                : "It's Saturday: count the site stores and confirm the week's material usage before closing today's site day."}
+            </span>
+            <Btn tone="ghost" onClick={() => changeTab("recon")}>Do it now</Btn>
+          </div>
+        ) : null}
       </div>
 
       {tab === "register" ? (
         dayLoading && !day ? <LoadingBlock label="Loading the site day" /> :
-        <LabourRegisterTab projectId={projectId} date={workDate} day={day} onDay={(partial) => setDay((d) => (d ? { ...d, ...partial } : d))} reload={loadDay} />
+        <LabourRegisterTab projectId={projectId} date={workDate} day={day} onDay={(partial) => setDay((d) => (d ? { ...d, ...partial } : d))} reload={loadDay}
+          inventoryItems={inventoryItems} onOpenRecon={() => changeTab("recon")} />
       ) : null}
 
       {tab === "targets" ? <TargetsTab projectId={projectId} date={workDate} onChanged={() => void loadDay()} /> : null}
+
+      {tab === "variations" ? <VariationsTab projectId={projectId} projectName={projectName} canApprove={canApprove} /> : null}
+
+      {tab === "recon" ? <WeeklyReconTab projectId={projectId} projectName={projectName} onChanged={() => { void loadWeeklyRecon(); void loadDay(); }} /> : null}
 
       {tab === "plant" ? (!projectId ? <Locked title="Choose a project" body="Plant requests and fleet tracking are managed per project." /> : !unlocked ? lockedPanel("Plant & Equipment") : (
         <PlantTab
@@ -922,8 +991,36 @@ function SiteOperationsWorkspace() {
 
       {tab === "materials" ? (!projectId ? <Locked title="Choose a project" body="Material requests are raised against a project's weekly budget." /> : !unlocked ? lockedPanel("Material requests") : (
         <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-          <Panel title="Site material request" subtitle="Checks stock first. Available stock is issued and costed to the project; any shortfall becomes a procurement requisition for approval."
-            actions={<span className="border border-signal/30 bg-signal/10 px-2 py-1 font-mono text-[10px] uppercase text-signal">Scenario A bridge</span>}>
+          <Panel title="Site material request" subtitle="Add every material you need to the list, then send them together. The Site Engineer verifies each line; stock is issued from store and any shortfall becomes a procurement requisition."
+            actions={basket.length ? <span className="border border-signal/30 bg-signal/10 px-2 py-1 font-mono text-[10px] uppercase text-signal">{basket.length} on the list</span> : null}>
+            {basket.length ? (
+              <div className="mb-4 border border-signal/30">
+                <div className="flex items-center justify-between border-b border-signal/30 bg-signal/10 px-3 py-2">
+                  <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-signal">Materials on this request</p>
+                  <p className="font-mono text-[11px] text-slate-light">Est. {money(basket.reduce((sum, l) => sum + number(l.quantity) * number(l.unit_cost), 0))}</p>
+                </div>
+                <ul className="divide-y divide-ink-mid">
+                  {basket.map((l, i) => (
+                    <li key={l.key} className="grid items-center gap-2 px-3 py-2 text-xs sm:grid-cols-[24px_minmax(0,1fr)_120px_100px_32px]">
+                      <span className="font-mono text-slate">{i + 1}</span>
+                      <span className="min-w-0">
+                        <span className="text-paper">{l.material_description || "Catalogue item"}</span>
+                        {l.item_id ? <CheckCircle2 className="ml-1 inline h-3 w-3 text-emerald-400" /> : <span className="ml-1 text-[10px] text-amber-300">new item</span>}
+                        {l.work_package || l.specifications ? <span className="block truncate text-[10px] text-slate-light">{[l.specifications, l.work_package].filter(Boolean).join(" · ")}</span> : null}
+                      </span>
+                      <label className="flex items-center gap-1">
+                        <input type="number" min="0" step="any" value={l.quantity} aria-label={`Quantity of ${l.material_description}`}
+                          onChange={(e) => setBasket((b) => b.map((x) => (x.key === l.key ? { ...x, quantity: e.target.value } : x)))}
+                          className="h-8 w-20 border border-ink-mid bg-ink px-2 text-right font-mono text-xs text-paper focus:border-signal" />
+                        <span className="text-slate">{l.unit_of_measure}</span>
+                      </label>
+                      <span className="text-right font-mono text-slate-light">{money(number(l.quantity) * number(l.unit_cost))}</span>
+                      <button aria-label={`Remove ${l.material_description}`} onClick={() => setBasket((b) => b.filter((x) => x.key !== l.key))} className="p-1 text-slate hover:text-red-300"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <div className="grid gap-3 md:grid-cols-2">
               <div className="relative md:col-span-2">
                 <div className="flex items-center justify-between">
@@ -1045,7 +1142,11 @@ function SiteOperationsWorkspace() {
                   {weeklyItems.map((line) => <option key={line.id} value={line.id}>{text(line.description)} · planned {qty(line.planned_qty)} {text(line.unit, "")}</option>)}
                 </select>
               </label>
-              <textarea value={materialRequest.justification} onChange={(event) => setMaterialRequest({ ...materialRequest, justification: event.target.value })} placeholder="Why is it needed today?" className={`${areaClass} min-h-16 md:col-span-2`} />
+              <div className="flex flex-wrap items-center justify-between gap-2 md:col-span-2">
+                <p className="text-[11px] text-slate-light">Needing more than one material? Add this one to the list and enter the next. Needed-by date, priority and reason apply to the whole request.</p>
+                <Btn tone="ghost" icon={<Plus className="h-4 w-4" />} onClick={addToBasket}>Add to list &amp; enter another</Btn>
+              </div>
+              <textarea value={materialRequest.justification} onChange={(event) => setMaterialRequest({ ...materialRequest, justification: event.target.value })} placeholder="Why are these needed? (whole request)" className={`${areaClass} min-h-16 md:col-span-2`} />
             </div>
             {Number(materialRequest.quantity) > 50 ? (
               <div className="mt-3 flex items-center gap-2 border border-red-500/30 bg-red-500/5 p-3 text-xs text-paper">
@@ -1054,8 +1155,13 @@ function SiteOperationsWorkspace() {
               </div>
             ) : null}
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-slate-light">{selectedItem ? `Estimated value ${money(number(materialRequest.quantity) * number(materialRequest.unit_cost))}` : ""}</p>
-              <Btn onClick={() => void submitMaterialRequest()} busy={saving === "material-request"} icon={<PackageCheck className="h-4 w-4" />}>Request material</Btn>
+              <p className="text-xs text-slate-light">{selectedItem ? `This line ${money(number(materialRequest.quantity) * number(materialRequest.unit_cost))}` : ""}</p>
+              <Btn onClick={() => void submitMaterialRequest()} busy={saving === "material-request"} icon={<PackageCheck className="h-4 w-4" />}>
+                {(() => {
+                  const n = basket.length + (currentLine() ? 1 : 0);
+                  return n > 1 ? `Request ${n} materials` : "Request material";
+                })()}
+              </Btn>
             </div>
           </Panel>
           <Panel title="Recent requests" subtitle={projectName}>

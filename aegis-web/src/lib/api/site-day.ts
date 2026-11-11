@@ -71,3 +71,46 @@ export const decideProjectHireHours = (payload: { attendance_ids: string[]; deci
 export const getOrCreateDailyReport = (briefingId: string) =>
   post<{ daily_report_id: string; report_id: string }>(`${SITE}/day/${briefingId}/daily-report`);
 
+
+// Day close (migration 298): the day's material and plant usage must be on
+// the daily report before the day closes. Saturday: count the site stores
+// and confirm the week's material usage.
+export async function getDayUsageReconciliation(briefingId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${SITE}/day/${briefingId}/usage-reconciliation`, { cache: "no-store", allowFallback: false });
+}
+export const reconcileDayUsage = (
+  briefingId: string,
+  payload: {
+    materials: Array<{ item_id: string; store_id?: string | null; quantity_used: number; wastage_quantity?: number; unit_cost?: number | null; consumes_stock: boolean; work_package?: string | null; notes?: string | null }>;
+    no_materials_used: boolean;
+    plant: Array<{ fleet_id: string; operator_employee_id?: string | null; operating_hours: number; idle_hours?: number; fuel_litres?: number; notes?: string | null }>;
+    no_plant_used: boolean;
+  },
+) => post(`${SITE}/day/${briefingId}/usage-reconciliation`, payload);
+
+export async function getWeeklyReconciliation(projectId: string, weekEnding?: string): Promise<ApiResponse<any>> {
+  const search = new URLSearchParams({ project_id: projectId });
+  if (weekEnding) search.set("week_ending", weekEnding);
+  return fetchApi<ApiResponse<any>>(`${SITE}/weekly-reconciliation?${search.toString()}`, { cache: "no-store", allowFallback: false });
+}
+export const confirmWeeklyMaterialUsage = (payload: {
+  project_id: string; week_ending: string; notes?: string | null;
+  lines: Array<{ item_id: string; store_id: string; unrecorded_usage_qty: number; notes?: string | null }>;
+}) => post(`${SITE}/weekly-reconciliation/materials`, payload);
+export const completeWeeklyStoresCount = (payload: {
+  project_id: string; week_ending: string; notes?: string | null;
+  lines: Array<{ item_id: string; store_id: string; counted_qty: number; notes?: string | null }>;
+}) => post(`${SITE}/weekly-reconciliation/stores`, payload);
+
+// Variations logged from site land in the project's variation register.
+export async function getSiteVariations(projectId: string): Promise<ApiResponse<any[]> & { totals?: any }> {
+  return fetchApi<ApiResponse<any[]> & { totals?: any }>(`${SITE}/variations?project_id=${encodeURIComponent(projectId)}`, { cache: "no-store", allowFallback: false });
+}
+export const logSiteVariation = (payload: Record<string, unknown>) => post(`${SITE}/variations`, payload);
+
+// Labour hours set by hand stay over register syncs.
+export const setDailyReportLabourHours = (reportId: string, payload: { regular_hours: number; overtime_hours: number; line_ids?: string[] }) =>
+  post(`${SITE}/daily-reports/${reportId}/labour/set-hours`, payload);
+export const resetDailyReportLabourHours = (reportId: string) => post(`${SITE}/daily-reports/${reportId}/labour/reset-hours`);
+
+export const requestSiteMaterialsBatch = (payload: Record<string, unknown>) => post(`${SITE}/material-requests/batch`, payload);

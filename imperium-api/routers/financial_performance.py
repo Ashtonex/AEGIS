@@ -15,7 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
-from app.shared.events import emit_notification
+from app.shared.events import emit_event, emit_notification
+from app.shared.variations import next_variation_number, normalise_initiated_by, signed_cost
+from core.project_scope import require_project_access
 from app.shared.pagination import limited, ok
 from app.services.finance.payroll_exports import mask_account
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
@@ -42,13 +44,19 @@ class CostCodeCreate(BaseModel):
 class VariationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    variation_number: str = Field(min_length=1, max_length=40)
+    # Generated per project when left out (VAR-<project>-NNN).
+    variation_number: Optional[str] = Field(default=None, max_length=40)
     project_id: UUID
-    title: str = Field(min_length=1, max_length=255)
+    # Falls back to the description: the project financials form only asks for one.
+    title: Optional[str] = Field(default=None, max_length=255)
     description: Optional[str] = None
     initiated_by: str = Field(default="client", max_length=40)
     cost_impact: float = 0.0
-    time_impact_days: int = 0
+    time_impact_days: int = Field(default=0, ge=0)
+    # addition / omission / substitution. An omission is stored as a negative cost impact.
+    type: Optional[str] = Field(default=None, max_length=20)
+    scope_impact: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class CashAccountCreate(BaseModel):
@@ -535,40 +543,72 @@ async def get_project_financial_detail(
     mat_row = materials_rows.first()
     detail["materials_summary"] = dict(mat_row._mapping) if mat_row else {}
 
-    # Subcontractor claims / payment requests
-    subcon_rows = await db.execute(
-        text("""
+    # Subcontractor payments. Money actually paid reaches the project as
+    # subcontract cost lines (bank statement lines, their splits and project
+    # money entries all post finance.cost_transactions with cost_category
+    # 'subcontract'). Vendor payment requests add what is still owed.
+    subcon_totals = (
+        await db.execute(
+            text("""
             SELECT
-                COALESCE(SUM(CASE WHEN vpr.status IN ('paid', 'cleared') THEN vpr.amount ELSE 0 END), 0) AS paid_amount,
-                COALESCE(SUM(CASE WHEN vpr.status NOT IN ('paid', 'cleared', 'rejected') THEN vpr.amount ELSE 0 END), 0) AS pending_amount,
-                COUNT(vpr.id) AS total_requests
-            FROM finance.vendor_payment_requests vpr
-            WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
-              AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
-              AND vpr.is_deleted = false
+                COALESCE((
+                    SELECT SUM(ct.amount) FROM finance.cost_transactions ct
+                    WHERE ct.project_id = :project_id AND ct.organization_id = :org_id
+                      AND ct.cost_category = 'subcontract' AND ct.status = 'posted'
+                ), 0) + COALESCE((
+                    -- cleared payment requests post a cashbook payment, not a cost line
+                    SELECT SUM(vpr.amount) FROM finance.vendor_payment_requests vpr
+                    WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
+                      AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
+                      AND vpr.status IN ('paid', 'cleared') AND vpr.is_deleted = false
+                ), 0) AS paid_amount,
+                COALESCE((
+                    SELECT COUNT(*) FROM finance.cost_transactions ct
+                    WHERE ct.project_id = :project_id AND ct.organization_id = :org_id
+                      AND ct.cost_category = 'subcontract' AND ct.status = 'posted'
+                ), 0) AS paid_count,
+                COALESCE((
+                    SELECT SUM(vpr.amount) FROM finance.vendor_payment_requests vpr
+                    WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
+                      AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
+                      AND vpr.status NOT IN ('paid', 'cleared', 'rejected') AND vpr.is_deleted = false
+                ), 0) AS pending_amount,
+                COALESCE((
+                    SELECT COUNT(*) FROM finance.vendor_payment_requests vpr
+                    WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
+                      AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
+                      AND vpr.is_deleted = false
+                ), 0) AS total_requests
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
-    )
-    subcon_summary = dict(subcon_rows.first()._mapping) if subcon_rows else {}
+            {"project_id": project_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    subcon_summary = dict(subcon_totals) if subcon_totals else {}
 
     subcon_items = await db.execute(
         text("""
-            SELECT
-                vpr.id,
-                vpr.reference_description,
-                vpr.amount,
-                vpr.currency,
-                vpr.status,
-                vpr.submitted_at,
-                vpr.cleared_at,
-                s.supplier_name AS subcontractor_name
-            FROM finance.vendor_payment_requests vpr
-            LEFT JOIN procurement.suppliers s ON s.id = COALESCE(vpr.subcontractor_id, vpr.supplier_id)
-            WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
-              AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
-              AND vpr.is_deleted = false
-            ORDER BY vpr.created_at DESC
-            LIMIT 20
+            SELECT * FROM (
+                SELECT ct.id, ct.description AS reference_description, ct.amount, 'USD' AS currency,
+                       'paid' AS status, ct.transaction_date AS paid_on,
+                       CAST(ct.transaction_date AS timestamptz) AS submitted_at,
+                       CAST(ct.transaction_date AS timestamptz) AS cleared_at,
+                       NULL::varchar AS subcontractor_name, ct.source_type
+                FROM finance.cost_transactions ct
+                WHERE ct.project_id = :project_id AND ct.organization_id = :org_id
+                  AND ct.cost_category = 'subcontract' AND ct.status = 'posted'
+                UNION ALL
+                SELECT vpr.id, vpr.reference_description, vpr.amount, vpr.currency, vpr.status,
+                       CAST(vpr.cleared_at AS date) AS paid_on, vpr.submitted_at, vpr.cleared_at,
+                       s.supplier_name AS subcontractor_name, 'vendor_payment_request' AS source_type
+                FROM finance.vendor_payment_requests vpr
+                LEFT JOIN procurement.suppliers s ON s.id = COALESCE(vpr.subcontractor_id, vpr.supplier_id)
+                WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
+                  AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
+                  AND vpr.is_deleted = false
+                  AND vpr.status <> 'rejected'
+            ) x
+            ORDER BY COALESCE(x.paid_on, CAST(x.submitted_at AS date)) DESC NULLS LAST
+            LIMIT 50
         """),
         {"project_id": project_id, "org_id": user["org_id"]},
     )
@@ -997,6 +1037,16 @@ async def create_variation(
     )
     if not proj.first():
         raise HTTPException(status_code=404, detail="Project not found.")
+    await require_project_access(db, user, payload.project_id)
+
+    title = (payload.title or payload.description or "").strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Give the variation a title or description.")
+    variation_number = (payload.variation_number or "").strip() or await next_variation_number(
+        db, user["org_id"], payload.project_id
+    )
+    variation_type = (payload.type or "").strip().lower() or None
+    scope_impact = payload.scope_impact or (variation_type.capitalize() if variation_type else None)
 
     try:
         var_id = (
@@ -1004,26 +1054,36 @@ async def create_variation(
                 text("""
             INSERT INTO finance.variations (
                 organization_id, variation_number, project_id, title, description,
-                initiated_by, cost_impact, time_impact_days, status
+                initiated_by, cost_impact, time_impact_days, status, scope_impact, notes,
+                source_type, created_by, submitted_by, submitted_at
             ) VALUES (
                 :org_id, :variation_number, :project_id, :title, :description,
-                :initiated_by, :cost_impact, :time_impact_days, 'pending'
+                :initiated_by, :cost_impact, :time_impact_days, 'pending', :scope_impact, :notes,
+                'finance', :user_id, :user_id, NOW()
             ) RETURNING id
         """),
                 {
                     "org_id": user["org_id"],
-                    "variation_number": payload.variation_number,
+                    "variation_number": variation_number,
                     "project_id": payload.project_id,
-                    "title": payload.title,
+                    "title": title[:255],
                     "description": payload.description,
-                    "initiated_by": payload.initiated_by,
-                    "cost_impact": payload.cost_impact,
+                    "initiated_by": normalise_initiated_by(payload.initiated_by),
+                    "cost_impact": signed_cost(payload.cost_impact, variation_type),
                     "time_impact_days": payload.time_impact_days,
+                    "scope_impact": scope_impact,
+                    "notes": payload.notes,
+                    "user_id": user["user_id"],
                 },
             )
         ).scalar()
+        await emit_event(
+            db, user=user, event_type="finance.variation.recorded.v1", aggregate_type="variation",
+            aggregate_id=var_id, project_id=payload.project_id,
+            event_data={"variation_number": variation_number, "cost_impact": str(payload.cost_impact)},
+        )
         await db.commit()
-        return ok({"id": str(var_id)}, "Variation order recorded.")
+        return ok({"id": str(var_id), "variation_number": variation_number}, f"Variation {variation_number} recorded.")
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Variation number already exists.")

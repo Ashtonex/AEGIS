@@ -27,6 +27,7 @@ from routers import hr_files
 from routers import hr_time
 from routers import hr_performance
 from routers import site_day
+from routers import site_reconciliation
 from routers import corporate_credentials
 from routers import tender_requirement_templates
 from routers import tender_discovery, tender_workflow
@@ -210,6 +211,7 @@ def create_app() -> FastAPI:
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["Projects"], dependencies=[Depends(require_resource_permission("projects"))])  # fmt: skip
     app.include_router(site_reports.router, prefix="/api/v1/site-operations", tags=["Site Operations"])  # fmt: skip
     app.include_router(site_day.router, prefix="/api/v1/site-operations", tags=["Site Day"])  # fmt: skip
+    app.include_router(site_reconciliation.router, prefix="/api/v1/site-operations", tags=["Site Reconciliation"])  # fmt: skip
     app.include_router(site_operations.router, prefix="/api/v1/site-operations", tags=["Site Operations"], dependencies=[Depends(require_resource_permission("site_operations"))])  # fmt: skip
     app.include_router(workforce_foundation.router, prefix="/api/v1/workforce/foundation", tags=["Workforce Foundation"])
     # Workforce actions carry explicit dependencies; POST decisions need update,
