@@ -115,10 +115,42 @@ Done (Belina parity on calculation, not yet on returns):
   DB side: `payroll_service.py`; setup API: `/api/v1/payroll`.
   The old `/financial-performance/payroll/runs` create/decide/post now return 410.
 
-Not done yet (next phases): ZIMRA P2/ITF16 and NSSA returns, bank payment
-files, NEC grades/levies, ZIMDEF, FDS year-end averaging, retro pay,
-payslip PDF. All rates must be entered as rate tables before the first run;
-none are hard-coded.
+### Payroll returns and bank files, phase 2 (2026-11-11, migration 297)
+
+ZIMRA (TaRMS, which replaced the P2 and the ITF16 from 2024), NSSA and each
+bank publish their own upload templates and change them, so no format is
+hard-coded:
+
+- **Where people are paid** (`finance.employee_payment_accounts`): bank,
+  mobile money or cash, one live account per employee per currency. A
+  change ends the old account and starts a new one (history kept). Changes
+  need `finance.payroll.payment_details.manage` (Finance Manager, Executive,
+  SUPERADMIN). Numbers are masked everywhere except inside a bank file. The
+  old single bank pair on the pay profile was copied across and is no longer
+  written.
+- **Export layouts** (`finance.payroll_export_layouts`): columns picked from a
+  field catalogue plus fixed-text columns, headers, separator, date format.
+  Three built-in starting layouts live in code
+  (`app/services/finance/payroll_exports.py`).
+- **Bank file per run and currency**: approved or posted runs only. Blocks
+  when anyone paid in that currency has no account, or when totals don't
+  match the run. Cash and mobile money are listed apart. Accounts changed in
+  the last 30 days and repeat files must be confirmed.
+- **Monthly PAYE and NSSA schedules**: posted runs paid in the month,
+  per-currency amounts split the same way as the posting, reconciled to the
+  statutory liabilities. Missing tax numbers, NSSA numbers or national IDs
+  and unposted runs are warned about. The NSSA ceiling is read from the rate
+  table.
+- **Export log** (`finance.payroll_exports`): every file, with checksum, not
+  content.
+- API: `/api/v1/payroll/{payment-accounts, export-layouts, export-fields,
+  runs/{id}/bank-file, returns/{paye|nssa}, exports}`; screen: Payroll >
+  Returns & bank files. `scripts/verify_payroll_phase2.py` runs 50 checks.
+
+Not done yet (next phases): NEC grades/levies, ZIMDEF, FDS year-end
+averaging, retro pay, payslip PDF, employer-cost pay codes, submitting
+returns directly to TaRMS or NSSA. All rates must be entered as rate tables
+before the first run; none are hard-coded.
 
 ## Phase 5: Intelligence
 
