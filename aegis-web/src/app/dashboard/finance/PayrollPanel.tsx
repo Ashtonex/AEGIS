@@ -4,7 +4,7 @@ import type React from "react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck, CheckCircle2, Clock, ChevronDown, ChevronRight, FolderKanban,
-  Loader2, Pencil, Plus, RefreshCw, Search, Send, UserPlus, UserX, Users, Wallet, X, XCircle, HardHat,
+  Loader2, Pencil, Plus, RefreshCw, Search, Send, Settings2, UserPlus, UserX, Users, Wallet, X, XCircle, HardHat,
 } from "lucide-react";
 import {
   createPayrollRun,
@@ -20,13 +20,10 @@ import {
 } from "@/lib/api";
 import { Skeleton, SkeletonTableRows } from "@/components/ui/Skeleton";
 import { SitePayrollPanel } from "./SitePayrollPanel";
+import { PayrollSetupPanel } from "./PayrollSetupPanel";
+import { EmptyState, Panel, buttonClass, ghostButtonClass, inputClass, labelClass, money } from "./payrollUi";
 
 type RecordData = Record<string, any>;
-
-function money(value: unknown) {
-  const num = typeof value === "number" ? value : Number(value);
-  return new Intl.NumberFormat("en-ZW", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Number.isFinite(num) ? num : 0);
-}
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -36,11 +33,6 @@ function endOfMonth(dateStr: string) {
   const d = new Date(dateStr);
   return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
 }
-
-const inputClass = "w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50";
-const labelClass = "block text-[11px] font-mono uppercase tracking-wider text-slate mb-1";
-const buttonClass = "inline-flex items-center gap-2 bg-signal text-ink font-semibold px-3 py-2 rounded-sm text-sm hover:bg-signal/95 disabled:opacity-50 disabled:cursor-not-allowed";
-const ghostButtonClass = "inline-flex items-center gap-2 border border-ink-mid text-paper font-medium px-3 py-2 rounded-sm text-sm hover:border-signal/50 disabled:opacity-50";
 
 const RUN_STATUS_CLASS: Record<string, string> = {
   draft: "border-slate-500/30 bg-slate-950/20 text-slate-300",
@@ -116,31 +108,45 @@ function estimateGross(profile: RecordData, regularHours: number, overtimeHours:
 }
 
 function emptyProfileForm() {
-  return { employee_id: "", pay_type: "monthly_salary", base_rate: "", overtime_rate: "0", currency: "USD", bank_name: "", bank_account_number: "", tax_number: "", nssa_number: "" };
+  return {
+    employee_id: "", pay_type: "monthly_salary", base_rate: "", overtime_rate: "0", currency: "USD",
+    secondary_currency: "ZWG", secondary_share_pct: "0",
+    bank_name: "", bank_account_number: "", tax_number: "", nssa_number: "",
+  };
 }
+
+type RunInputs = { regular_hours: string; overtime_hours: string; bonus: string; deduction: string };
+const DEFAULT_RUN_INPUTS: RunInputs = { regular_hours: "160", overtime_hours: "0", bonus: "0", deduction: "0" };
+
+const VIEW_HINT = {
+  staff: "Registered employees with pay profiles, statutory deductions applied.",
+  site: "Hourly project labour not registered on AEGIS, paid per project.",
+  setup: "Pay codes, recurring allowances and deductions, loans, month locks and year-to-date.",
+} as const;
 
 /** Payroll has two populations: Staff (HR employees with pay profiles, run
  * monthly with PAYE/NSSA) and Site (hourly project labour that isn't on
- * AEGIS, paid per project from timesheets). */
+ * AEGIS, paid per project from timesheets). Setup holds the pay codes and
+ * controls the staff payroll uses. */
 export function PayrollPanel({ projects, departmentId = "" }: { projects: RecordData[]; departmentId?: string }) {
-  const [view, setView] = useState<"staff" | "site">("staff");
+  const [view, setView] = useState<"staff" | "site" | "setup">("staff");
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-1 border-b border-ink-mid">
-        {([["staff", "Staff payroll", Users], ["site", "Site payroll", HardHat]] as const).map(([key, label, Icon]) => (
+      <div className="flex items-center gap-1 border-b border-ink-mid overflow-x-auto">
+        {([["staff", "Staff payroll", Users], ["site", "Site payroll", HardHat], ["setup", "Pay codes & setup", Settings2]] as const).map(([key, label, Icon]) => (
           <button
             key={key}
             onClick={() => setView(key)}
-            className={`inline-flex items-center gap-2 px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px transition-colors ${view === key ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+            className={`inline-flex items-center gap-2 px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px whitespace-nowrap transition-colors ${view === key ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
           >
             <Icon className="h-3.5 w-3.5" />{label}
           </button>
         ))}
-        <span className="ml-auto pb-2 text-[11px] text-slate-light hidden md:block">
-          {view === "staff" ? "Registered employees with pay profiles, statutory deductions applied." : "Hourly project labour not registered on AEGIS, paid per project."}
-        </span>
+        <span className="ml-auto pb-2 text-[11px] text-slate-light hidden lg:block">{VIEW_HINT[view]}</span>
       </div>
-      {view === "staff" ? <StaffPayrollPanel projects={projects} departmentId={departmentId} /> : <SitePayrollPanel projects={projects} />}
+      {view === "staff" && <StaffPayrollPanel projects={projects} departmentId={departmentId} />}
+      {view === "site" && <SitePayrollPanel projects={projects} />}
+      {view === "setup" && <PayrollSetupPanel />}
     </div>
   );
 }
@@ -158,10 +164,13 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
   const [showProfileForm, setShowProfileForm] = useState(false);
   const [profileSearch, setProfileSearch] = useState("");
 
-  const [runForm, setRunForm] = useState({ period_start: `${today().slice(0, 7)}-01`, period_end: endOfMonth(today()), payment_date: today(), cash_account_id: "", project_id: "" });
+  const [runForm, setRunForm] = useState({
+    period_start: `${today().slice(0, 7)}-01`, period_end: endOfMonth(today()), payment_date: today(),
+    cash_account_id: "", project_id: "", exchange_rate: "", secondary_cash_account_id: "",
+  });
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [selectedProfileIds, setSelectedProfileIds] = useState<Record<string, boolean>>({});
-  const [profileHours, setProfileHours] = useState<Record<string, { regular_hours: string; overtime_hours: string }>>({});
+  const [profileHours, setProfileHours] = useState<Record<string, RunInputs>>({});
 
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [expandedRunItems, setExpandedRunItems] = useState<RecordData[]>([]);
@@ -216,19 +225,32 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
   const selectedCount = Object.values(selectedProfileIds).filter(Boolean).length;
   const selectedEstimate = useMemo(() => {
     return payProfiles.filter(p => selectedProfileIds[p.id]).reduce((sum, p) => {
-      const hours = profileHours[p.id] || { regular_hours: "160", overtime_hours: "0" };
-      return sum + estimateGross(p, Number(hours.regular_hours) || 0, Number(hours.overtime_hours) || 0);
+      const hours = profileHours[p.id] || DEFAULT_RUN_INPUTS;
+      return sum + estimateGross(p, Number(hours.regular_hours) || 0, Number(hours.overtime_hours) || 0) + (Number(hours.bonus) || 0);
     }, 0);
   }, [payProfiles, selectedProfileIds, profileHours]);
+  // Split pay: the run needs an exchange rate and a second-currency account
+  // only when someone selected is paid partly in another currency.
+  const splitCurrency = useMemo(() => {
+    const split = payProfiles.find(p => selectedProfileIds[p.id] && Number(p.secondary_share_pct) > 0);
+    return split ? String(split.secondary_currency || "ZWG") : null;
+  }, [payProfiles, selectedProfileIds]);
+  const secondaryAccounts = useMemo(
+    () => (splitCurrency ? accounts.filter(a => String(a.currency || "").toUpperCase() === splitCurrency) : []),
+    [accounts, splitCurrency],
+  );
 
   const runAction = async (action: () => Promise<unknown>, success: string) => {
     setBusy(true);
     try {
-      await action();
-      notify(success, "ok");
+      const result = (await action()) as { data?: { warnings?: string[]; gl_proposal_warning?: string } } | undefined;
+      const warnings = [...(result?.data?.warnings || []), ...(result?.data?.gl_proposal_warning ? [result.data.gl_proposal_warning] : [])];
+      notify(warnings.length ? `${success}\n${warnings.join("\n")}` : success, "ok");
       await loadData();
+      return true;
     } catch (error) {
       notify(error instanceof Error ? error.message : "Payroll operation failed.", "error");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -242,6 +264,8 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
         base_rate: String(profile.base_rate ?? ""),
         overtime_rate: String(profile.overtime_rate ?? "0"),
         currency: profile.currency || "USD",
+        secondary_currency: profile.secondary_currency || "ZWG",
+        secondary_share_pct: String(Number(profile.secondary_share_pct || 0)),
         bank_name: profile.bank_name || "",
         bank_account_number: profile.bank_account_number || "",
         tax_number: profile.tax_number || "",
@@ -255,15 +279,22 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
 
   const saveProfile = (event: React.FormEvent) => {
     event.preventDefault();
+    const share = Number(profileForm.secondary_share_pct) || 0;
     void runAction(
-      () => upsertFinancePayrollProfile({ ...profileForm, base_rate: Number(profileForm.base_rate), overtime_rate: Number(profileForm.overtime_rate) }),
+      () => upsertFinancePayrollProfile({
+        ...profileForm,
+        base_rate: Number(profileForm.base_rate),
+        overtime_rate: Number(profileForm.overtime_rate),
+        secondary_share_pct: share,
+        secondary_currency: share > 0 ? profileForm.secondary_currency : null,
+      }),
       "Payroll profile saved."
-    ).then(() => setShowProfileForm(false));
+    ).then(ok => ok && setShowProfileForm(false));
   };
 
   const toggleProfileSelected = (profileId: string) => {
     setSelectedProfileIds(prev => ({ ...prev, [profileId]: !prev[profileId] }));
-    setProfileHours(prev => prev[profileId] ? prev : { ...prev, [profileId]: { regular_hours: "160", overtime_hours: "0" } });
+    setProfileHours(prev => prev[profileId] ? prev : { ...prev, [profileId]: { ...DEFAULT_RUN_INPUTS } });
   };
 
   const createRun = (event: React.FormEvent) => {
@@ -277,14 +308,20 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
       notify("Choose the cash account payroll will be paid from.", "error");
       return;
     }
+    if (splitCurrency && (!(Number(runForm.exchange_rate) > 0) || !runForm.secondary_cash_account_id)) {
+      notify(`Someone on this run is paid partly in ${splitCurrency}: enter the exchange rate and the ${splitCurrency} account.`, "error");
+      return;
+    }
     const items = selected.map(p => {
-      const hours = profileHours[p.id] || { regular_hours: "0", overtime_hours: "0" };
+      const hours = profileHours[p.id] || { ...DEFAULT_RUN_INPUTS, regular_hours: "0" };
+      const bonus = Number(hours.bonus) || 0;
       return {
         employee_id: p.employee_id,
         project_id: runForm.project_id || null,
         regular_hours: Number(hours.regular_hours) || 0,
         overtime_hours: Number(hours.overtime_hours) || 0,
-        other_deduction: 0,
+        other_deduction: Number(hours.deduction) || 0,
+        one_offs: bonus > 0 ? [{ code: "BONUS", amount: bonus }] : [],
       };
     });
     void runAction(() => createPayrollRun({
@@ -292,9 +329,15 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
       period_end: runForm.period_end,
       payment_date: runForm.payment_date,
       cash_account_id: runForm.cash_account_id,
+      ...(splitCurrency ? {
+        secondary_currency: splitCurrency,
+        exchange_rate: Number(runForm.exchange_rate),
+        secondary_cash_account_id: runForm.secondary_cash_account_id,
+      } : {}),
       items,
-    }), `Payroll run created for ${selected.length} employee${selected.length === 1 ? "" : "s"}.`);
-    setSelectedProfileIds({});
+    }), `Payroll run created for ${selected.length} employee${selected.length === 1 ? "" : "s"}.`).then(ok => {
+      if (ok) setSelectedProfileIds({});
+    });
   };
 
   const toggleRunExpanded = async (runId: string) => {
@@ -348,7 +391,7 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
 
       {notice && (
         <div className={`border px-4 py-3 text-sm flex justify-between items-center animate-in fade-in slide-in-from-top-1 duration-fast ${notice.tone === "error" ? "border-red-500/30 bg-red-950/20 text-red-300" : "border-signal/30 bg-signal/10 text-paper"}`}>
-          <span>{notice.text}</span>
+          <span className="whitespace-pre-line">{notice.text}</span>
           <button onClick={() => setNotice(null)} className="hover:opacity-70"><X className="h-3.5 w-3.5" /></button>
         </div>
       )}
@@ -387,11 +430,20 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
               </select>
             </div>
             <div>
-              <label className={labelClass}>Currency</label>
-              <select className={inputClass} value={profileForm.currency} onChange={e => setProfileForm({ ...profileForm, currency: e.target.value })}>
-                <option value="USD">USD</option>
-                <option value="ZWG">ZWG</option>
-              </select>
+              <label className={labelClass}>Part paid in a second currency</label>
+              <div className="flex gap-2">
+                <input
+                  className={`${inputClass} w-20`}
+                  inputMode="decimal"
+                  value={profileForm.secondary_share_pct}
+                  onChange={e => setProfileForm({ ...profileForm, secondary_share_pct: e.target.value })}
+                  title="Percentage of pay made in the second currency (0 = all in USD)"
+                />
+                <span className="self-center text-xs text-slate">% in</span>
+                <select className={inputClass} value={profileForm.secondary_currency} onChange={e => setProfileForm({ ...profileForm, secondary_currency: e.target.value })}>
+                  <option value="ZWG">ZWG</option>
+                </select>
+              </div>
             </div>
             <div>
               <label className={labelClass}>{profileForm.pay_type === "monthly_salary" ? "Monthly base rate" : profileForm.pay_type === "daily" ? "Day rate" : "Hourly rate"}</label>
@@ -491,7 +543,9 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
               <label className={labelClass}>Pay from account</label>
               <select className={inputClass} value={runForm.cash_account_id} onChange={e => setRunForm({ ...runForm, cash_account_id: e.target.value })} required>
                 <option value="">Cash account</option>
-                {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name} - {money(a.current_balance)}</option>)}
+                {accounts
+                  .filter(a => String(a.currency || "USD").toUpperCase() === "USD")
+                  .map(a => <option key={a.id} value={a.id}>{a.account_name} - {money(a.current_balance, "USD")}</option>)}
               </select>
             </div>
             <div>
@@ -502,6 +556,25 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
               </select>
             </div>
           </div>
+
+          {splitCurrency && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3 border border-sky-500/30 bg-sky-950/10 rounded">
+              <p className="md:col-span-3 text-xs text-sky-200">
+                Someone on this run is paid partly in {splitCurrency}. Enter the rate used for this pay date and the account the {splitCurrency} part comes from.
+              </p>
+              <div>
+                <label className={labelClass}>Exchange rate ({splitCurrency} per 1 USD)</label>
+                <input className={inputClass} inputMode="decimal" value={runForm.exchange_rate} onChange={e => setRunForm({ ...runForm, exchange_rate: e.target.value })} required />
+              </div>
+              <div>
+                <label className={labelClass}>Pay {splitCurrency} from</label>
+                <select className={inputClass} value={runForm.secondary_cash_account_id} onChange={e => setRunForm({ ...runForm, secondary_cash_account_id: e.target.value })} required>
+                  <option value="">{secondaryAccounts.length ? `${splitCurrency} account` : `No ${splitCurrency} account set up`}</option>
+                  {secondaryAccounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
 
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -521,35 +594,35 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
                 <EmptyState icon={UserPlus} title="No active payroll profiles" subtitle="Add one above first to include them in a run." compact />
               ) : (
                 <div className="max-h-80 overflow-y-auto divide-y divide-ink-mid">
-                  <div className="hidden md:grid grid-cols-[auto_1fr_100px_100px_110px] gap-2 px-3 py-2 text-[11px] font-mono uppercase tracking-wider text-slate bg-ink/30 sticky top-0">
-                    <span></span><span>Employee</span><span className="text-right">Reg. hrs</span><span className="text-right">OT hrs</span><span className="text-right">Est. gross</span>
+                  <div className="hidden md:grid grid-cols-[auto_1fr_80px_80px_90px_90px_110px] gap-2 px-3 py-2 text-[11px] font-mono uppercase tracking-wider text-slate bg-ink/30 sticky top-0">
+                    <span></span><span>Employee</span><span className="text-right">Reg. hrs</span><span className="text-right">OT hrs</span>
+                    <span className="text-right" title="One-off bonus this run (tax-free up to the yearly limit)">Bonus</span>
+                    <span className="text-right" title="One-off deduction this run">Deduction</span>
+                    <span className="text-right">Est. gross</span>
                   </div>
                   {runCandidates.map(p => {
                     const checked = !!selectedProfileIds[p.id];
-                    const hours = profileHours[p.id] || { regular_hours: "160", overtime_hours: "0" };
-                    const estimate = checked ? estimateGross(p, Number(hours.regular_hours) || 0, Number(hours.overtime_hours) || 0) : 0;
+                    const hours = profileHours[p.id] || DEFAULT_RUN_INPUTS;
+                    const estimate = checked ? estimateGross(p, Number(hours.regular_hours) || 0, Number(hours.overtime_hours) || 0) + (Number(hours.bonus) || 0) : 0;
+                    const setField = (field: keyof RunInputs, value: string) =>
+                      setProfileHours(prev => ({ ...prev, [p.id]: { ...hours, [field]: value } }));
                     return (
-                      <div key={p.id} className={`grid grid-cols-[auto_1fr_100px_100px_110px] gap-2 items-center px-3 py-2 text-sm transition-colors duration-micro ${checked ? "bg-signal/5" : ""}`}>
+                      <div key={p.id} className={`grid grid-cols-[auto_1fr_80px_80px_90px_90px_110px] gap-2 items-center px-3 py-2 text-sm transition-colors duration-micro ${checked ? "bg-signal/5" : ""}`}>
                         <input type="checkbox" checked={checked} onChange={() => toggleProfileSelected(p.id)} className="accent-signal" />
                         <div className="min-w-0 flex items-center gap-2">
                           <Avatar name={profileDisplayName(p)} size="sm" />
                           <div className="min-w-0">
                             <p className="text-paper truncate">{profileDisplayName(p)}</p>
-                            <p className="text-[11px] text-slate">{PAY_TYPE_LABEL[p.pay_type] || p.pay_type} &middot; {money(p.base_rate)}</p>
+                            <p className="text-[11px] text-slate">
+                              {PAY_TYPE_LABEL[p.pay_type] || p.pay_type} &middot; {money(p.base_rate)}
+                              {Number(p.secondary_share_pct) > 0 ? ` · ${Number(p.secondary_share_pct)}% ${p.secondary_currency}` : ""}
+                            </p>
                           </div>
                         </div>
-                        <input
-                          className={`${inputClass} py-1 text-right`}
-                          disabled={!checked}
-                          value={hours.regular_hours}
-                          onChange={e => setProfileHours(prev => ({ ...prev, [p.id]: { ...hours, regular_hours: e.target.value } }))}
-                        />
-                        <input
-                          className={`${inputClass} py-1 text-right`}
-                          disabled={!checked}
-                          value={hours.overtime_hours}
-                          onChange={e => setProfileHours(prev => ({ ...prev, [p.id]: { ...hours, overtime_hours: e.target.value } }))}
-                        />
+                        <input className={`${inputClass} py-1 text-right`} disabled={!checked} value={hours.regular_hours} onChange={e => setField("regular_hours", e.target.value)} />
+                        <input className={`${inputClass} py-1 text-right`} disabled={!checked} value={hours.overtime_hours} onChange={e => setField("overtime_hours", e.target.value)} />
+                        <input className={`${inputClass} py-1 text-right`} disabled={!checked} value={hours.bonus} onChange={e => setField("bonus", e.target.value)} />
+                        <input className={`${inputClass} py-1 text-right`} disabled={!checked} value={hours.deduction} onChange={e => setField("deduction", e.target.value)} />
                         <span className="text-right text-paper tabular-nums">{checked ? money(estimate) : "—"}</span>
                       </div>
                     );
@@ -590,7 +663,14 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
                       <td className="p-2 text-slate">{expandedRunId === run.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</td>
                       <td className="p-2 text-paper font-medium">{run.run_number}</td>
                       <td className="p-2 text-slate-light">{run.period_start} &rarr; {run.period_end}</td>
-                      <td className="p-2 text-right text-paper tabular-nums">{money(run.net_pay)}</td>
+                      <td className="p-2 text-right text-paper tabular-nums">
+                        {money(run.net_pay)}
+                        {Number(run.secondary_net_pay) > 0 && (
+                          <span className="block text-[11px] text-sky-300">
+                            incl. {Number(run.secondary_net_pay).toLocaleString("en-ZW", { maximumFractionDigits: 0 })} {run.secondary_currency}
+                          </span>
+                        )}
+                      </td>
                       <td className="p-2">
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[10px] uppercase tracking-wider font-mono border ${RUN_STATUS_CLASS[run.status] || ""}`}>
                           <StatusIcon className="h-3 w-3" />{run.status}
@@ -647,26 +727,50 @@ function Metric({ icon: Icon, label, value, tone = "default" }: { icon: any; lab
   );
 }
 
-function EmptyState({ icon: Icon, title, subtitle, compact = false }: { icon: any; title: string; subtitle: string; compact?: boolean }) {
-  return (
-    <div className={`flex flex-col items-center justify-center text-center ${compact ? "py-6" : "py-10"}`}>
-      <div className="h-10 w-10 rounded-full bg-ink-mid/40 flex items-center justify-center mb-3">
-        <Icon className="h-4.5 w-4.5 text-slate" />
-      </div>
-      <p className="text-sm text-paper font-medium">{title}</p>
-      <p className="text-xs text-slate mt-1 max-w-xs">{subtitle}</p>
-    </div>
-  );
-}
+const LINE_GROUPS: Array<{ title: string; kinds: string[] }> = [
+  { title: "Earnings", kinds: ["earning"] },
+  { title: "Deductions", kinds: ["deduction"] },
+  { title: "Tax and NSSA", kinds: ["statutory"] },
+  { title: "Credits / employer", kinds: ["tax_credit", "employer_contribution"] },
+];
 
-function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+/** Payslip lines for one employee on a run: every earning, deduction,
+ * credit and statutory figure, as computed by the payroll engine. */
+function PayslipLines({ item }: { item: RecordData }) {
+  const lines: RecordData[] = item.lines || [];
+  if (lines.length === 0) return null;
+  const secondary = Number(item.net_pay_secondary) > 0 ? String(item.secondary_currency || "") : "";
   return (
-    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-      <div className="border-b border-ink-mid px-4 py-3 flex items-center justify-between">
-        <span className="font-mono text-xs uppercase tracking-wider text-slate">{title}</span>
-        {action}
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-1">
+      {LINE_GROUPS.map(group => {
+        const rows = lines.filter(l => group.kinds.includes(l.line_kind));
+        if (rows.length === 0) return <div key={group.title} className="hidden md:block" />;
+        return (
+          <div key={group.title}>
+            <p className="text-[10px] font-mono uppercase tracking-wider text-slate mb-1">{group.title}</p>
+            {rows.map(l => (
+              <div key={`${l.code}-${l.line_kind}`} className="flex justify-between gap-2 text-xs">
+                <span className="text-slate-light truncate" title={l.code}>
+                  {l.name}
+                  {l.code === "NSSA_ER" ? " (not deducted)" : ""}
+                </span>
+                <span className="text-paper tabular-nums">{money(l.amount, "USD", 2)}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      <div className="md:col-span-4 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate border-t border-ink-mid pt-1.5">
+        <span>Taxable income {money(item.taxable_gross, "USD", 2)}</span>
+        {Number(item.tax_credits_amount) > 0 && <span>Tax credits {money(item.tax_credits_amount, "USD", 2)}</span>}
+        {Number(item.bonus_exempt_amount) > 0 && <span>Tax-free bonus {money(item.bonus_exempt_amount, "USD", 2)}</span>}
+        {secondary && (
+          <span className="text-sky-300">
+            Paid {Number(item.secondary_share_pct)}% in {secondary}: {Number(item.net_pay_secondary).toLocaleString("en-ZW", { minimumFractionDigits: 2 })} {secondary}
+            {" "}(PAYE {Number(item.paye_secondary).toLocaleString("en-ZW", { minimumFractionDigits: 2 })} {secondary}) at {Number(item.exchange_rate)}
+          </span>
+        )}
       </div>
-      <div className="p-4">{children}</div>
     </div>
   );
 }
@@ -714,10 +818,12 @@ function PayrollItemAllocationRow({ item, projects, editable, onSaved }: { item:
       <div className="flex items-center justify-between text-xs">
         <span className="flex items-center gap-2 text-paper">
           <Avatar name={item.employee_name || item.employee_number || "?"} size="sm" />
-          {item.employee_name || item.employee_number} &middot; {money(item.gross_pay)} gross &middot; {money(item.net_pay)} net
+          {item.employee_name || item.employee_number} &middot; {money(item.gross_pay, "USD", 2)} gross &middot; {money(item.net_pay, "USD", 2)} net
         </span>
         {!editable && <span className="text-slate">Locked (run posted)</span>}
       </div>
+      <PayslipLines item={item} />
+      <p className="text-[10px] font-mono uppercase tracking-wider text-slate pt-1">Cost split across projects</p>
       {rows.map((row, idx) => (
         <div key={idx} className="flex items-center gap-2">
           <select

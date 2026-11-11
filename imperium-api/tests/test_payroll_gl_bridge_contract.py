@@ -7,6 +7,8 @@ GL_BRIDGE = (ROOT / "app" / "services" / "finance" / "gl_bridge.py").read_text(e
 GL_BRIDGE_CODE_ONLY = GL_BRIDGE.split('"""', 2)[-1]
 ALLOCATION_SERVICE = (ROOT / "app" / "services" / "finance" / "payroll_allocation.py").read_text(encoding="utf-8")
 PAYROLL_ROUTER = (ROOT / "routers" / "payroll_runs.py").read_text(encoding="utf-8")
+# Run creation SQL moved to the payroll service in Phase 1 of the payroll engine.
+PAYROLL_SERVICE = (ROOT / "app" / "services" / "finance" / "payroll_service.py").read_text(encoding="utf-8")
 
 MIGRATION_202 = (ROOT / "migrations" / "202_finance_payroll_item_allocations.sql").read_text(encoding="utf-8")
 MIGRATION_203 = (ROOT / "migrations" / "203_finance_gl_payroll_account.sql").read_text(encoding="utf-8")
@@ -116,16 +118,19 @@ class PayrollRunsRouterContractTests(unittest.TestCase):
         # Regression guard for a pre-existing bug (hr.employees has no
         # first_name/last_name columns, only employee_name) that blocked
         # payroll run creation entirely - found during Phase 7A live testing.
-        self.assertNotIn("ep.first_name", PAYROLL_ROUTER)
-        self.assertNotIn("ep.last_name", PAYROLL_ROUTER)
+        for source in (PAYROLL_ROUTER, PAYROLL_SERVICE):
+            self.assertNotIn("ep.first_name", source)
+            self.assertNotIn("ep.last_name", source)
         self.assertIn("ep.employee_name", PAYROLL_ROUTER)
+        self.assertIn("ep.employee_name", PAYROLL_SERVICE)
 
     def test_period_start_cast_for_to_char(self):
         # Regression guard: TO_CHAR(:period_start, 'YYYYMM') without an
         # explicit cast raises AmbiguousFunctionError in asyncpg - found
         # during Phase 7A live testing, same class of bug as Phase 6A's
         # date + timedelta issue.
-        self.assertIn("TO_CHAR(CAST(:period_start AS date), 'YYYYMM')", PAYROLL_ROUTER)
+        self.assertIn("TO_CHAR(CAST(:period_start AS date), 'YYYYMM')", PAYROLL_SERVICE)
+        self.assertNotIn("TO_CHAR(:period_start", PAYROLL_SERVICE)
 
     def test_gl_hook_is_non_blocking(self):
         self.assertIn("except GeneralLedgerError as exc:", PAYROLL_ROUTER)

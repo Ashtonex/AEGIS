@@ -4,7 +4,7 @@ Statutory tax rate resolution.
 Rates/brackets live as data (finance.tax_rate_tables + finance.tax_rate_bands,
 migration 079), not code constants, so a rate change never needs a deploy.
 This module is the only place that reads them for a computation - payroll
-tax (app/services/finance/payroll_tax.py) and VAT accrual both go through
+tax (app/services/finance/payroll_engine.py via payroll_service.py) and VAT accrual both go through
 here so there is exactly one source of truth for "what rate applies right
 now."
 

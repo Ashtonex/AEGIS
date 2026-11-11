@@ -23,6 +23,7 @@ from core.database import get_db
 from core.security import require_permission
 from app.shared.pagination import ok
 from app.services.finance.statutory_accrual import accrue_liability_line
+from app.services.finance import payroll_service
 from app.services.finance import statutory_gl_bridge, vat_engine, tax_calendar
 from app.services.finance.general_ledger import GeneralLedgerError
 
@@ -666,35 +667,21 @@ async def recompute_statutory(
         )
         accrued_count += 1
 
-    # PAYE/NSSA: posted payroll items in the period.
+    # PAYE / AIDS levy / NSSA: posted payroll items in the period. Currency
+    # comes from each run (base currency, plus the second currency for split
+    # pay), not from the payload - same accrual the posting step uses.
     items = await db.execute(
-        text("""
-            SELECT pi.id, pi.employee_id, pi.department_id, pi.paye_amount, pi.nssa_employee_amount,
-                   pi.nssa_employer_amount, pi.taxable_gross, pi.rate_table_id, pr.payment_date
+        text(f"""
+            SELECT {payroll_service.PAYROLL_ITEM_STATUTORY_COLUMNS}
             FROM finance.payroll_items pi
-            JOIN finance.payroll_runs pr ON pr.id = pi.payroll_run_id
-            WHERE pi.organization_id = :org_id AND pr.status = 'posted'
+            JOIN finance.payroll_runs pr ON pr.id = pi.payroll_run_id AND pr.organization_id = pi.organization_id
+            WHERE pi.organization_id = :org_id AND pr.status = 'posted' AND pr.is_deleted = false
               AND pr.payment_date >= :period_start AND pr.payment_date <= :period_end
         """),
         {"org_id": org_id, "period_start": payload.period_start, "period_end": payload.period_end},
     )
-    for row in items.mappings():
-        common = {
-            "db": db, "org_id": org_id, "currency": payload.currency, "as_at": row["payment_date"],
-            "source_type": "payroll_item", "source_id": row["id"], "direction": "output",
-            "department_id": row["department_id"], "employee_id": row["employee_id"],
-            "taxable_base": float(row["taxable_gross"]) if row["taxable_gross"] is not None else None,
-            "rate_table_id": row["rate_table_id"],
-        }
-        if row["paye_amount"] and float(row["paye_amount"]) > 0:
-            await accrue_liability_line(authority="zimra", liability_type="paye", computed_amount=float(row["paye_amount"]), **common)
-            accrued_count += 1
-        if row["nssa_employee_amount"] and float(row["nssa_employee_amount"]) > 0:
-            await accrue_liability_line(authority="nssa", liability_type="nssa_employee", computed_amount=float(row["nssa_employee_amount"]), **common)
-            accrued_count += 1
-        if row["nssa_employer_amount"] and float(row["nssa_employer_amount"]) > 0:
-            await accrue_liability_line(authority="nssa", liability_type="nssa_employer", computed_amount=float(row["nssa_employer_amount"]), **common)
-            accrued_count += 1
+    for row in items.mappings().all():
+        accrued_count += await payroll_service.accrue_payroll_item(db, org_id, row)
 
     await db.commit()
     return ok({"lines_accrued": accrued_count}, f"Recomputed {accrued_count} statutory lines for the period.")

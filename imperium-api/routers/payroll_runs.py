@@ -17,10 +17,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.pagination import ok, page_offset, paginated
-from app.services.finance.payroll_tax import compute_statutory
-from app.services.finance.tax_rates import NoRateTableError
-from app.services.finance.statutory_accrual import accrue_liability_line
-from app.services.finance import gl_bridge, payroll_allocation
+from app.services.finance import gl_bridge, payroll_allocation, payroll_service
+from app.services.finance.payroll_service import ItemInput, OneOffInput, PayrollServiceError, RunInput
 from app.services.finance.general_ledger import GeneralLedgerError
 from core.database import get_db
 from core.security import get_current_user, require_permission
@@ -34,15 +32,25 @@ RUN_STATUSES = ("draft", "approved", "posted", "cancelled")
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+class PayrollOneOffInput(BaseModel):
+    """A one-off earning or deduction for this run only (bonus, extra
+    allowance, a one-time deduction), by pay code."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    code: str = Field(min_length=1, max_length=20)
+    amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
+
+
 class PayrollItemInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     employee_id: UUID
     project_id: Optional[UUID] = None
     department_id: Optional[UUID] = None
-    regular_hours: float = Field(default=0.0, ge=0)
-    overtime_hours: float = Field(default=0.0, ge=0)
-    other_deduction: float = Field(default=0.0, ge=0)
+    regular_hours: Decimal = Field(default=Decimal("0"), ge=0, max_digits=8, decimal_places=2)
+    overtime_hours: Decimal = Field(default=Decimal("0"), ge=0, max_digits=8, decimal_places=2)
+    other_deduction: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    one_offs: List[PayrollOneOffInput] = Field(default_factory=list, max_length=30)
     notes: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -55,6 +63,11 @@ class PayrollRunCreate(BaseModel):
     cash_account_id: UUID
     items: List[PayrollItemInput] = Field(min_length=1)
     notes: Optional[str] = Field(default=None, max_length=1000)
+    # Split pay: needed only when someone on the run is paid partly in a
+    # second currency (their pay profile sets the share).
+    secondary_currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    exchange_rate: Optional[Decimal] = Field(default=None, gt=0, max_digits=18, decimal_places=6)
+    secondary_cash_account_id: Optional[UUID] = None
 
     @model_validator(mode="after")
     def validate_dates(self) -> "PayrollRunCreate":
@@ -95,27 +108,6 @@ def _require_org(user: dict) -> str:
     if not org_id:
         raise HTTPException(status_code=403, detail="No organisation linked to this account.")
     return str(org_id)
-
-
-def _compute_gross(base_rate: float, pay_type: str, regular_hours: float, overtime_hours: float, overtime_rate: float) -> float:
-    """Gross pay only - the one part of the old _compute_pay that was
-    genuinely correct. Statutory deductions (PAYE/NSSA/AIDS levy) are
-    computed separately via app.services.finance.payroll_tax.compute_statutory
-    against real rate tables, not the flat-rate placeholder this used to
-    include."""
-    if pay_type == "monthly_salary":
-        gross = float(base_rate)
-        ot_gross = overtime_hours * float(overtime_rate) if overtime_rate else 0.0
-        gross += ot_gross
-    elif pay_type == "hourly":
-        gross = regular_hours * float(base_rate) + overtime_hours * float(overtime_rate or base_rate * 1.5)
-    elif pay_type == "daily":
-        # Assume 8 hours per day
-        days = regular_hours / 8.0
-        gross = days * float(base_rate) + overtime_hours * float(overtime_rate or base_rate / 8 * 1.5)
-    else:
-        gross = float(base_rate)
-    return round(gross, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -192,172 +184,42 @@ async def create_payroll_run(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("finance.payroll.manage")),
 ):
+    """Computes every employee's pay with the payroll engine (pay codes, loans,
+    taxable income, credits, bonus exemption, split currency) and writes a
+    draft run. See app/services/finance/payroll_service.py."""
     org_id = _require_org(user)
-    user_id = user.get("sub")
-
-    # Verify cash account
-    acct = await db.execute(
-        text("SELECT id FROM finance.cash_accounts WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
-        {"id": str(payload.cash_account_id), "org_id": org_id},
-    )
-    if not acct.first():
-        raise HTTPException(status_code=404, detail="Cash account not found.")
-
-    # Fetch pay profiles for all employees in one query
-    employee_ids = [str(item.employee_id) for item in payload.items]
-    profiles_rows = await db.execute(
-        text("""
-            SELECT ep.id AS employee_id, ep.employee_name,
-                   pp.pay_type, pp.base_rate, pp.overtime_rate, pp.currency
-            FROM finance.employee_pay_profiles pp
-            JOIN hr.employees ep ON ep.id = pp.employee_id
-            WHERE pp.employee_id = ANY(:ids)
-              AND pp.organization_id = :org_id
-              AND pp.is_active = true
-              AND pp.is_deleted = false
-        """),
-        {"ids": employee_ids, "org_id": org_id},
-    )
-    profiles = {str(r.employee_id): dict(r._mapping) for r in profiles_rows}
-
-    missing = [eid for eid in employee_ids if eid not in profiles]
-    if missing:
-        raise HTTPException(status_code=422, detail=f"No active pay profile found for employees: {missing}")
-
-    try:
-        # Create the run header
-        run_result = await db.execute(
-            text("""
-                INSERT INTO finance.payroll_runs (
-                    organization_id, run_number, period_start, period_end,
-                    payment_date, cash_account_id, status, created_by
-                ) VALUES (
-                    :org_id,
-                    'PAY-' || TO_CHAR(CAST(:period_start AS date), 'YYYYMM') || '-' || LPAD(NEXTVAL('finance.payroll_run_seq')::TEXT, 3, '0'),
-                    :period_start, :period_end, :payment_date,
-                    :cash_account_id, 'draft', :user_id
-                )
-                RETURNING id, run_number
-            """),
-            {
-                "org_id": org_id,
-                "period_start": payload.period_start,
-                "period_end": payload.period_end,
-                "payment_date": payload.payment_date,
-                "cash_account_id": str(payload.cash_account_id),
-                "user_id": user_id,
-            },
-        )
-        run_row = run_result.first()
-        run_id = str(run_row.id)
-
-        # Insert payroll items with computed pay
-        total_gross = total_deductions = total_net = 0.0
-        item_results = []
-
-        for item in payload.items:
-            profile = profiles[str(item.employee_id)]
-            gross = _compute_gross(
-                base_rate=float(profile["base_rate"]),
-                pay_type=profile["pay_type"],
+    run_input = RunInput(
+        period_start=payload.period_start,
+        period_end=payload.period_end,
+        payment_date=payload.payment_date,
+        cash_account_id=str(payload.cash_account_id),
+        secondary_currency=payload.secondary_currency,
+        exchange_rate=payload.exchange_rate,
+        secondary_cash_account_id=str(payload.secondary_cash_account_id) if payload.secondary_cash_account_id else None,
+        items=[
+            ItemInput(
+                employee_id=str(item.employee_id),
+                project_id=str(item.project_id) if item.project_id else None,
+                department_id=str(item.department_id) if item.department_id else None,
                 regular_hours=item.regular_hours,
                 overtime_hours=item.overtime_hours,
-                overtime_rate=float(profile.get("overtime_rate") or 0),
+                other_deduction=item.other_deduction,
+                one_offs=[OneOffInput(code=o.code, amount=o.amount) for o in item.one_offs],
+                notes=item.notes,
             )
-
-            try:
-                statutory = await compute_statutory(
-                    db,
-                    org_id=org_id,
-                    currency=profile.get("currency") or "USD",
-                    as_at=payload.payment_date,
-                    gross_pay=Decimal(str(gross)),
-                )
-            except NoRateTableError as exc:
-                # A silently-wrong PAYE/NSSA deduction is a compliance
-                # failure, not a degraded feature - block the whole run
-                # rather than guess.
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-            net = float(statutory.net_pay) - item.other_deduction
-            deductions = float(statutory.paye) + float(statutory.nssa_employee) + item.other_deduction
-
-            total_gross += gross
-            total_deductions += deductions
-            total_net += max(0.0, net)
-
-            await db.execute(
-                text("""
-                    INSERT INTO finance.payroll_items (
-                        organization_id, payroll_run_id, employee_id, project_id, department_id,
-                        regular_hours, overtime_hours, gross_pay,
-                        tax_deduction, statutory_deduction, other_deduction, net_pay,
-                        paye_amount, nssa_employee_amount, nssa_employer_amount, aids_levy_amount,
-                        taxable_gross, rate_table_id
-                    ) VALUES (
-                        :org_id, :run_id, :employee_id, :project_id, :department_id,
-                        :regular_hours, :overtime_hours, :gross_pay,
-                        :tax_deduction, :statutory_deduction, :other_deduction, :net_pay,
-                        :paye_amount, :nssa_employee_amount, :nssa_employer_amount, :aids_levy_amount,
-                        :taxable_gross, :rate_table_id
-                    )
-                """),
-                {
-                    "org_id": org_id,
-                    "run_id": run_id,
-                    "employee_id": str(item.employee_id),
-                    "project_id": str(item.project_id) if item.project_id else None,
-                    "department_id": str(item.department_id) if item.department_id else None,
-                    "regular_hours": item.regular_hours,
-                    "overtime_hours": item.overtime_hours,
-                    "gross_pay": gross,
-                    # Legacy columns stay populated (tax_deduction = PAYE +
-                    # AIDS levy, statutory_deduction = employee NSSA) so
-                    # every existing reader (payslip YTD view, run-total
-                    # rollups) keeps working unchanged - real, separate
-                    # figures now instead of an arbitrary 90/10 split.
-                    "tax_deduction": float(statutory.paye) + float(statutory.aids_levy),
-                    "statutory_deduction": float(statutory.nssa_employee),
-                    "other_deduction": item.other_deduction,
-                    "net_pay": max(0.0, net),
-                    "paye_amount": float(statutory.paye),
-                    "nssa_employee_amount": float(statutory.nssa_employee),
-                    "nssa_employer_amount": float(statutory.nssa_employer),
-                    "aids_levy_amount": float(statutory.aids_levy),
-                    "taxable_gross": gross,
-                    "rate_table_id": statutory.paye_rate_table_id,
-                },
-            )
-            item_results.append({"employee_id": str(item.employee_id), "gross": gross, "net": max(0.0, net)})
-
-        # Update run totals
-        await db.execute(
-            text("""
-                UPDATE finance.payroll_runs
-                SET gross_pay = :gross, total_deductions = :deductions, net_pay = :net, updated_at = NOW()
-                WHERE id = :run_id
-            """),
-            {"gross": round(total_gross, 2), "deductions": round(total_deductions, 2), "net": round(total_net, 2), "run_id": run_id},
-        )
-
+            for item in payload.items
+        ],
+    )
+    try:
+        result = await payroll_service.create_run(db, org_id=org_id, user_id=user.get("sub"), run=run_input)
         await db.commit()
-        return ok(
-            {
-                "id": run_id,
-                "run_number": run_row.run_number,
-                "employee_count": len(payload.items),
-                "gross_pay": round(total_gross, 2),
-                "total_deductions": round(total_deductions, 2),
-                "net_pay": round(total_net, 2),
-                "items": item_results,
-            },
-            "Payroll run created in draft state.",
-        )
-    except HTTPException:
-        raise
+    except PayrollServiceError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except Exception as exc:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Database error: {exc}") from exc
+    return ok(result, "Payroll run created in draft state.")
 
 
 @router.get("/{run_id}", summary="Get a payroll run with its items")
@@ -389,15 +251,30 @@ async def get_payroll_run(
             FROM finance.payroll_items pi
             JOIN hr.employees ep ON ep.id = pi.employee_id
             LEFT JOIN projects.projects p ON p.id = pi.project_id
-            WHERE pi.payroll_run_id = :run_id
+            WHERE pi.payroll_run_id = :run_id AND pi.organization_id = :org_id
             ORDER BY ep.employee_name
         """),
-        {"run_id": str(run_id)},
+        {"run_id": str(run_id), "org_id": org_id},
     )
-    return ok(
-        {"run": dict(row._mapping), "items": [dict(i._mapping) for i in items]},
-        "Payroll run retrieved.",
+    lines = await db.execute(
+        text("""
+            SELECT payroll_item_id, line_kind, code, name, quantity, rate, amount,
+                   is_taxable, is_nssa_insurable, reduces_taxable, sort_order
+            FROM finance.payroll_item_lines
+            WHERE payroll_run_id = :run_id AND organization_id = :org_id
+            ORDER BY sort_order, code
+        """),
+        {"run_id": str(run_id), "org_id": org_id},
     )
+    lines_by_item: dict[str, list[dict]] = {}
+    for ln in lines:
+        lines_by_item.setdefault(str(ln.payroll_item_id), []).append(dict(ln._mapping))
+    item_rows = []
+    for i in items:
+        data = dict(i._mapping)
+        data["lines"] = lines_by_item.get(str(data["id"]), [])
+        item_rows.append(data)
+    return ok({"run": dict(row._mapping), "items": item_rows}, "Payroll run retrieved.")
 
 
 @router.post("/{run_id}/decision", summary="Approve, post or cancel a payroll run")
@@ -412,7 +289,13 @@ async def decide_payroll_run(
     user_id = user.get("sub")
 
     run = await db.execute(
-        text("SELECT id, run_number, status, cash_account_id, payment_date, net_pay FROM finance.payroll_runs WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        text("""
+            SELECT id, run_number, status, cash_account_id, payment_date, net_pay,
+                   base_currency, secondary_currency, exchange_rate, secondary_cash_account_id
+            FROM finance.payroll_runs
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            FOR UPDATE
+        """),
         {"id": str(run_id), "org_id": org_id},
     )
     run_row = run.first()
@@ -430,69 +313,92 @@ async def decide_payroll_run(
     if required_from and current_status != required_from:
         raise HTTPException(status_code=409, detail=f"Run must be '{required_from}' to {action}. Currently '{current_status}'.")
 
+    base_currency = run_row.base_currency or "USD"
     try:
+        # A closed month is locked for every change, cancellation included.
+        await payroll_service.assert_period_open(db, org_id, run_row.payment_date)
+
         extra_sets = ""
         extra_params: dict = {}
 
+        if action == "approve":
+            extra_sets = ", approved_by = :approved_by, approved_at = NOW()"
+            extra_params = {"approved_by": user_id}
+
         if action == "post":
-            # 1. Create cashbook payment transaction for the net payroll amount
-            cashbook_result = await db.execute(
-                text("""
-                    INSERT INTO finance.cashbook_transactions (
-                        organization_id, cash_account_id, transaction_date,
-                        transaction_type, amount, currency, payment_method,
-                        transaction_number, direction,
-                        description, is_posted, posted_at, posted_by
-                    ) VALUES (
-                        :org_id, :cash_account_id, :payment_date,
-                        'payment', :amount, 'USD', 'bank_transfer',
-                        :transaction_number, 'outflow',
-                        'Payroll run posting', true, NOW(), :user_id
-                    ) RETURNING id
-                """),
-                {
+            await payroll_service.assert_loan_balances_cover(db, org_id, str(run_id))
+            base_cash, secondary_cash = await payroll_service.cash_postings(db, org_id, str(run_id))
+
+            # 1. Cashbook: one payment per currency actually paid out.
+            cashbook_sql = text("""
+                INSERT INTO finance.cashbook_transactions (
+                    organization_id, cash_account_id, transaction_date,
+                    transaction_type, amount, currency, payment_method,
+                    transaction_number, direction,
+                    description, is_posted, posted_at, posted_by
+                ) VALUES (
+                    :org_id, :cash_account_id, :payment_date,
+                    'payment', :amount, :currency, 'bank_transfer',
+                    :transaction_number, 'outflow',
+                    :description, true, NOW(), :user_id
+                ) RETURNING id
+            """)
+            cashbook_transaction_id = None
+            if base_cash > 0:
+                cashbook_transaction_id = (await db.execute(cashbook_sql, {
                     "org_id": org_id,
                     "cash_account_id": str(run_row.cash_account_id),
                     "payment_date": run_row.payment_date,
-                    "amount": float(run_row.net_pay),
+                    "amount": float(base_cash),
+                    "currency": base_currency,
                     "transaction_number": f"PAY-{run_row.run_number}",
+                    "description": "Payroll run posting",
                     "user_id": user_id,
-                },
-            )
-            cashbook_transaction_id = cashbook_result.scalar()
-            await db.execute(
-                text("UPDATE finance.payroll_items SET cashbook_transaction_id = :cb_id WHERE payroll_run_id = :run_id"),
-                {"cb_id": cashbook_transaction_id, "run_id": str(run_id)},
-            )
+                })).scalar()
+            if secondary_cash > 0:
+                if not run_row.secondary_cash_account_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="This run pays part in a second currency but has no second-currency cash account.",
+                    )
+                await db.execute(cashbook_sql, {
+                    "org_id": org_id,
+                    "cash_account_id": str(run_row.secondary_cash_account_id),
+                    "payment_date": run_row.payment_date,
+                    "amount": float(secondary_cash),
+                    "currency": run_row.secondary_currency,
+                    "transaction_number": f"PAY-{run_row.run_number}-{run_row.secondary_currency}",
+                    "description": f"Payroll run posting ({run_row.secondary_currency} portion)",
+                    "user_id": user_id,
+                })
+            if cashbook_transaction_id:
+                await db.execute(
+                    text("""
+                        UPDATE finance.payroll_items SET cashbook_transaction_id = :cb_id
+                        WHERE payroll_run_id = :run_id AND organization_id = :org_id
+                    """),
+                    {"cb_id": cashbook_transaction_id, "run_id": str(run_id), "org_id": org_id},
+                )
             extra_sets = ", posted_by = :posted_by, posted_at = NOW()"
             extra_params = {"posted_by": user_id}
 
-            # Accrue PAYE/NSSA into the statutory liability ledger, one
-            # line per payroll item so each carries its own department -
-            # this is what makes statutory cost show up correctly in the
-            # Phase 2 department P&L.
+            # 2. Loans: reduce each balance by the instalment paid.
+            await payroll_service.apply_loan_repayments(db, org_id, str(run_id), run_row.payment_date)
+
+            # 3. Statutory liabilities, one line per payroll item (so each
+            # carries its own department for the department P&L), and per
+            # currency: the second-currency share is owed in that currency.
             items_rows = await db.execute(
-                text("""
-                    SELECT id, employee_id, department_id, paye_amount, nssa_employee_amount,
-                           nssa_employer_amount, taxable_gross, rate_table_id
-                    FROM finance.payroll_items WHERE payroll_run_id = :run_id
+                text(f"""
+                    SELECT {payroll_service.PAYROLL_ITEM_STATUTORY_COLUMNS}
+                    FROM finance.payroll_items pi
+                    JOIN finance.payroll_runs pr ON pr.id = pi.payroll_run_id AND pr.organization_id = pi.organization_id
+                    WHERE pi.payroll_run_id = :run_id AND pi.organization_id = :org_id
                 """),
-                {"run_id": str(run_id)},
+                {"run_id": str(run_id), "org_id": org_id},
             )
-            for item in items_rows.mappings():
-                common = {
-                    "db": db, "org_id": org_id, "currency": "USD", "as_at": run_row.payment_date,
-                    "source_type": "payroll_item", "source_id": item["id"], "direction": "output",
-                    "department_id": item["department_id"], "employee_id": item["employee_id"],
-                    "taxable_base": float(item["taxable_gross"]) if item["taxable_gross"] is not None else None,
-                    "rate_table_id": item["rate_table_id"],
-                }
-                if item["paye_amount"] and float(item["paye_amount"]) > 0:
-                    await accrue_liability_line(authority="zimra", liability_type="paye", computed_amount=float(item["paye_amount"]), **common)
-                if item["nssa_employee_amount"] and float(item["nssa_employee_amount"]) > 0:
-                    await accrue_liability_line(authority="nssa", liability_type="nssa_employee", computed_amount=float(item["nssa_employee_amount"]), **common)
-                if item["nssa_employer_amount"] and float(item["nssa_employer_amount"]) > 0:
-                    await accrue_liability_line(authority="nssa", liability_type="nssa_employer", computed_amount=float(item["nssa_employer_amount"]), **common)
+            for item in items_rows.mappings().all():
+                await payroll_service.accrue_payroll_item(db, org_id, item)
 
         target_status = "approved" if action == "approve" else ("posted" if action == "post" else "cancelled")
         await db.execute(
@@ -523,7 +429,11 @@ async def decide_payroll_run(
         if gl_warning:
             result["gl_proposal_warning"] = gl_warning
         return ok(result, f"Payroll run {action}d successfully.")
+    except PayrollServiceError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except HTTPException:
+        await db.rollback()
         raise
     except Exception as exc:
         await db.rollback()

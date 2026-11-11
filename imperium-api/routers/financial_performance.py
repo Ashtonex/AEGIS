@@ -10,21 +10,19 @@ from app.services.finance.bank_books import EFFECTIVE_BALANCE_SQL, STATEMENT_DAT
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Any, Dict
 from uuid import UUID, uuid4
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
 from app.shared.events import emit_notification
 from app.shared.pagination import limited, ok
-from app.services.finance.payroll_tax import compute_statutory
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
 from app.services.finance import gl_bridge
 from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.finance.cash_position import compute_cash_runway
 from app.services.inventory_service import post_cost_transaction
-from routers.payroll_runs import _compute_gross
 from routers.bank_accounts import next_cash_account_code
 from routers.bank_transactions import _next_cashbook_transaction_number
 
@@ -138,6 +136,18 @@ class EmployeePayProfileUpsert(BaseModel):
     tax_number: Optional[str] = Field(default=None, max_length=80)
     nssa_number: Optional[str] = Field(default=None, max_length=80)
     is_active: bool = True
+    # Part of the pay made in a second currency (e.g. ZWG). 0 = all in the
+    # profile currency.
+    secondary_currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    secondary_share_pct: float = Field(default=0.0, ge=0, lt=100)
+
+    @model_validator(mode="after")
+    def validate_split(self) -> "EmployeePayProfileUpsert":
+        if self.secondary_share_pct > 0 and not self.secondary_currency:
+            raise ValueError("Choose the second currency for the split share.")
+        if self.secondary_currency and self.secondary_currency.upper() == self.currency.upper():
+            raise ValueError("The second currency must differ from the profile currency.")
+        return self
 
 
 class PayrollItemPayload(BaseModel):
@@ -2845,6 +2855,7 @@ async def upsert_payroll_profile(
                     SET pay_type = :pay_type, base_rate = :base_rate, overtime_rate = :overtime_rate,
                         currency = :currency, bank_name = :bank_name, bank_account_number = :bank_account_number,
                         tax_number = :tax_number, nssa_number = :nssa_number, is_active = :is_active,
+                        secondary_currency = :secondary_currency, secondary_share_pct = :secondary_share_pct,
                         updated_at = NOW()
                     WHERE id = :id
                 """),
@@ -2858,6 +2869,8 @@ async def upsert_payroll_profile(
                     "tax_number": payload.tax_number,
                     "nssa_number": payload.nssa_number,
                     "is_active": payload.is_active,
+                    "secondary_currency": payload.secondary_currency.upper() if payload.secondary_share_pct > 0 and payload.secondary_currency else None,
+                    "secondary_share_pct": payload.secondary_share_pct,
                     "id": profile_id,
                 }
             )
@@ -2869,11 +2882,11 @@ async def upsert_payroll_profile(
                         INSERT INTO finance.employee_pay_profiles (
                             organization_id, employee_id, pay_type, base_rate, overtime_rate,
                             currency, bank_name, bank_account_number, tax_number, nssa_number,
-                            is_active, created_by
+                            is_active, created_by, secondary_currency, secondary_share_pct
                         ) VALUES (
                             :org_id, :employee_id, :pay_type, :base_rate, :overtime_rate,
                             :currency, :bank_name, :bank_account_number, :tax_number, :nssa_number,
-                            :is_active, :user_id
+                            :is_active, :user_id, :secondary_currency, :secondary_share_pct
                         ) RETURNING id
                     """),
                     {
@@ -2889,6 +2902,8 @@ async def upsert_payroll_profile(
                         "nssa_number": payload.nssa_number,
                         "is_active": payload.is_active,
                         "user_id": user["sub"],
+                        "secondary_currency": payload.secondary_currency.upper() if payload.secondary_share_pct > 0 and payload.secondary_currency else None,
+                        "secondary_share_pct": payload.secondary_share_pct,
                     }
                 )
             ).scalar()
@@ -2935,127 +2950,14 @@ async def create_payroll_run(
     user: dict = Depends(require_permission("finance.payroll.manage")),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Computes pay identically to POST /api/v1/payroll-runs (same gross-pay
-    formula, same real PAYE/NSSA rate-table lookup) rather than trusting
-    client-supplied figures - see the note on PayrollItemPayload.
-    """
-    org_id = user["org_id"]
-    employee_ids = [str(item.employee_id) for item in payload.items]
-    profiles_rows = await db.execute(
-        text("""
-            SELECT pp.employee_id, pp.pay_type, pp.base_rate, pp.overtime_rate, pp.currency
-            FROM finance.employee_pay_profiles pp
-            WHERE pp.employee_id = ANY(:ids) AND pp.organization_id = :org_id
-              AND pp.is_active = true AND pp.is_deleted = false
-        """),
-        {"ids": employee_ids, "org_id": org_id},
+    """Retired: use POST /api/v1/payroll-runs/."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Retired. Payroll runs are created, approved and posted through /api/v1/payroll-runs, "
+            "which applies pay codes, loans, period locks and split-currency posting."
+        ),
     )
-    profiles = {str(r.employee_id): dict(r._mapping) for r in profiles_rows}
-    missing = [eid for eid in employee_ids if eid not in profiles]
-    if missing:
-        raise HTTPException(status_code=422, detail=f"No active pay profile found for employees: {missing}")
-
-    try:
-        gross_total = deductions_total = net_total = 0.0
-        computed_items = []
-
-        for item in payload.items:
-            profile = profiles[str(item.employee_id)]
-            gross = _compute_gross(
-                base_rate=float(profile["base_rate"]),
-                pay_type=profile["pay_type"],
-                regular_hours=item.regular_hours,
-                overtime_hours=item.overtime_hours,
-                overtime_rate=float(profile.get("overtime_rate") or 0),
-            )
-            try:
-                statutory = await compute_statutory(
-                    db, org_id=org_id, currency=profile.get("currency") or "USD",
-                    as_at=payload.payment_date, gross_pay=Decimal(str(gross)),
-                )
-            except NoRateTableError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-            net = max(0.0, float(statutory.net_pay) - item.other_deduction)
-            deductions = float(statutory.paye) + float(statutory.nssa_employee) + item.other_deduction
-            gross_total += gross
-            deductions_total += deductions
-            net_total += net
-            computed_items.append((item, gross, net, statutory))
-
-        run_id = (
-            await db.execute(
-                text("""
-                    INSERT INTO finance.payroll_runs (
-                        organization_id, run_number, period_start, period_end, payment_date,
-                        status, gross_pay, total_deductions, net_pay, created_by
-                    ) VALUES (
-                        :org_id, :run_number, :period_start, :period_end, :payment_date,
-                        'draft', :gross, :deductions, :net, :user_id
-                    ) RETURNING id
-                """),
-                {
-                    "org_id": org_id,
-                    "run_number": payload.run_number,
-                    "period_start": payload.period_start,
-                    "period_end": payload.period_end,
-                    "payment_date": payload.payment_date,
-                    "gross": round(gross_total, 2),
-                    "deductions": round(deductions_total, 2),
-                    "net": round(net_total, 2),
-                    "user_id": user["sub"],
-                }
-            )
-        ).scalar()
-
-        for item, gross, net, statutory in computed_items:
-            await db.execute(
-                text("""
-                    INSERT INTO finance.payroll_items (
-                        organization_id, payroll_run_id, employee_id, project_id, department_id,
-                        regular_hours, overtime_hours, gross_pay, tax_deduction,
-                        statutory_deduction, other_deduction, net_pay,
-                        paye_amount, nssa_employee_amount, nssa_employer_amount, aids_levy_amount,
-                        taxable_gross, rate_table_id
-                    ) VALUES (
-                        :org_id, :run_id, :employee_id, :project_id, :department_id,
-                        :regular_hours, :overtime_hours, :gross_pay, :tax_deduction,
-                        :statutory_deduction, :other_deduction, :net_pay,
-                        :paye_amount, :nssa_employee_amount, :nssa_employer_amount, :aids_levy_amount,
-                        :taxable_gross, :rate_table_id
-                    )
-                """),
-                {
-                    "org_id": org_id,
-                    "run_id": run_id,
-                    "employee_id": item.employee_id,
-                    "project_id": item.project_id,
-                    "department_id": item.department_id,
-                    "regular_hours": item.regular_hours,
-                    "overtime_hours": item.overtime_hours,
-                    "gross_pay": gross,
-                    "tax_deduction": float(statutory.paye) + float(statutory.aids_levy),
-                    "statutory_deduction": float(statutory.nssa_employee),
-                    "other_deduction": item.other_deduction,
-                    "net_pay": net,
-                    "paye_amount": float(statutory.paye),
-                    "nssa_employee_amount": float(statutory.nssa_employee),
-                    "nssa_employer_amount": float(statutory.nssa_employer),
-                    "aids_levy_amount": float(statutory.aids_levy),
-                    "taxable_gross": gross,
-                    "rate_table_id": statutory.paye_rate_table_id,
-                }
-            )
-
-        await db.commit()
-        return ok({"id": str(run_id)}, "Payroll run generated in draft.")
-    except HTTPException:
-        await db.rollback()
-        raise
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="Payroll run number already exists.")
 
 
 @router.post("/payroll/runs/{run_id}/decision", deprecated=True)
@@ -3065,25 +2967,14 @@ async def decide_payroll_run(
     user: dict = Depends(require_permission("finance.payroll.post")),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        text("""
-            UPDATE finance.payroll_runs
-            SET status = :status, approved_by = :user_id, approved_at = NOW(), updated_at = NOW()
-            WHERE id = :run_id AND organization_id = :org_id AND is_deleted = false AND status = 'draft'
-            RETURNING id
-        """),
-        {
-            "status": payload.status,
-            "user_id": user["sub"],
-            "run_id": run_id,
-            "org_id": user["org_id"],
-        }
+    """Retired: use POST /api/v1/payroll-runs/{run_id}/decision."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Retired. Payroll runs are created, approved and posted through /api/v1/payroll-runs, "
+            "which applies pay codes, loans, period locks and split-currency posting."
+        ),
     )
-    if not result.first():
-        raise HTTPException(status_code=404, detail="Draft payroll run not found.")
-
-    await db.commit()
-    return ok({"id": str(run_id)}, f"Payroll run status updated to {payload.status}.")
 
 
 @router.post("/payroll/runs/{run_id}/post", deprecated=True)
@@ -3092,103 +2983,13 @@ async def post_payroll_run(
     user: dict = Depends(require_permission("finance.payroll.post")),
     db: AsyncSession = Depends(get_db),
 ):
-    run_result = await db.execute(
-        text("SELECT * FROM finance.payroll_runs WHERE id = :id AND organization_id = :org_id AND is_deleted = false AND status = 'approved'"),
-        {"id": run_id, "org_id": user["org_id"]},
-    )
-    run = run_result.first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Approved payroll run not found.")
-
-    run_data = dict(run._mapping)
-    cash_account_id = run_data["cash_account_id"]
-    if not cash_account_id:
-        acc_check = await db.execute(
-            text("SELECT id FROM finance.cash_accounts WHERE organization_id = :org_id AND is_active = true AND is_deleted = false LIMIT 1"),
-            {"org_id": user["org_id"]},
-        )
-        acc_row = acc_check.first()
-        if not acc_row:
-            raise HTTPException(status_code=400, detail="No active cash account available to post payroll.")
-        cash_account_id = acc_row[0]
-
-    tx_number = f"PAY-{run_data['run_number']}"
-    tx_id = (
-        await db.execute(
-            text("""
-                INSERT INTO finance.cashbook_transactions (
-                    organization_id, cash_account_id, transaction_number, transaction_date,
-                    transaction_type, direction, amount, currency, description,
-                    posted_by
-                ) VALUES (
-                    :org_id, :cash_account_id, :tx_number, :payment_date,
-                    'payment', 'outflow', :amount, 'USD', :desc, :user_id
-                ) RETURNING id
-            """),
-            {
-                "org_id": user["org_id"],
-                "cash_account_id": cash_account_id,
-                "tx_number": tx_number,
-                "payment_date": run_data["payment_date"],
-                "amount": run_data["net_pay"],
-                "desc": f"Payroll posting for run {run_data['run_number']}",
-                "user_id": user["sub"],
-            }
-        )
-    ).scalar()
-
-    await db.execute(
-        text("""
-            UPDATE finance.payroll_runs
-            SET status = 'posted', posted_by = :user_id, posted_at = NOW(),
-                cash_account_id = :cash_account_id, updated_at = NOW()
-            WHERE id = :run_id
-        """),
-        {
-            "user_id": user["sub"],
-            "cash_account_id": cash_account_id,
-            "run_id": run_id,
-        }
+    """Retired: use POST /api/v1/payroll-runs/{run_id}/decision with action=post."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Retired. Payroll runs are created, approved and posted through /api/v1/payroll-runs, "
+            "which applies pay codes, loans, period locks and split-currency posting."
+        ),
     )
 
-    await db.execute(
-        text("""
-            UPDATE finance.payroll_items
-            SET cashbook_transaction_id = :tx_id
-            WHERE payroll_run_id = :run_id
-        """),
-        {"tx_id": tx_id, "run_id": run_id}
-    )
 
-    # current_balance is maintained by the cashbook_transactions_sync_balance trigger,
-    # which already fired on the INSERT above - a manual update here used to
-    # double-count the payroll disbursement (fixed in Phase 4).
-
-    # Accrue PAYE/NSSA into the statutory liability ledger - same as the
-    # payroll_runs.py posting path, so it doesn't matter which of the two
-    # parallel routers actually posted this run.
-    items_rows = await db.execute(
-        text("""
-            SELECT id, employee_id, department_id, paye_amount, nssa_employee_amount,
-                   nssa_employer_amount, taxable_gross, rate_table_id
-            FROM finance.payroll_items WHERE payroll_run_id = :run_id
-        """),
-        {"run_id": run_id},
-    )
-    for item in items_rows.mappings():
-        common = {
-            "db": db, "org_id": user["org_id"], "currency": "USD", "as_at": run_data["payment_date"],
-            "source_type": "payroll_item", "source_id": item["id"], "direction": "output",
-            "department_id": item["department_id"], "employee_id": item["employee_id"],
-            "taxable_base": float(item["taxable_gross"]) if item["taxable_gross"] is not None else None,
-            "rate_table_id": item["rate_table_id"],
-        }
-        if item["paye_amount"] and float(item["paye_amount"]) > 0:
-            await accrue_liability_line(authority="zimra", liability_type="paye", computed_amount=float(item["paye_amount"]), **common)
-        if item["nssa_employee_amount"] and float(item["nssa_employee_amount"]) > 0:
-            await accrue_liability_line(authority="nssa", liability_type="nssa_employee", computed_amount=float(item["nssa_employee_amount"]), **common)
-        if item["nssa_employer_amount"] and float(item["nssa_employer_amount"]) > 0:
-            await accrue_liability_line(authority="nssa", liability_type="nssa_employer", computed_amount=float(item["nssa_employer_amount"]), **common)
-
-    await db.commit()
-    return ok({"id": str(run_id)}, "Payroll run posted and cashbook outflow recorded.")
