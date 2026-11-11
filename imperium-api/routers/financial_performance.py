@@ -17,6 +17,7 @@ from core.database import get_db
 from core.security import require_permission
 from app.shared.events import emit_notification
 from app.shared.pagination import limited, ok
+from app.services.finance.payroll_exports import mask_account
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
 from app.services.finance import gl_bridge
@@ -131,6 +132,9 @@ class EmployeePayProfileUpsert(BaseModel):
     base_rate: float = Field(ge=0)
     overtime_rate: float = Field(default=0.0, ge=0)
     currency: str = Field(default="USD", max_length=3)
+    # Accepted for older clients but ignored: payment accounts now live in
+    # finance.employee_payment_accounts (per currency, history kept, changed
+    # only with finance.payroll.payment_details.manage - migration 297).
     bank_name: Optional[str] = Field(default=None, max_length=160)
     bank_account_number: Optional[str] = Field(default=None, max_length=120)
     tax_number: Optional[str] = Field(default=None, max_length=80)
@@ -2832,6 +2836,10 @@ async def get_payroll_profiles(
         {"org_id": user["org_id"]},
     )
     items = [dict(row._mapping) for row in result]
+    # Legacy bank fields (superseded by finance.employee_payment_accounts):
+    # never send a full account number to read-only payroll users.
+    for item in items:
+        item["bank_account_number"] = mask_account(item.get("bank_account_number"))
     return ok(items, "Payroll profiles retrieved.")
 
 
@@ -2853,7 +2861,7 @@ async def upsert_payroll_profile(
                 text("""
                     UPDATE finance.employee_pay_profiles
                     SET pay_type = :pay_type, base_rate = :base_rate, overtime_rate = :overtime_rate,
-                        currency = :currency, bank_name = :bank_name, bank_account_number = :bank_account_number,
+                        currency = :currency,
                         tax_number = :tax_number, nssa_number = :nssa_number, is_active = :is_active,
                         secondary_currency = :secondary_currency, secondary_share_pct = :secondary_share_pct,
                         updated_at = NOW()
@@ -2864,8 +2872,6 @@ async def upsert_payroll_profile(
                     "base_rate": payload.base_rate,
                     "overtime_rate": payload.overtime_rate,
                     "currency": payload.currency,
-                    "bank_name": payload.bank_name,
-                    "bank_account_number": payload.bank_account_number,
                     "tax_number": payload.tax_number,
                     "nssa_number": payload.nssa_number,
                     "is_active": payload.is_active,
@@ -2881,11 +2887,11 @@ async def upsert_payroll_profile(
                     text("""
                         INSERT INTO finance.employee_pay_profiles (
                             organization_id, employee_id, pay_type, base_rate, overtime_rate,
-                            currency, bank_name, bank_account_number, tax_number, nssa_number,
+                            currency, tax_number, nssa_number,
                             is_active, created_by, secondary_currency, secondary_share_pct
                         ) VALUES (
                             :org_id, :employee_id, :pay_type, :base_rate, :overtime_rate,
-                            :currency, :bank_name, :bank_account_number, :tax_number, :nssa_number,
+                            :currency, :tax_number, :nssa_number,
                             :is_active, :user_id, :secondary_currency, :secondary_share_pct
                         ) RETURNING id
                     """),
@@ -2896,8 +2902,6 @@ async def upsert_payroll_profile(
                         "base_rate": payload.base_rate,
                         "overtime_rate": payload.overtime_rate,
                         "currency": payload.currency,
-                        "bank_name": payload.bank_name,
-                        "bank_account_number": payload.bank_account_number,
                         "tax_number": payload.tax_number,
                         "nssa_number": payload.nssa_number,
                         "is_active": payload.is_active,

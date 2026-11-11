@@ -3,7 +3,7 @@
 import type React from "react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
-  BadgeCheck, CheckCircle2, Clock, ChevronDown, ChevronRight, FolderKanban,
+  BadgeCheck, CheckCircle2, Clock, ChevronDown, ChevronRight, FolderKanban, Landmark,
   Loader2, Pencil, Plus, RefreshCw, Search, Send, Settings2, UserPlus, UserX, Users, Wallet, X, XCircle, HardHat,
 } from "lucide-react";
 import {
@@ -21,6 +21,7 @@ import {
 import { Skeleton, SkeletonTableRows } from "@/components/ui/Skeleton";
 import { SitePayrollPanel } from "./SitePayrollPanel";
 import { PayrollSetupPanel } from "./PayrollSetupPanel";
+import { PayrollReturnsPanel } from "./PayrollReturnsPanel";
 import { EmptyState, Panel, buttonClass, ghostButtonClass, inputClass, labelClass, money } from "./payrollUi";
 
 type RecordData = Record<string, any>;
@@ -122,6 +123,7 @@ const VIEW_HINT = {
   staff: "Registered employees with pay profiles, statutory deductions applied.",
   site: "Hourly project labour not registered on AEGIS, paid per project.",
   setup: "Pay codes, recurring allowances and deductions, loans, month locks and year-to-date.",
+  returns: "Where people are paid, bank files, monthly PAYE and NSSA schedules.",
 } as const;
 
 /** Payroll has two populations: Staff (HR employees with pay profiles, run
@@ -129,11 +131,11 @@ const VIEW_HINT = {
  * AEGIS, paid per project from timesheets). Setup holds the pay codes and
  * controls the staff payroll uses. */
 export function PayrollPanel({ projects, departmentId = "" }: { projects: RecordData[]; departmentId?: string }) {
-  const [view, setView] = useState<"staff" | "site" | "setup">("staff");
+  const [view, setView] = useState<"staff" | "site" | "setup" | "returns">("staff");
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-1 border-b border-ink-mid overflow-x-auto">
-        {([["staff", "Staff payroll", Users], ["site", "Site payroll", HardHat], ["setup", "Pay codes & setup", Settings2]] as const).map(([key, label, Icon]) => (
+        {([["staff", "Staff payroll", Users], ["site", "Site payroll", HardHat], ["setup", "Pay codes & setup", Settings2], ["returns", "Returns & bank files", Landmark]] as const).map(([key, label, Icon]) => (
           <button
             key={key}
             onClick={() => setView(key)}
@@ -147,6 +149,7 @@ export function PayrollPanel({ projects, departmentId = "" }: { projects: Record
       {view === "staff" && <StaffPayrollPanel projects={projects} departmentId={departmentId} />}
       {view === "site" && <SitePayrollPanel projects={projects} />}
       {view === "setup" && <PayrollSetupPanel />}
+      {view === "returns" && <PayrollReturnsPanel />}
     </div>
   );
 }
@@ -282,7 +285,8 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
     const share = Number(profileForm.secondary_share_pct) || 0;
     void runAction(
       () => upsertFinancePayrollProfile({
-        ...profileForm,
+        // Payment accounts are managed under Returns & bank files.
+        ...Object.fromEntries(Object.entries(profileForm).filter(([k]) => k !== "bank_name" && k !== "bank_account_number")),
         base_rate: Number(profileForm.base_rate),
         overtime_rate: Number(profileForm.overtime_rate),
         secondary_share_pct: share,
@@ -454,14 +458,6 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
               <input className={inputClass} placeholder="0.00" value={profileForm.overtime_rate} onChange={e => setProfileForm({ ...profileForm, overtime_rate: e.target.value })} />
             </div>
             <div>
-              <label className={labelClass}>Bank</label>
-              <input className={inputClass} value={profileForm.bank_name} onChange={e => setProfileForm({ ...profileForm, bank_name: e.target.value })} />
-            </div>
-            <div>
-              <label className={labelClass}>Bank account number</label>
-              <input className={inputClass} value={profileForm.bank_account_number} onChange={e => setProfileForm({ ...profileForm, bank_account_number: e.target.value })} />
-            </div>
-            <div>
               <label className={labelClass}>Tax (PAYE) number</label>
               <input className={inputClass} value={profileForm.tax_number} onChange={e => setProfileForm({ ...profileForm, tax_number: e.target.value })} />
             </div>
@@ -469,6 +465,9 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
               <label className={labelClass}>NSSA number</label>
               <input className={inputClass} value={profileForm.nssa_number} onChange={e => setProfileForm({ ...profileForm, nssa_number: e.target.value })} />
             </div>
+            <p className="md:col-span-3 text-xs text-slate">
+              Bank and mobile money details are set per currency under Returns &amp; bank files, so changes are controlled and kept in history.
+            </p>
             <div className="md:col-span-3 flex justify-end">
               <button disabled={busy} className={buttonClass}><BadgeCheck className="h-4 w-4" />Save Profile</button>
             </div>
@@ -497,7 +496,7 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
               <thead>
                 <tr className="border-b border-ink-mid text-slate uppercase font-mono text-[11px]">
                   <th className="p-2">Employee</th><th className="p-2">No.</th><th className="p-2">Pay type</th>
-                  <th className="p-2 text-right">Rate</th><th className="p-2">Bank</th><th className="p-2 text-right"></th>
+                  <th className="p-2 text-right">Rate</th><th className="p-2">Tax no.</th><th className="p-2 text-right"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-mid">
@@ -512,7 +511,7 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
                     <td className="p-2 text-slate-light">{p.employee_number || "—"}</td>
                     <td className="p-2"><PayTypeBadge payType={p.pay_type} /></td>
                     <td className="p-2 text-right text-paper tabular-nums">{money(p.base_rate)}</td>
-                    <td className="p-2 text-slate-light">{p.bank_name || "—"}</td>
+                    <td className="p-2 text-slate-light font-mono">{p.tax_number || "—"}</td>
                     <td className="p-2 text-right">
                       <button onClick={() => openProfileForm(p)} className="text-slate hover:text-signal transition-colors duration-micro" title="Edit profile"><Pencil className="h-3.5 w-3.5" /></button>
                     </td>
