@@ -232,8 +232,28 @@ async def run() -> None:
             req2, line2 = await make_requisition(db, "REQ-QUOTED", [("Roof sheets", "50", "sheet", "15"), ("Ridge caps", "10", "each", "8")])
             rfq_id = str((await q(db, "INSERT INTO procurement.rfqs (organization_id, rfq_number, requisition_id, project_id, title, status) VALUES (:o, 'RFQ-V', :r, :p, 'Roofing', 'issued') RETURNING id", o=ORG, r=req2, p=PROJECT)).scalar())
             quote = {}
+            quoted_lines = {
+                SUP_A: '[{"description": "roof  SHEETS", "unit_price": 14}, {"description": "Ridge caps", "unit_price": 8}]',
+                SUP_B: '[{"description": "Roof sheets", "unit_price": 15}, {"description": "Ridge caps", "unit_price": 7.5}]',
+                SUP_C: '[{"description": "Roof sheets", "unit_price": 16}]',
+            }
             for sid in (SUP_A, SUP_B, SUP_C):
-                quote[sid] = str((await q(db, "INSERT INTO procurement.rfq_responses (organization_id, rfq_id, supplier_id, total_amount) VALUES (:o, :q, :s, 100) RETURNING id", o=ORG, q=rfq_id, s=sid)).scalar())
+                quote[sid] = str((await q(db, "INSERT INTO procurement.rfq_responses (organization_id, rfq_id, supplier_id, total_amount, line_items) VALUES (:o, :q, :s, 100, CAST(:li AS jsonb)) RETURNING id",
+                                          o=ORG, q=rfq_id, s=sid, li=quoted_lines[sid])).scalar())
+            quote_refusals = [
+                ("a price other than the quoted one", {"supplier_id": SUP_A, "unit_price": "13", "rfq_response_id": quote[SUP_A]}, "not the quoted price"),
+                ("a quote with no line for the item", {"supplier_id": SUP_C, "unit_price": "16", "rfq_response_id": quote[SUP_C], "line": "Ridge caps"}, "has no line for it"),
+            ]
+            for label, spec, needle in quote_refusals:
+                _, err = await attempt(create_supplier_purchase_orders(req2, SupplierOrdersPayload(lines=[
+                    {"requisition_line_id": line2[spec.get("line", "Roof sheets")], "supplier_id": spec["supplier_id"], "quantity": "10",
+                     "unit_price": spec["unit_price"], "rfq_response_id": spec["rfq_response_id"]}]), user=USER_CTX, db=db))
+                check(err is not None and err.status_code == 422 and needle in err.detail, f"{label} refused ({err and err.detail})")
+            await q(db, "UPDATE procurement.rfq_responses SET status = 'rejected' WHERE id = :i", i=quote[SUP_C])
+            _, err = await attempt(create_supplier_purchase_orders(req2, SupplierOrdersPayload(lines=[
+                {"requisition_line_id": line2["Roof sheets"], "supplier_id": SUP_C, "quantity": "10", "unit_price": "16", "rfq_response_id": quote[SUP_C]}]), user=USER_CTX, db=db))
+            check(err is not None and err.status_code == 422 and "rejected" in err.detail, f"a rejected quote refused ({err and err.detail})")
+            await q(db, "UPDATE procurement.rfq_responses SET status = 'received' WHERE id = :i", i=quote[SUP_C])
             _, err = await attempt(create_supplier_purchase_orders(req2, SupplierOrdersPayload(lines=[
                 {"requisition_line_id": line2["Roof sheets"], "supplier_id": SUP_A, "quantity": "50", "unit_price": "14", "rfq_response_id": quote[SUP_B]}]), user=USER_CTX, db=db))
             check(err is not None and err.status_code == 422, f"another supplier's quote refused ({err and err.detail})")

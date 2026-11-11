@@ -1313,6 +1313,31 @@ async def requisition_lines_with_ordered(
     return lines
 
 
+def _same_item(a: Any, b: Any) -> bool:
+    """Item descriptions match ignoring case and spacing (the order dialog's rule)."""
+    norm = " ".join(str(a or "").split()).lower()
+    return norm != "" and norm == " ".join(str(b or "").split()).lower()
+
+
+def quoted_unit_price(line_items: Any, description: str) -> Optional[Decimal]:
+    """The unit price a quotation gives for an item, or None when it has no
+    priced line for it. The first matching line counts, as in the dialog."""
+    if isinstance(line_items, str):
+        try:
+            line_items = json.loads(line_items)
+        except ValueError:
+            return None
+    for item in line_items if isinstance(line_items, list) else []:
+        if isinstance(item, dict) and _same_item(item.get("description"), description):
+            raw = item.get("unit_price", item.get("unit_cost"))
+            try:
+                price = Decimal(str(raw)).quantize(Decimal("0.0001"))
+            except (ArithmeticError, ValueError):
+                return None
+            return price if price > 0 else None
+    return None
+
+
 def requisition_order_status(lines: list[dict[str, Any]]) -> str:
     """approved (nothing on order), partially_ordered, or ordered (every line
     fully on a purchase order)."""
@@ -1575,7 +1600,9 @@ async def amend_requisition(
     stamped and written to the event trail with the totals before and after.
     `lines`, when sent, is the full set: lines left out are removed.
     """
-    req = await requisition_or_404(db, req_id, user["org_id"])
+    # Same lock the PO endpoints take: the "already on order" guard below must
+    # see ordering progress that can't change until this amendment commits.
+    req = await requisition_or_404(db, req_id, user["org_id"], for_update=True)
     req_status = str(req["status"] or "draft")
     if req_status == "cancelled":
         raise HTTPException(status_code=409, detail="A cancelled requisition cannot be amended.")
@@ -2839,7 +2866,7 @@ async def create_supplier_purchase_orders(
             str(row.id): row
             for row in await db.execute(
                 text("""
-                SELECT rr.id, rr.supplier_id, rr.rfq_id, rr.reference
+                SELECT rr.id, rr.supplier_id, rr.rfq_id, rr.reference, rr.status, rr.line_items
                 FROM procurement.rfq_responses rr
                 JOIN procurement.rfqs rfq ON rfq.id = rr.rfq_id AND rfq.organization_id = rr.organization_id
                 WHERE rr.organization_id = :org_id AND rr.is_deleted = false AND rfq.is_deleted = false
@@ -2854,10 +2881,30 @@ async def create_supplier_purchase_orders(
             response = responses.get(str(line.rfq_response_id))
             if response is None:
                 raise HTTPException(status_code=422, detail="A quotation used for pricing is not on this requisition.")
+            description = req_lines[str(line.requisition_line_id)]["description"]
             if str(response.supplier_id) != str(line.supplier_id):
                 raise HTTPException(
                     status_code=422,
-                    detail=f"'{req_lines[str(line.requisition_line_id)]['description']}' is priced from another supplier's quotation.",
+                    detail=f"'{description}' is priced from another supplier's quotation.",
+                )
+            # A quote only waives the selection reason when it really prices
+            # this line at this price: not a rejected quote, and the quote has
+            # a line for this item at the unit price being ordered.
+            if str(response.status or "") == "rejected":
+                raise HTTPException(status_code=422, detail=f"'{description}' is priced from a rejected quotation.")
+            quoted = quoted_unit_price(response.line_items, description)
+            if quoted is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"The quotation used for '{description}' has no line for it. Give the price and a reason instead.",
+                )
+            if line.unit_price.quantize(Decimal("0.0001")) != quoted:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"'{description}': {line.unit_price.normalize():f} is not the quoted price "
+                        f"({quoted.normalize():f}). Use the quoted price, or drop the quote and give a reason."
+                    ),
                 )
     reason = (payload.selection_reason or "").strip()
     if any(line.rfq_response_id is None for line in payload.lines) and len(reason) < 12:
