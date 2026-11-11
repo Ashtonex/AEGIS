@@ -50,7 +50,13 @@ from app.services.finance.general_ledger import GeneralLedgerError
 
 CASH_WITHDRAWAL = "cash_withdrawal"
 SITE_PETTY_CASH = "site_petty_cash"   # a use of HQ cash: handed to a project's petty cash float
-EXCLUDED_FROM_PROJECT_BOOKS = ("reversal", "internal_transfer", SITE_PETTY_CASH, "loan_advance")
+# Never a project claim or project cost, even when tagged to a project: money
+# moved between the company's own accounts, reversals, cash handed to a site
+# float, money lent out (an asset, 1500), the owner's drawings (equity, 3200)
+# and tithes / donations (company giving, 7800 - not a cost of building the
+# project). The ledger still posts them; the project's figures don't count them.
+EXCLUDED_FROM_PROJECT_BOOKS = ("reversal", "internal_transfer", SITE_PETTY_CASH, "loan_advance", "owner_drawings",
+                               "tithe_donation")
 HQ_PETTY_CASH_CODE = "HQPC"
 HQ_PETTY_CASH_NAME = "Cash"  # renamed from "HQ Petty Cash" 2026-10-29; found by code, not name
 
@@ -129,7 +135,28 @@ _COST_CATEGORY = {
 }
 
 
-def money_out_account(category: Optional[str], has_project: bool) -> str:
+# Site overheads charged to a project are direct job costs (migration 295),
+# so the project's cost report and the P&L agree. Applies to money dated on or
+# after the cut-over; earlier (closed) periods keep what was posted.
+SITE_OVERHEADS_DIRECT_FROM = date(2026, 9, 1)
+_PROJECT_MONEY_OUT_ACCOUNTS = {
+    "rent": "5510",
+    "utilities": "5520",
+    "insurance": "5530",
+    "professional_fees": "5540",
+    "travel_accommodation": "5550",
+    "office_admin": "5560",
+    "marketing": "5560",
+    "tax_statutory": "5570",
+    "other": UNCLASSIFIED_PROJECT_COST,
+}
+
+
+def money_out_account(category: Optional[str], has_project: bool, on: Optional[date] = None) -> str:
+    """The ledger account money out books to. `on` is the transaction date;
+    without it the current rules apply."""
+    if has_project and category in _PROJECT_MONEY_OUT_ACCOUNTS and (on is None or on >= SITE_OVERHEADS_DIRECT_FROM):
+        return _PROJECT_MONEY_OUT_ACCOUNTS[category]
     if category == "salaries_wages":
         return "5100" if has_project else "6000"
     if category == CONSUMABLES:
@@ -311,6 +338,19 @@ async def ensure_hq_petty_cash(db: AsyncSession, org_id: str, user_id: str) -> U
             {"org_id": org_id, "code": HQ_PETTY_CASH_CODE, "name": HQ_PETTY_CASH_NAME, "user_id": user_id},
         )
     ).scalar()
+
+
+async def cash_ledger_code(db: AsyncSession, cash_account_id: UUID) -> str:
+    """The ledger account a Banking & Cash account sits in (migration 294):
+    its own ledger_account_code, else 1000 for a bank and 1010 for cash or
+    mobile money."""
+    row = (await db.execute(
+        text("SELECT account_type, ledger_account_code FROM finance.cash_accounts WHERE id = :id"),
+        {"id": cash_account_id},
+    )).first()
+    if row and row.ledger_account_code:
+        return row.ledger_account_code
+    return BANK if row and row.account_type == "bank" else HQ_PETTY
 
 
 async def ensure_project_petty_cash(db: AsyncSession, org_id: str, user_id: str, project_id: UUID) -> UUID:
@@ -688,17 +728,18 @@ def _line_journal(line: Line, accounts: dict[str, UUID]) -> tuple[list[dict], st
                        "description": part.description or detail})
     else:
         for part in line.parts():
-            gl.append({"code": money_out_account(part.category, part.project_id is not None),
+            gl.append({"code": money_out_account(part.category, part.project_id is not None,
+                                                 line.row["transaction_date"]),
                        "debit_amount": part.amount, "project_id": part.project_id,
                        "description": part.description or detail})
         gl.append({"code": BANK, "credit_amount": amount, "description": detail})
     return _resolve(gl, accounts), detail
 
 
-def _use_journal(line: Line, use: Part, accounts: dict[str, UUID]) -> Optional[list[dict]]:
+def _use_journal(line: Line, use: Part, accounts: dict[str, UUID], on: Optional[date] = None) -> Optional[list[dict]]:
     if use.category == SITE_PETTY_CASH:
         return None   # HQ petty cash -> site petty cash: both sit in 1010, nothing to journal
-    code = money_out_account(use.category, use.project_id is not None)
+    code = money_out_account(use.category, use.project_id is not None, on)
     if code in (HQ_PETTY, SUSPENSE) and use.project_id is None:
         code = SUSPENSE
     desc = use.description or f"Use of cash withdrawn {line.row['transaction_date']}"
@@ -866,7 +907,7 @@ async def _sync_ledger(db: AsyncSession, org_id: str, user_id: str, lines: list[
         uses = {u.allocation_id: u for u in line.cash_uses() if u.allocation_id}
         for a in line.allocations:
             use = uses.get(a["id"])
-            use_gl = _use_journal(line, use, accounts) if use else None
+            use_gl = _use_journal(line, use, accounts, a["allocation_date"]) if use else None
             use_sig = _signature(a["allocation_date"], use_gl) if use_gl else None
             if a["gl_signature"] == use_sig and (a["gl_journal_id"] or not use_gl):
                 continue
@@ -1235,6 +1276,15 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
         WHERE ct.organization_id = :org_id AND ct.source_type = 'bank_line_allocation'
           AND ct.transaction_type = 'transfer_in' AND ct.is_deleted = false
     """, code=HQ_PETTY_CASH_CODE)).scalar() or 0
+    # Money recorded through another cash account that also sits in 1010
+    # (migration 294) moves 1010 by that account's cashbook rows
+    recorded_other_cash = (await q("""
+        SELECT COALESCE(sum(CASE WHEN ct.direction = 'inflow' THEN ct.amount ELSE -ct.amount END), 0)
+        FROM finance.cashbook_transactions ct
+        JOIN finance.cash_accounts ca ON ca.id = ct.cash_account_id AND ca.account_code <> :code
+        WHERE ct.organization_id = :org_id AND ct.source_type = 'project_money_entry' AND ct.is_deleted = false
+          AND ca.account_type <> 'bank' AND COALESCE(ca.ledger_account_code, :petty) = :petty
+    """, code=HQ_PETTY_CASH_CODE, petty=HQ_PETTY)).scalar() or 0
     project_parts = (await q("""
         SELECT
           (SELECT count(*) FROM finance.progress_claims WHERE organization_id = :org_id AND claim_number LIKE 'BANK-%' AND NOT is_deleted) AS bank_claims,
@@ -1275,8 +1325,9 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
          "ok": bal(AWAITING_BANK) == Decimal(str(awaiting["money_in"])) - Decimal(str(awaiting["money_out"])),
          "detail": f"GL {bal(AWAITING_BANK)} vs awaiting in {awaiting['money_in']} less out {awaiting['money_out']}"},
         {"check": "HQ Petty Cash in the ledger equals HQ Petty Cash plus cash handed to site floats",
-         "ok": bal(HQ_PETTY) == Decimal(str(hq_balance)) + Decimal(str(handed_to_sites)),
-         "detail": f"GL {bal(HQ_PETTY)} vs HQ {hq_balance} + sites {handed_to_sites}"},
+         "ok": bal(HQ_PETTY) == Decimal(str(hq_balance)) + Decimal(str(handed_to_sites)) + Decimal(str(recorded_other_cash)),
+         "detail": f"GL {bal(HQ_PETTY)} vs HQ {hq_balance} + sites {handed_to_sites}"
+                   f" + recorded through other cash accounts {recorded_other_cash}"},
     ]
     return {
         "checks": checks,

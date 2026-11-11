@@ -6,6 +6,7 @@ import { AlertTriangle, Check, CheckCircle2, Clock, Landmark, Loader2, Pencil, P
 import {
   createProjectMoneyEntry,
   dismissProjectEntrySuggestion,
+  getFinanceCashAccounts,
   getProjectEntryCandidates,
   matchProjectEntry,
   unmatchProjectEntry,
@@ -24,6 +25,13 @@ const ghostClass = "inline-flex items-center justify-center gap-2 border border-
 const cardClass = "bg-ink-light border border-ink-mid rounded-lg";
 
 const IN_CATEGORIES = CATEGORIES.filter((c) => ["client_receipt", "refund", "other"].includes(c.value));
+// Money out that the ledger records but that is not a cost of the project
+// (bank_books.EXCLUDED_FROM_PROJECT_BOOKS on the server).
+const NOT_PROJECT_COST: Record<string, string> = {
+  owner_drawings: "Not a project cost: posts to the Directors' current account (3200) and leaves this project's costs and margin unchanged.",
+  loan_advance: "Not a project cost: money lent out is owed back, so it posts to Cash Advances Receivable (1500) and leaves this project's costs unchanged.",
+  tithe_donation: "Not a project cost: tithes and donations are company giving, so it posts to Donations and Tithes (7800) and leaves this project's costs and margin unchanged.",
+};
 const OUT_CATEGORIES = CATEGORIES.filter((c) => !["client_receipt", "capital_injection", "internal_transfer", "cash_withdrawal", "reversal", "site_petty_cash", "refund"].includes(c.value));
 
 function money(value: unknown) {
@@ -37,6 +45,93 @@ function today() {
 
 function errorText(e: unknown, fallback: string) {
   return e instanceof Error ? e.message : fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Paid from / received into: every open account on the Banking & Cash page.
+
+export type PaidFromAccount = {
+  id: string;
+  account_code: string;
+  account_name: string;
+  account_type: "bank" | "cash" | "mobile_money";
+  currency: string;
+  current_balance: number;
+  project_id: string | null;
+};
+
+const HQ_CASH_CODE = "HQPC";
+
+/** Open USD accounts from Banking & Cash, banks first. A project petty cash
+ *  float is only offered on its own project. null while loading or if the
+ *  list can't be read (the form then falls back to plain Bank / HQ Cash). */
+export function usePaidFromAccounts(projectId: string | null) {
+  const [accounts, setAccounts] = useState<PaidFromAccount[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    getFinanceCashAccounts()
+      .then((res) => {
+        if (!live) return;
+        const rows = ((res.data || []) as RecordData[])
+          .filter((a) => a.is_active !== false && String(a.currency || "USD").toUpperCase() === "USD")
+          .filter((a) => !a.project_id || a.project_id === projectId)
+          .map((a) => ({
+            id: String(a.id), account_code: a.account_code, account_name: a.account_name, account_type: a.account_type,
+            currency: a.currency, current_balance: Number(a.current_balance || 0), project_id: a.project_id ?? null,
+          }) as PaidFromAccount)
+          .sort((a, b) => (a.account_type === "bank" ? 0 : 1) - (b.account_type === "bank" ? 0 : 1)
+            || a.account_name.localeCompare(b.account_name));
+        setAccounts(rows);
+      })
+      .catch(() => { if (live) setAccounts([]); });
+    return () => { live = false; };
+  }, [projectId]);
+  return accounts;
+}
+
+/** The account an entry should show as selected: its own, else (older
+ *  entries) HQ Cash for cash or the first bank account for bank. */
+export function defaultPaidFrom(accounts: PaidFromAccount[], entry: RecordData | null, fallbackVia: "bank" | "cash"): string {
+  if (entry?.cash_account_id && accounts.some((a) => a.id === String(entry.cash_account_id))) return String(entry.cash_account_id);
+  const via = (entry?.paid_via as "bank" | "cash" | undefined) || fallbackVia;
+  if (via === "cash") return (accounts.find((a) => a.account_code === HQ_CASH_CODE) || accounts.find((a) => a.account_type !== "bank"))?.id || "";
+  return accounts.find((a) => a.account_type === "bank")?.id || "";
+}
+
+export function viaOf(account: PaidFromAccount | undefined): "bank" | "cash" {
+  return account?.account_type === "bank" ? "bank" : "cash";
+}
+
+export function PaidFromSelect({ accounts, value, onChange, direction }: {
+  accounts: PaidFromAccount[]; value: string; onChange: (id: string) => void; direction: Direction;
+}) {
+  const banks = accounts.filter((a) => a.account_type === "bank");
+  const cash = accounts.filter((a) => a.account_type !== "bank");
+  const label = (a: PaidFromAccount) => `${a.account_name} · ${money(a.current_balance)}`;
+  return (
+    <select className={inputClass} value={value} onChange={(e) => onChange(e.target.value)} required>
+      <option value="" disabled>{direction === "in" ? "Which account received it?" : "Which account paid it?"}</option>
+      {banks.length > 0 && (
+        <optgroup label="Bank (matched when the statement arrives)">
+          {banks.map((a) => <option key={a.id} value={a.id}>{label(a)}</option>)}
+        </optgroup>
+      )}
+      {cash.length > 0 && (
+        <optgroup label="Cash & mobile money">
+          {cash.map((a) => <option key={a.id} value={a.id}>{label(a)}</option>)}
+        </optgroup>
+      )}
+    </select>
+  );
+}
+
+/** Money out of a cash account can't exceed what the account holds (adding
+ *  back this entry's own amount when editing it on the same account). */
+export function cashShortfall(account: PaidFromAccount | undefined, amount: number, entry: RecordData | null, direction: Direction): number {
+  if (!account || account.account_type === "bank" || direction !== "out" || !(amount > 0)) return 0;
+  const alreadyOut = entry && entry.direction === "out" && String(entry.cash_account_id || "") === account.id ? Number(entry.amount || 0) : 0;
+  const available = account.current_balance + alreadyOut;
+  return amount > available + 0.004 ? amount - available : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +236,7 @@ export function RecordedEntries({ direction, entries, payableClaims, projectId, 
 
 export function StatusChip({ entry }: { entry: RecordData }) {
   if (entry.paid_via === "cash") {
-    return <span className="inline-flex items-center gap-1 text-slate-light"><Wallet className="h-3.5 w-3.5" />Cash (HQ Cash)</span>;
+    return <span className="inline-flex items-center gap-1 text-slate-light"><Wallet className="h-3.5 w-3.5" />{entry.cash_account_name || "Cash (HQ Cash)"}</span>;
   }
   if (entry.match_status === "matched") {
     return (
@@ -153,7 +248,11 @@ export function StatusChip({ entry }: { entry: RecordData }) {
   if (entry.match_status === "suggested" && (entry.suggestions || []).length > 0) {
     return <span className="inline-flex items-center gap-1 text-amber-300"><AlertTriangle className="h-3.5 w-3.5" />Needs you to confirm</span>;
   }
-  return <span className="inline-flex items-center gap-1 text-slate"><Clock className="h-3.5 w-3.5" />Awaiting statement</span>;
+  return (
+    <span className="inline-flex items-center gap-1 text-slate">
+      <Clock className="h-3.5 w-3.5" />Awaiting {entry.cash_account_name ? `${entry.cash_account_name} ` : ""}statement
+    </span>
+  );
 }
 
 function EntryRow({ entry, direction, onEdit, onFind, onChanged }: {
@@ -274,10 +373,22 @@ function EntryForm({ direction, projectId, entry, payableClaims, onCancel, onSav
     reference: entry?.reference || "",
     description: entry?.description || "",
     pays_claim_id: entry?.pays_claim_id || "",
+    cash_account_id: entry?.cash_account_id ? String(entry.cash_account_id) : "",
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
+  const accounts = usePaidFromAccounts(projectId);
+  const pickAccounts = accounts !== null && accounts.length > 0;
+  useEffect(() => {
+    if (accounts && accounts.length > 0) {
+      setForm((f) => (f.cash_account_id && accounts.some((a) => a.id === f.cash_account_id)
+        ? f : { ...f, cash_account_id: defaultPaidFrom(accounts, entry, f.paid_via) }));
+    }
+  }, [accounts, entry]);
+  const account = pickAccounts ? accounts.find((a) => a.id === form.cash_account_id) : undefined;
+  const via: "bank" | "cash" = pickAccounts ? viaOf(account) : form.paid_via;
+  const short = cashShortfall(account, Number(form.amount), entry, direction);
   const claims = entry?.pays_claim_id && !payableClaims.some((c) => c.id === entry.pays_claim_id)
     ? [{ id: entry.pays_claim_id, claim_number: entry.pays_claim_number, status: "paid", net_claim_amount: entry.amount }, ...payableClaims]
     : payableClaims;
@@ -286,10 +397,15 @@ function EntryForm({ direction, projectId, entry, payableClaims, onCancel, onSav
     event.preventDefault();
     if (!(Number(form.amount) > 0)) { setErr("Enter an amount above zero."); return; }
     if (direction === "out" && !form.category) { setErr("Pick what kind of cost this is."); return; }
+    if (pickAccounts && !account) { setErr(direction === "in" ? "Pick the account it was received into." : "Pick the account it was paid from."); return; }
+    if (short > 0 && account && !window.confirm(
+      `${account.account_name} only holds ${money(account.current_balance)}, so this leaves it ${money(short)} overdrawn. `
+      + "If cash was topped up, record that transfer on Banking & Cash first. Record anyway?")) return;
     setBusy(true);
     setErr(null);
     const body: ProjectMoneyEntryInput = {
-      direction, paid_via: form.paid_via, entry_date: form.entry_date, amount: Number(form.amount),
+      direction, paid_via: via, entry_date: form.entry_date, amount: Number(form.amount),
+      ...(pickAccounts ? { cash_account_id: form.cash_account_id } : {}),
       category: form.category || null, counterparty_name: form.counterparty_name || null,
       reference: form.reference || null, description: form.description || null,
       pays_claim_id: direction === "in" ? (form.pays_claim_id || null) : null,
@@ -320,10 +436,17 @@ function EntryForm({ direction, projectId, entry, payableClaims, onCancel, onSav
         </label>
         <label className="text-xs text-slate space-y-1">
           <span>{direction === "in" ? "Received into" : "Paid from"}</span>
-          <select className={inputClass} value={form.paid_via} onChange={(e) => set({ paid_via: e.target.value as "bank" | "cash" })}>
-            <option value="bank">Bank (match when statement arrives)</option>
-            <option value="cash">Cash (HQ Petty Cash)</option>
-          </select>
+          {accounts === null ? (
+            <div className={`${inputClass} text-slate`}><Loader2 className="h-3.5 w-3.5 animate-spin inline mr-2" />Loading accounts...</div>
+          ) : pickAccounts ? (
+            <PaidFromSelect accounts={accounts} value={form.cash_account_id} direction={direction}
+              onChange={(id) => set({ cash_account_id: id })} />
+          ) : (
+            <select className={inputClass} value={form.paid_via} onChange={(e) => set({ paid_via: e.target.value as "bank" | "cash" })}>
+              <option value="bank">Bank (match when statement arrives)</option>
+              <option value="cash">Cash (HQ Cash)</option>
+            </select>
+          )}
         </label>
         <label className="text-xs text-slate space-y-1">
           <span>{direction === "in" ? "Type" : "Cost type"}</span>
@@ -364,13 +487,20 @@ function EntryForm({ direction, projectId, entry, payableClaims, onCancel, onSav
         )}
       </div>
       <p className="text-[11px] text-slate">
-        {form.paid_via === "cash"
-          ? `Goes through HQ Petty Cash${direction === "out" ? " (reduces the cash still to be accounted for)" : ""}; no bank match needed.`
-          : direction === "in"
-            ? form.pays_claim_id ? "Marks that claim paid. The receipt clears the claim's receivable in the ledger." : "Adds a paid claim to this project and posts the revenue now."
-            : "Adds the cost to this project and posts it to the ledger now."}
-        {form.paid_via === "bank" && " Until the bank statement shows it, it sits in “Recorded, awaiting bank statement”."}
+        {via === "cash"
+          ? `${direction === "out" ? "Comes out of" : "Goes into"} ${account?.account_name || "HQ Cash"} (its balance ${direction === "out" ? "goes down" : "goes up"}); no bank match needed. `
+          : ""}
+        {direction === "in"
+          ? form.pays_claim_id ? "Marks that claim paid. The receipt clears the claim's receivable in the ledger." : "Adds a paid claim to this project and posts the revenue now."
+          : NOT_PROJECT_COST[form.category] || "Adds the cost to this project and posts it to the ledger now."}
+        {via === "bank" && ` Until the ${account?.account_name || "bank"} statement shows it, it sits in “Recorded, awaiting bank statement”.`}
       </p>
+      {short > 0 && account && (
+        <p className="text-[11px] text-amber-300 flex items-center gap-1">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {account.account_name} holds {money(account.current_balance)}; this would leave it {money(short)} short. Record the top-up on Banking &amp; Cash first if cash went in.
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <button className={buttonClass} type="submit" disabled={busy}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{entry ? "Save changes" : "Record"}

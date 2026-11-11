@@ -807,6 +807,7 @@ class ProjectEntryFields(BaseModel):
     pays_claim_id: Optional[UUID] = None
     spent_by: Optional[str] = Field(default=None, max_length=160)
     department_id: Optional[UUID] = None
+    cash_account_id: Optional[UUID] = None   # the Banking & Cash account; its type sets paid_via
 
 
 class ProjectEntryUpdate(BaseModel):
@@ -823,6 +824,7 @@ class ProjectEntryUpdate(BaseModel):
     pays_claim_id: Optional[UUID] = None
     spent_by: Optional[str] = Field(default=None, max_length=160)
     department_id: Optional[UUID] = None
+    cash_account_id: Optional[UUID] = None   # the Banking & Cash account; its type sets paid_via
 
 
 class OfficeExpenseFields(BaseModel):
@@ -838,6 +840,7 @@ class OfficeExpenseFields(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     spent_by: Optional[str] = Field(default=None, max_length=160)
     department_id: Optional[UUID] = None
+    cash_account_id: Optional[UUID] = None   # the Banking & Cash account; its type sets paid_via
 
 
 class ProjectEntryLineRef(BaseModel):
@@ -871,7 +874,7 @@ async def create_project_entry(
     message = {
         "matched": "Recorded and matched to the bank statement.",
         "suggested": "Recorded. Possible bank lines found - confirm which one it is.",
-        "not_bank": "Cash entry recorded through the Cash account.",
+        "not_bank": f"Recorded through {entry.get('cash_account_name') or 'the Cash account'}.",
     }.get(entry["match_status"], "Recorded. It will be matched when the bank statement is uploaded.")
     return ok(entry, message)
 
@@ -994,7 +997,7 @@ async def create_office_expense(
     message = {
         "matched": "Recorded and matched to the bank statement.",
         "suggested": "Recorded. Possible bank lines found - confirm which one it is.",
-        "not_bank": "Recorded and paid out of HQ Cash.",
+        "not_bank": f"Recorded and paid out of {entry.get('cash_account_name') or 'HQ Cash'}.",
     }.get(entry["match_status"], "Recorded. It will be matched when the bank statement is uploaded.")
     return ok(entry, message)
 

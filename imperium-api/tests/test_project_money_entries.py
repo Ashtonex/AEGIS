@@ -160,3 +160,31 @@ def test_consumables_and_supplies_is_a_project_cost_type():
     assert cost_category("consumables_supplies") == "overhead"
     assert "consumables_supplies" in KNOWN_CATEGORIES and "consumables_supplies" in EDITABLE_CATEGORIES
     assert "consumables_supplies" not in project_entries.OUT_EXCLUDED
+
+
+def test_every_project_cost_lands_on_a_direct_cost_account():
+    """Migration 295: anything money out that counts as project cost books to a
+    5xxx direct-cost account (from the cut-over), so the project cost report and
+    the P&L agree. Office vouchers keep their 6xxx overheads; closed periods
+    before the cut-over keep what was posted."""
+    from app.services.finance.bank_books import (
+        EXCLUDED_FROM_PROJECT_BOOKS, SITE_OVERHEADS_DIRECT_FROM, money_out_account,
+    )
+    on = SITE_OVERHEADS_DIRECT_FROM
+    exceptions = {"bank_charges", "refund"}   # finance cost / refund keep their own accounts
+    for category in project_entries.OFFICE_CATEGORIES + ("supplier_payment", "subcontractor", "equipment_hire",
+                                                          "fuel_transport", "card_purchase"):
+        if category in EXCLUDED_FROM_PROJECT_BOOKS or category in exceptions:
+            continue
+        assert money_out_account(category, has_project=True, on=on).startswith("5"), category
+    assert money_out_account("rent", has_project=True, on=on) == "5510"
+    assert money_out_account("other", has_project=True, on=on) == "5950"
+    assert money_out_account("rent", has_project=False, on=on) == "6100"
+    assert money_out_account("rent", has_project=True, on=date(2026, 8, 31)) == "6100"
+    assert money_out_account("other", has_project=True, on=date(2026, 8, 31)) == "7900"
+
+
+def test_drawings_loans_and_tithes_are_never_project_cost():
+    from app.services.finance.bank_books import EXCLUDED_FROM_PROJECT_BOOKS, money_out_account
+    assert {"owner_drawings", "loan_advance", "tithe_donation"} <= set(EXCLUDED_FROM_PROJECT_BOOKS)
+    assert money_out_account("tithe_donation", has_project=True) == "7800"   # the ledger still records it

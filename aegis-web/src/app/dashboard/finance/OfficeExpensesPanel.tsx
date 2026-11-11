@@ -16,7 +16,9 @@ import {
 import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { categoryLabel } from "./BankStatementReviewPanel";
-import { FindOnBank, StatusChip, SuggestionBlock } from "./ProjectMoneyEntries";
+import {
+  FindOnBank, PaidFromSelect, StatusChip, SuggestionBlock, cashShortfall, defaultPaidFrom, usePaidFromAccounts, viaOf,
+} from "./ProjectMoneyEntries";
 
 type RecordData = Record<string, any>;
 
@@ -352,20 +354,37 @@ function VoucherForm({ entry, categories, onCancel, onSaved }: {
     description: entry?.description || "",
     spent_by: entry?.spent_by || "",
     department_id: entry?.department_id || "",
+    cash_account_id: entry?.cash_account_id ? String(entry.cash_account_id) : "",
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
   const account = useMemo(() => ACCOUNT_FOR[form.category], [form.category]);
+  const accounts = usePaidFromAccounts(null);
+  const pickAccounts = accounts !== null && accounts.length > 0;
+  useEffect(() => {
+    if (accounts && accounts.length > 0) {
+      setForm((f) => (f.cash_account_id && accounts.some((a) => a.id === f.cash_account_id)
+        ? f : { ...f, cash_account_id: defaultPaidFrom(accounts, entry, f.paid_via) }));
+    }
+  }, [accounts, entry]);
+  const paidFrom = pickAccounts ? accounts.find((a) => a.id === form.cash_account_id) : undefined;
+  const via: "bank" | "cash" = pickAccounts ? viaOf(paidFrom) : form.paid_via;
+  const short = cashShortfall(paidFrom, Number(form.amount), entry, "out");
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!(Number(form.amount) > 0)) { setErr("Enter an amount above zero."); return; }
     if (!form.category) { setErr("Pick what the expense was for."); return; }
+    if (pickAccounts && !paidFrom) { setErr("Pick the account it was paid from."); return; }
+    if (short > 0 && paidFrom && !window.confirm(
+      `${paidFrom.account_name} only holds ${money(paidFrom.current_balance)}, so this leaves it ${money(short)} overdrawn. `
+      + "If cash was topped up, record that transfer on Banking & Cash first. Record anyway?")) return;
     setBusy(true);
     setErr(null);
     const body: OfficeExpenseInput = {
-      paid_via: form.paid_via, entry_date: form.entry_date, amount: Number(form.amount), category: form.category,
+      paid_via: via, entry_date: form.entry_date, amount: Number(form.amount), category: form.category,
+      ...(pickAccounts ? { cash_account_id: form.cash_account_id } : {}),
       counterparty_name: form.counterparty_name || null, reference: form.reference || null,
       description: form.description || null, spent_by: form.spent_by || null, department_id: form.department_id || null,
     };
@@ -393,10 +412,17 @@ function VoucherForm({ entry, categories, onCancel, onSaved }: {
         </label>
         <label className="text-xs text-slate space-y-1">
           <span>Paid from</span>
-          <select className={inputClass} value={form.paid_via} onChange={(e) => set({ paid_via: e.target.value as "bank" | "cash" })}>
-            <option value="cash">Cash (HQ Cash)</option>
-            <option value="bank">Bank / card (match when statement arrives)</option>
-          </select>
+          {accounts === null ? (
+            <div className={`${inputClass} text-slate`}><Loader2 className="h-3.5 w-3.5 animate-spin inline mr-2" />Loading accounts...</div>
+          ) : pickAccounts ? (
+            <PaidFromSelect accounts={accounts} value={form.cash_account_id} direction="out"
+              onChange={(id) => set({ cash_account_id: id })} />
+          ) : (
+            <select className={inputClass} value={form.paid_via} onChange={(e) => set({ paid_via: e.target.value as "bank" | "cash" })}>
+              <option value="cash">Cash (HQ Cash)</option>
+              <option value="bank">Bank / card (match when statement arrives)</option>
+            </select>
+          )}
         </label>
         <label className="text-xs text-slate space-y-1">
           <span>What it was for</span>
@@ -431,11 +457,17 @@ function VoucherForm({ entry, categories, onCancel, onSaved }: {
       </div>
       <p className="text-[11px] text-slate">
         {account ? `Posts to ledger account ${account} ${categoryLabel(form.category)}. ` : ""}
-        {form.paid_via === "cash"
-          ? "Comes out of HQ Cash, bringing down the cash still to be accounted for."
-          : "Sits in “Recorded, awaiting bank statement” until the statement line is matched."}
+        {via === "cash"
+          ? `Comes out of ${paidFrom?.account_name || "HQ Cash"}, bringing its balance down.`
+          : `Sits in “Recorded, awaiting bank statement” until the ${paidFrom?.account_name || "bank"} statement line is matched.`}
         {" "}Attach the receipt and approve it from the list once saved.
       </p>
+      {short > 0 && paidFrom && (
+        <p className="text-[11px] text-amber-300 flex items-center gap-1">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {paidFrom.account_name} holds {money(paidFrom.current_balance)}; this would leave it {money(short)} short. Record the top-up on Banking &amp; Cash first if cash went in.
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <button className={buttonClass} type="submit" disabled={busy}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{entry ? "Save changes" : "Record"}

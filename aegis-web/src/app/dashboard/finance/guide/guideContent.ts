@@ -391,7 +391,7 @@ export const GUIDE_ACCOUNT_RANGES: { range: string; group: string; examples: str
   { range: "2000–2500", group: "Liabilities", examples: "2000 Accounts Payable · 2100 Accrued Project Costs · 2300 Client Deposits · 2400 Payroll Liabilities" },
   { range: "3000–3300", group: "Equity", examples: "3000 Share Capital · 3100 Retained Earnings · 3200 Directors' Accounts" },
   { range: "4000–4900", group: "Revenue & other income", examples: "4100 Certified Revenue · 4200 Uncertified Revenue · 4900 Other Income" },
-  { range: "5000–5900", group: "Direct project costs", examples: "5000 Materials · 5100 Direct Labour · 5200 Subcontractors · 5300 Plant Hire · 5400 Fuel" },
+  { range: "5000–5970", group: "Direct project costs", examples: "5000 Materials · 5100 Direct Labour · 5200 Subcontractors · 5300 Plant Hire · 5400 Fuel · 5510–5570 Site overheads (rent, utilities, insurance, fees, travel, admin, levies charged to a project)" },
   { range: "6000–6800", group: "Overheads", examples: "6000 HQ Salaries · 6100 Rent · 6300 Professional Fees · 6800 Finance Costs" },
   { range: "7900", group: "Other expense", examples: "7900 Other Expense" },
   { range: "8000–8200", group: "Tax", examples: "8000 VAT Payable · 8100 PAYE Payable · 8200 NSSA Payable" },
