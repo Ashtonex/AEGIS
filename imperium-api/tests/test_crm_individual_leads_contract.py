@@ -22,7 +22,7 @@ class CrmIndividualLeadsContractTests(unittest.TestCase):
         self.assertIn("Company Name (optional)", LEADS_PAGE)
         self.assertIn("Leave blank for individual clients", LEADS_PAGE)
         self.assertIn("Client / Contact Name", LEADS_PAGE)
-        self.assertIn('showToast("Client / contact name is required."', LEADS_PAGE)
+        self.assertIn('toast.error("Client / contact name is required.")', LEADS_PAGE)
         self.assertNotIn("if (!manualForm.company_name.trim()) return;", LEADS_PAGE)
         self.assertIn("company_name: manualForm.company_name.trim() || undefined", LEADS_PAGE)
         self.assertIn("contact_name: manualForm.contact_name.trim()", LEADS_PAGE)
