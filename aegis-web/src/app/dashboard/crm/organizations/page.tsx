@@ -21,6 +21,7 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
+import { toast } from "sonner";
 
 interface Organization {
   id: string;
@@ -81,7 +82,6 @@ export default function ClientOrganizationsRegistry() {
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [isDeleteOrgModalOpen, setIsDeleteOrgModalOpen] = useState(false);
   const [isDeletingOrg, setIsDeletingOrg] = useState(false);
 
@@ -178,10 +178,6 @@ export default function ClientOrganizationsRegistry() {
   useLiveTable("crm.contacts", () => void loadData());
   useLiveTable("crm.activities", () => void loadData());
 
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 4000);
-  };
 
   // Sync details when selectedOrg changes
   const selectedOrg = orgs.find(o => o.id === selectedOrgId);
@@ -221,12 +217,12 @@ export default function ClientOrganizationsRegistry() {
           credit_limit: limitsForm.credit_limit, 
           risk_rating: limitsForm.risk_rating 
         } : o));
-        showToast("Credit parameters and risk metrics saved successfully.");
+        toast.success("Credit parameters and risk metrics saved successfully.");
       } else {
         throw new Error("API call unsuccessful");
       }
     } catch (err) {
-      showToast("Credit limits were not saved. Check the CRM service connection and retry.", "error");
+      toast.error("Credit limits were not saved. Check the CRM service connection and retry.");
     } finally {
       setIsSavingLimits(false);
     }
@@ -241,13 +237,13 @@ export default function ClientOrganizationsRegistry() {
       setOrgs(prev => prev.filter(o => o.id !== selectedOrgId));
       setSelectedOrgId(null);
       setIsDeleteOrgModalOpen(false);
-      showToast("Organization deleted.");
+      toast.success("Organization deleted.");
     } catch (err) {
-      showToast(describeActionError(
+      toast.error(describeActionError(
         err,
         "You don't have permission to delete organizations.",
         "Organization was not deleted. Check the CRM service connection and retry."
-      ), "error");
+      ));
     } finally {
       setIsDeletingOrg(false);
     }
@@ -257,11 +253,11 @@ export default function ClientOrganizationsRegistry() {
   const handleLogActivity = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activityForm.contact_id) {
-      showToast("You must select an associated contact to log an activity.", "error");
+      toast.error("You must select an associated contact to log an activity.");
       return;
     }
     if (!activityForm.subject.trim()) {
-      showToast("Activity subject is required.", "error");
+      toast.error("Activity subject is required.");
       return;
     }
 
@@ -291,14 +287,14 @@ export default function ClientOrganizationsRegistry() {
       };
 
       setActivities(prev => [newAct, ...prev]);
-      showToast("CRM activity logged successfully.");
+      toast.success("CRM activity logged successfully.");
       setActivityForm(prev => ({
         ...prev,
         subject: '',
         description: ''
       }));
     } catch (err) {
-      showToast("CRM activity was not logged. Check the CRM service connection and retry.", "error");
+      toast.error("CRM activity was not logged. Check the CRM service connection and retry.");
     } finally {
       setIsLoggingActivity(false);
     }
@@ -349,7 +345,7 @@ export default function ClientOrganizationsRegistry() {
       if (response.data.temporary_password) {
         setIssuedCredentials({ email: form.email.trim(), temporary_password: response.data.temporary_password });
       }
-      showToast("Account successfully registered.");
+      toast.success("Account successfully registered.");
       setForm({
         name: '',
         industry: '',
@@ -367,7 +363,7 @@ export default function ClientOrganizationsRegistry() {
       });
       setIssuePortalLogin(false);
     } catch (err) {
-      showToast("Client account was not created. Check the CRM service connection and retry.", "error");
+      toast.error("Client account was not created. Check the CRM service connection and retry.");
     } finally {
       setIsSubmitting(false);
     }
@@ -456,17 +452,6 @@ export default function ClientOrganizationsRegistry() {
           }
         />
 
-        {/* Toast Toast Notifications */}
-        {notification && (
-          <div className={`fixed top-4 right-4 z-50 p-4 border rounded-sm font-mono text-xs shadow-lg animate-in fade-in slide-in-from-top-4 duration-300 ${
-            notification.type === 'success' ? 'bg-ink-light border-signal text-signal' : 'bg-red-950 border-red-500 text-red-400'
-          }`}>
-            <div className="flex items-center space-x-2">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>{notification.message}</span>
-            </div>
-          </div>
-        )}
 
         {sourceWarnings.length > 0 && (
           <div className="mb-4 space-y-2 rounded border border-amber-500/20 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">

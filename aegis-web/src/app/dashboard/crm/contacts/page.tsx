@@ -24,6 +24,7 @@ import { useApiQueries } from '@/hooks/useApiQueries';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
+import { toast } from "sonner";
 
 interface Contact {
   id: string;
@@ -69,7 +70,6 @@ export default function ContactsRegistry() {
   // Modals & Submits
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   
   // Form states - Add Contact
   const [contactForm, setContactForm] = useState({
@@ -152,10 +152,6 @@ export default function ContactsRegistry() {
     }
   }, [contacts, selectedContactId]);
 
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 4000);
-  };
 
   const selectedContact = contacts.find(c => c.id === selectedContactId);
 
@@ -193,12 +189,12 @@ export default function ContactsRegistry() {
 
       if (response && response.success) {
         await reloadContacts();
-        showToast("Contact details saved to database registry.");
+        toast.success("Contact details saved to database registry.");
       } else {
         throw new Error("Update failed");
       }
     } catch (err) {
-      showToast("Contact details were not saved. Check the CRM service connection and retry.", "error");
+      toast.error("Contact details were not saved. Check the CRM service connection and retry.");
     } finally {
       setIsSavingProfile(false);
     }
@@ -213,13 +209,13 @@ export default function ContactsRegistry() {
       setIsDeleteContactModalOpen(false);
       setSelectedContactId(null);
       await reloadContacts();
-      showToast("Contact deleted.");
+      toast.success("Contact deleted.");
     } catch (err) {
-      showToast(describeActionError(
+      toast.error(describeActionError(
         err,
         "You don't have permission to delete contacts.",
         "Contact was not deleted. Check the CRM service connection and retry."
-      ), "error");
+      ));
     } finally {
       setIsDeletingContact(false);
     }
@@ -236,7 +232,7 @@ export default function ContactsRegistry() {
       }
       setIsDupModalOpen(true);
     } catch (err) {
-      showToast("Duplicate check failed. Check the CRM service connection and retry.", "error");
+      toast.error("Duplicate check failed. Check the CRM service connection and retry.");
     } finally {
       setIsDuplicateChecking(false);
     }
@@ -251,12 +247,12 @@ export default function ContactsRegistry() {
         setIsDupModalOpen(false);
         setSelectedContactId(existingContactId);
         await reloadContacts();
-        showToast("Contacts merged into a single record.");
+        toast.success("Contacts merged into a single record.");
       } else {
-        showToast("Contacts were not merged. Check the CRM service connection and retry.", "error");
+        toast.error("Contacts were not merged. Check the CRM service connection and retry.");
       }
     } catch (err) {
-      showToast("Contacts were not merged. Check the CRM service connection and retry.", "error");
+      toast.error("Contacts were not merged. Check the CRM service connection and retry.");
     } finally {
       setIsMerging(false);
     }
@@ -267,7 +263,7 @@ export default function ContactsRegistry() {
     e.preventDefault();
     if (!selectedContactId) return;
     if (!activityForm.subject.trim()) {
-      showToast("Activity subject is required.", "error");
+      toast.error("Activity subject is required.");
       return;
     }
 
@@ -284,14 +280,14 @@ export default function ContactsRegistry() {
       if (!response?.data?.id) throw new Error("CRM activity response did not include an id.");
 
       await reloadContacts();
-      showToast("Activity logged on timeline.");
+      toast.success("Activity logged on timeline.");
       setActivityForm(prev => ({
         ...prev,
         subject: '',
         description: ''
       }));
     } catch (err) {
-      showToast("Activity was not logged. Check the CRM service connection and retry.", "error");
+      toast.error("Activity was not logged. Check the CRM service connection and retry.");
     } finally {
       setIsLoggingActivity(false);
     }
@@ -323,7 +319,7 @@ export default function ContactsRegistry() {
       await reloadContacts();
       setSelectedContactId(response.data.id);
       setIsContactModalOpen(false);
-      showToast("Contact added to registry.");
+      toast.success("Contact added to registry.");
       setContactForm({
         contact_name: '',
         job_title: '',
@@ -334,7 +330,7 @@ export default function ContactsRegistry() {
         client_org_id: ''
       });
     } catch (err) {
-      showToast("Contact was not created. Check the CRM service connection and retry.", "error");
+      toast.error("Contact was not created. Check the CRM service connection and retry.");
     } finally {
       setIsSubmitting(false);
     }
@@ -388,17 +384,6 @@ export default function ContactsRegistry() {
           }
         />
 
-        {/* Toast Toast Notifications */}
-        {notification && (
-          <div className={`fixed top-4 right-4 z-50 p-4 border rounded-sm font-mono text-xs shadow-lg animate-in fade-in slide-in-from-top-4 duration-300 ${
-            notification.type === 'success' ? 'bg-ink-light border-signal text-signal' : 'bg-red-950 border-red-500 text-red-400'
-          }`}>
-            <div className="flex items-center space-x-2">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>{notification.message}</span>
-            </div>
-          </div>
-        )}
 
         {error && (
           <div className="mb-4 flex items-start gap-2 rounded border border-red-500/30 bg-red-950/20 px-4 py-3 text-sm text-red-200">

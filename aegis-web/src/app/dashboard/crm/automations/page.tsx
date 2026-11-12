@@ -17,6 +17,7 @@ import {
   getUsers,
   getCrmMessageTemplates,
 } from '@/lib/api';
+import { toast } from "sonner";
 
 interface AutomationRule {
   id: string;
@@ -50,7 +51,6 @@ export default function CRMAutomationsPage() {
   const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<'visual' | 'telemetry'>('visual');
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   // Selector
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
@@ -98,10 +98,6 @@ export default function CRMAutomationsPage() {
     return fallback;
   }, []);
 
-  const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 4000);
-  }, []);
 
   const fetchRules = useCallback(async () => {
     setIsLoading(true);
@@ -149,11 +145,11 @@ export default function CRMAutomationsPage() {
       setRules([]);
       setSelectedRuleId(null);
       setSourceWarnings([normalizeLoadError(error, "Automation rules could not be loaded from the CRM service.")]);
-      showToast("Automation rules could not be loaded from the CRM service.", "error");
+      toast.error("Automation rules could not be loaded from the CRM service.");
     } finally {
       setIsLoading(false);
     }
-  }, [normalizeLoadError, showToast]);
+  }, [normalizeLoadError]);
 
   useEffect(() => {
     void fetchRules();
@@ -261,12 +257,12 @@ export default function CRMAutomationsPage() {
         setRules(prev => [...prev, newRule]);
         setSelectedRuleId(res.data.id);
         setActiveInspectorNode('trigger');
-        showToast("New workflow deployed to database.");
+        toast.success("New workflow deployed to database.");
       } else {
         throw new Error("Creation failed");
       }
     } catch {
-      showToast("New rule was not created. Check the CRM automation service and retry.", "error");
+      toast.error("New rule was not created. Check the CRM automation service and retry.");
     } finally {
       setIsSaving(false);
     }
@@ -314,12 +310,12 @@ export default function CRMAutomationsPage() {
           action_type: actionType,
           action_config
         } : r));
-        showToast("Workflow deployed successfully to kernel database.");
+        toast.success("Workflow deployed successfully to kernel database.");
       } else {
         throw new Error("Update call returned failed status");
       }
     } catch (error) {
-      showToast("Workflow was not deployed. Check the CRM automation service and retry.", "error");
+      toast.error("Workflow was not deployed. Check the CRM automation service and retry.");
     } finally {
       setIsSaving(false);
     }
@@ -333,9 +329,9 @@ export default function CRMAutomationsPage() {
       });
       if (!response?.success) throw new Error("Automation state update failed");
       setRules(rules.map(r => r.id === rule.id ? { ...r, is_active: nextActiveState } : r));
-      showToast(`Rule ${nextActiveState ? 'activated' : 'deactivated'} successfully.`);
+      toast.success(`Rule ${nextActiveState ? 'activated' : 'deactivated'} successfully.`);
     } catch (error) {
-      showToast("Rule state was not changed. Check the CRM automation service and retry.", "error");
+      toast.error("Rule state was not changed. Check the CRM automation service and retry.");
     }
   };
 
@@ -344,7 +340,7 @@ export default function CRMAutomationsPage() {
 
     try {
       await deleteCrmAutomation(id);
-      showToast("Automation rule decommissioned.");
+      toast.success("Automation rule decommissioned.");
       const nextRules = rules.filter(r => r.id !== id);
       setRules(nextRules);
       if (nextRules.length > 0) {
@@ -353,7 +349,7 @@ export default function CRMAutomationsPage() {
         setSelectedRuleId(null);
       }
     } catch (error) {
-      showToast("Automation rule was not deleted. Check the CRM automation service and retry.", "error");
+      toast.error("Automation rule was not deleted. Check the CRM automation service and retry.");
     }
   };
 
@@ -394,7 +390,7 @@ export default function CRMAutomationsPage() {
         clearInterval(interval);
         setIsSimulating(false);
         setActiveSimulationNode(null);
-        showToast("Simulation staging run completed. No production telemetry was written.");
+        toast.success("Simulation staging run completed. No production telemetry was written.");
       }
     }, 600);
   };
@@ -428,15 +424,6 @@ export default function CRMAutomationsPage() {
         }
       />
 
-      {/* Notifications Toast */}
-      {notification && (
-        <div className="fixed top-4 right-4 z-50 p-4 border border-signal bg-ink-light text-signal font-mono text-xs shadow-lg rounded-none">
-          <div className="flex items-center space-x-2">
-            <CheckCircle2 className="w-4 h-4" />
-            <span>{notification.message}</span>
-          </div>
-        </div>
-      )}
 
       {sourceWarnings.length > 0 && (
         <div className="mb-4 border border-amber-500/20 bg-amber-500/10 p-3 text-xs font-mono text-amber-200">

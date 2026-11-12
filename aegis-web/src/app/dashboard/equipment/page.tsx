@@ -47,6 +47,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { toast } from "sonner";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1529,31 +1530,6 @@ function ActionBtn({
   );
 }
 
-// ─── Toast ────────────────────────────────────────────────────────────────────
-
-function Toast({
-  message,
-  onDismiss,
-}: {
-  message: string;
-  onDismiss: () => void;
-}) {
-  useEffect(() => {
-    const t = setTimeout(onDismiss, 4000);
-    return () => clearTimeout(t);
-  }, [onDismiss]);
-
-  return (
-    <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 shadow-2xl">
-      <CheckCircle2 size={16} className="text-emerald-400" />
-      <span className="text-sm text-paper">{message}</span>
-      <button type="button" onClick={onDismiss} className="text-slate hover:text-paper">
-        <X size={14} />
-      </button>
-    </div>
-  );
-}
-
 // ─── Main dashboard ───────────────────────────────────────────────────────────
 
 export default function EquipmentPage() {
@@ -1582,7 +1558,6 @@ function EquipmentDashboard() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [modal, setModal] = useState<ModalKind>(null);
-  const [toast, setToast] = useState<string | null>(null);
 
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -1760,7 +1735,7 @@ function EquipmentDashboard() {
               : modal === "deploy"
                 ? "Deployment created"
                 : "Work order created";
-    setToast(`${label} successfully.`);
+    toast.success(`${label} successfully.`);
     void loadAssets();
   }
 
@@ -2250,10 +2225,6 @@ function EquipmentDashboard() {
         />
       )}
 
-      {/* Toast */}
-      {toast && (
-        <Toast message={toast} onDismiss={() => setToast(null)} />
-      )}
     </main>
   );
 }

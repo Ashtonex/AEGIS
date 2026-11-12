@@ -37,6 +37,7 @@ import {
   getCrmOrganizations,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { toast } from "sonner";
 
 interface Message {
   id: string;
@@ -97,7 +98,6 @@ export default function CRMSalesInbox() {
   const [contacts, setContacts] = useState<any[]>([]);
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [templates, setTemplates] = useState<ResponseTemplate[]>([]);
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   // Template editor modal/popover states
   const [activeTemplateIdx, setActiveTemplateIdx] = useState<number | null>(null);
@@ -229,10 +229,6 @@ export default function CRMSalesInbox() {
     void loadInboxData();
   }, [session, loadInboxData]);
 
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 4000);
-  };
 
   const selectedThread = threads.find(t => t.id === selectedThreadId);
 
@@ -290,10 +286,10 @@ export default function CRMSalesInbox() {
         task_subject: convertForm.subject,
       });
       if (!response.success) throw new Error(response.message || "Conversion failed.");
-      showToast(response.message || `Message converted to ${convertTarget}.`);
+      toast.success(response.message || `Message converted to ${convertTarget}.`);
       setIsConvertModalOpen(false);
     } catch (err: any) {
-      showToast(err?.message || "Conversion failed. The message was not converted.", "error");
+      toast.error(err?.message || "Conversion failed. The message was not converted.");
     } finally {
       setIsSending(false);
     }
@@ -311,7 +307,7 @@ export default function CRMSalesInbox() {
     });
     setReplyText(body);
     setActiveTemplateIdx(null);
-    showToast("Template drafted to composer.");
+    toast.success("Template drafted to composer.");
   };
 
 
@@ -345,11 +341,11 @@ export default function CRMSalesInbox() {
       const response = await createCrmCommunication(payload);
       if (!response.success) throw new Error(response.message || "Reply was not recorded.");
 
-      showToast(`Reply sent via ${gatewaySelection} and logged to CRM.`);
+      toast.success(`Reply sent via ${gatewaySelection} and logged to CRM.`);
       setReplyText("");
       await loadInboxData(selectedThread.id);
     } catch (err) {
-      showToast(normalizeLoadError(err, `Reply was not recorded. Check the ${gatewaySelection} workflow connection and retry.`), "error");
+      toast.error(normalizeLoadError(err, `Reply was not recorded. Check the ${gatewaySelection} workflow connection and retry.`));
     } finally {
       setIsSending(false);
     }
@@ -446,15 +442,6 @@ export default function CRMSalesInbox() {
         </div>
       )}
 
-      {/* Notifications Toast */}
-      {notification && (
-        <div className="fixed top-4 right-4 z-50 p-4 border border-signal bg-ink-light text-signal font-mono text-xs shadow-lg rounded-none">
-          <div className="flex items-center space-x-2">
-            <CheckCircle2 className="w-4 h-4" />
-            <span>{notification.message}</span>
-          </div>
-        </div>
-      )}
 
       {loadError && (
         <div className="bg-red-950/20 border border-red-500/30 p-2.5 mb-3 rounded-none flex items-center space-x-2 text-red-400 shrink-0 font-mono text-xs">
@@ -826,9 +813,9 @@ export default function CRMSalesInbox() {
                   <button 
                     onClick={() => {
                       if (matchedContact) {
-                        showToast(`Routing to contacts registry for: ${matchedContact.contact_name}`);
+                        toast.success(`Routing to contacts registry for: ${matchedContact.contact_name}`);
                       } else {
-                        showToast("Creating new contact in CRM database...");
+                        toast.success("Creating new contact in CRM database...");
                       }
                     }}
                     className="w-full py-1.5 bg-ink border border-ink-mid hover:border-signal text-[10px] font-mono text-paper hover:text-signal transition-all uppercase text-left px-2 flex justify-between items-center"
@@ -838,7 +825,7 @@ export default function CRMSalesInbox() {
                   </button>
                   {matchedOrg && (
                     <button 
-                      onClick={() => showToast(`Routing to Account Ledger: ${matchedOrg.name}`)}
+                      onClick={() => toast.success(`Routing to Account Ledger: ${matchedOrg.name}`)}
                       className="w-full py-1.5 bg-ink border border-ink-mid hover:border-signal text-[10px] font-mono text-paper hover:text-signal transition-all uppercase text-left px-2 flex justify-between items-center"
                     >
                       <span>View Corporate Account Ledgers</span>
@@ -846,7 +833,7 @@ export default function CRMSalesInbox() {
                     </button>
                   )}
                   <button 
-                    onClick={() => showToast("Thread flagged as High Priority Commercial Opportunity.")}
+                    onClick={() => toast.success("Thread flagged as High Priority Commercial Opportunity.")}
                     className="w-full py-1.5 bg-ink border border-ink-mid hover:border-signal text-[10px] font-mono text-paper hover:text-signal transition-all uppercase text-left px-2 flex justify-between items-center"
                   >
                     <span>Flag Staging Opportunity</span>
@@ -1044,15 +1031,6 @@ export default function CRMSalesInbox() {
         </div>
       )}
 
-      {/* TOAST NOTIFICATION */}
-      {notification && (
-        <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-xl flex items-center gap-3 animate-in slide-in-from-bottom-2 ${
-          notification.type === 'error' ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-        }`}>
-          <CheckCircle2 className="h-4 w-4" />
-          <span className="text-xs font-semibold">{notification.message}</span>
-        </div>
-      )}
 
     </div>
   );

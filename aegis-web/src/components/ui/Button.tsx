@@ -15,6 +15,7 @@ const buttonVariants = cva(
         ghostGold: "bg-transparent border border-signal text-signal hover:bg-[rgba(200,150,12,0.08)] hover:-translate-y-[1px]",
         outline: "bg-transparent border border-ink-mid text-paper hover:border-signal hover:text-signal",
         ghost: "bg-transparent border border-transparent text-paper hover:bg-[rgba(245,245,240,0.04)] hover:-translate-y-[1px]",
+        destructive: "bg-danger text-white hover:opacity-90 hover:-translate-y-[1px]",
       },
       size: {
         default: "px-8 py-3.5 min-h-[48px]", // Standard 48px touch target
