@@ -7,11 +7,13 @@ import {
   History, Loader2, Mail, RefreshCw, Search, ShieldAlert, Wallet, X,
 } from "lucide-react";
 import {
+  cancelHeldPayablePayment,
   getFinanceCashAccounts,
   getFinancePayables,
   getFinanceSupplierPayments,
   payFinancePayables,
   rejectFinancePayable,
+  releaseHeldPayablePayment,
   requestFinancePayableInvoice,
 } from "@/lib/api";
 
@@ -32,7 +34,24 @@ const ACTION_LABEL: Record<string, string> = {
   rejected: "Rejected",
   invoice_requested: "Invoice requested",
   match_override: "Paid without match",
+  payment_held: "Held for release",
+  payment_hold_cancelled: "Held payment cancelled",
 };
+
+// Must match MIN_OVERRIDE_REASON in imperium-api routers/finance_ops.py.
+const MIN_OVERRIDE_REASON = 15;
+
+function available(inv: RecordData) {
+  return Number(inv.available_to_pay ?? inv.outstanding ?? 0);
+}
+
+/** Why this invoice can't be paid right now, or null when it can. */
+function payBlock(inv: RecordData): string | null {
+  if (inv.supplier_blocked) return `Supplier is ${inv.supplier_status}`;
+  if (inv.supplier_bank_unconfirmed) return "Supplier bank details changed and not yet confirmed";
+  if (available(inv) <= 0) return "Already in a payment waiting for release";
+  return null;
+}
 
 function money(value: unknown, digits = 0) {
   const num = typeof value === "number" ? value : Number(value);
@@ -79,6 +98,10 @@ export function SupplierPaymentsPanel() {
   const [expanded, setExpanded] = useState<{ id: string; mode: "pay" | "reject" | "request" } | null>(null);
   const [rowAmount, setRowAmount] = useState("");
   const [rowText, setRowText] = useState("");
+  // Inline confirm steps (no browser dialogs): which action is waiting for a
+  // second click, and the reason typed for cancelling a held payment.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,7 +126,8 @@ export function SupplierPaymentsPanel() {
   }, [invoices, bucketFilter, approvalFilter, supplierFilter, search]);
 
   const selectedInvoices = invoices.filter((i) => selected[i.id]);
-  const selectedTotal = selectedInvoices.reduce((s, i) => s + Number(i.outstanding || 0), 0);
+  const selectedTotal = selectedInvoices.reduce((s, i) => s + available(i), 0);
+  const heldPayments: RecordData[] = data?.held_payments || [];
   const selectionNeedsOverride = selectedInvoices.some((i) => !i.payable_now);
   const summary = data?.summary || {};
   const aging = data?.aging || {};
@@ -117,6 +141,8 @@ export function SupplierPaymentsPanel() {
       const res = await fn();
       setNotice({ text: res?.message || "Done.", tone: "ok" });
       setExpanded(null);
+      setConfirming(null);
+      setCancelReason("");
       await load();
       return true;
     } catch (err) {
@@ -135,13 +161,22 @@ export function SupplierPaymentsPanel() {
     return true;
   };
 
-  const paySelected = async () => {
-    if (!requireAccount() || selectedInvoices.length === 0) return;
-    if (selectionNeedsOverride && !payForm.override_reason.trim()) {
-      setNotice({ text: "Some selected invoices aren't approved for payment yet. Give an override reason to pay them anyway.", tone: "error" });
-      return;
+  const checkSelection = () => {
+    if (!requireAccount() || selectedInvoices.length === 0) return false;
+    const blocked = selectedInvoices.find((i) => payBlock(i));
+    if (blocked) {
+      setNotice({ text: `${blocked.invoice_number}: ${payBlock(blocked)}.`, tone: "error" });
+      return false;
     }
-    if (!window.confirm(`Pay ${selectedInvoices.length} invoice${selectedInvoices.length === 1 ? "" : "s"} totalling ${money(selectedTotal, 2)} from ${account?.account_name}?`)) return;
+    if (selectionNeedsOverride && payForm.override_reason.trim().length < MIN_OVERRIDE_REASON) {
+      setNotice({ text: `Some selected invoices aren't approved for payment yet. Say why they should be paid anyway (at least ${MIN_OVERRIDE_REASON} characters: who agreed it and what was received).`, tone: "error" });
+      return false;
+    }
+    return true;
+  };
+
+  const paySelected = async () => {
+    if (!checkSelection()) { setConfirming(null); return; }
     const okDone = await run("batch", () => payFinancePayables({
       cash_account_id: payForm.cash_account_id,
       payment_date: payForm.payment_date,
@@ -159,7 +194,7 @@ export function SupplierPaymentsPanel() {
       return;
     }
     setExpanded({ id: inv.id, mode });
-    setRowAmount(String(Number(inv.outstanding || 0).toFixed(2)));
+    setRowAmount(String(Math.max(available(inv), 0).toFixed(2)));
     setRowText("");
   };
 
@@ -167,7 +202,8 @@ export function SupplierPaymentsPanel() {
     if (!requireAccount()) return;
     const amount = Number(rowAmount);
     if (!(amount > 0)) { setNotice({ text: "Enter the amount to pay.", tone: "error" }); return; }
-    if (!inv.payable_now && !rowText.trim()) { setNotice({ text: "This invoice isn't approved for payment yet. Give an override reason.", tone: "error" }); return; }
+    if (payBlock(inv)) { setNotice({ text: `${payBlock(inv)}.`, tone: "error" }); return; }
+    if (!inv.payable_now && rowText.trim().length < MIN_OVERRIDE_REASON) { setNotice({ text: `This invoice isn't approved for payment yet. Say why it should be paid anyway (at least ${MIN_OVERRIDE_REASON} characters).`, tone: "error" }); return; }
     await run(`pay-${inv.id}`, () => payFinancePayables({
       cash_account_id: payForm.cash_account_id,
       payment_date: payForm.payment_date,
@@ -260,6 +296,64 @@ export function SupplierPaymentsPanel() {
         </div>
       )}
 
+      {heldPayments.length > 0 && (
+        <section className={`${card} border-violet-500/40`}>
+          <div className="px-4 py-3 border-b border-ink-mid font-mono text-[11px] uppercase tracking-wider text-violet-200 flex items-center gap-1.5">
+            <ShieldAlert className="h-3.5 w-3.5" />Payments waiting for release · invoices not approved for payment
+          </div>
+          <ul className="divide-y divide-ink-mid">
+            {heldPayments.map((h) => (
+              <li key={h.id} className="px-4 py-3 text-xs space-y-1.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="font-mono text-paper">{h.batch_number}</span>
+                  <span className="text-paper font-semibold tabular-nums">{money(h.total_amount, 2)}</span>
+                  <span className="text-slate-light">from {h.account_name || "-"} · {fmtDate(h.payment_date)} · {String(h.payment_method || "").replace("_", " ")}</span>
+                  <span className="text-slate ml-auto">held by {h.held_by_name || "-"} · {fmtDate(h.created_at)}</span>
+                </div>
+                <p className="text-slate-light">{(h.items || []).map((it: RecordData) => `${it.supplier_name} ${it.invoice_number} (${money(it.amount, 2)})`).join(" · ")}</p>
+                <p className="text-amber-200">Reason: {h.held_reason}</p>
+                {confirming === `rel-${h.id}` ? (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <span className="text-paper">Record {money(h.total_amount, 2)} as paid from {h.account_name}? Only release a payment you agree with.</span>
+                    <button disabled={busy !== null} onClick={() => void run(`rel-${h.id}`, () => releaseHeldPayablePayment(h.id))} className="inline-flex items-center gap-1.5 bg-signal text-ink font-semibold px-3 py-1.5 rounded-sm disabled:opacity-40">
+                      {busy === `rel-${h.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}Yes, release
+                    </button>
+                    <button disabled={busy !== null} onClick={() => setConfirming(null)} className="text-slate hover:text-paper px-2">Back</button>
+                  </div>
+                ) : confirming === `can-${h.id}` ? (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <input autoFocus className={`${inputClass} flex-1 min-w-[240px] py-1.5`} placeholder="Why is this held payment being cancelled?" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} />
+                    <button disabled={busy !== null || cancelReason.trim().length < 3} onClick={() => void run(`can-${h.id}`, () => cancelHeldPayablePayment(h.id, cancelReason.trim()))} className="inline-flex items-center gap-1.5 border border-red-500/40 text-red-200 px-3 py-1.5 rounded-sm hover:bg-red-950/30 disabled:opacity-40">
+                      {busy === `can-${h.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}Cancel held payment
+                    </button>
+                    <button disabled={busy !== null} onClick={() => setConfirming(null)} className="text-slate hover:text-paper px-2">Back</button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      disabled={busy !== null || !h.can_release}
+                      title={h.can_release ? undefined : "You held this payment, so someone else must release it"}
+                      onClick={() => setConfirming(`rel-${h.id}`)}
+                      className="inline-flex items-center gap-1.5 bg-signal text-ink font-semibold px-3 py-1.5 rounded-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />Release payment
+                    </button>
+                    <button
+                      disabled={busy !== null}
+                      onClick={() => { setCancelReason(""); setConfirming(`can-${h.id}`); }}
+                      className="inline-flex items-center gap-1.5 border border-red-500/40 text-red-200 px-3 py-1.5 rounded-sm hover:bg-red-950/30 disabled:opacity-40"
+                    >
+                      <Ban className="h-3.5 w-3.5" />Cancel
+                    </button>
+                    {!h.can_release && <span className="self-center text-slate">You held this; another person with supplier-payment rights must release it.</span>}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* Invoice list */}
       <section className={card}>
         <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 space-y-3">
@@ -321,7 +415,7 @@ export function SupplierPaymentsPanel() {
                 type="checkbox"
                 className="accent-signal"
                 checked={filtered.length > 0 && filtered.every((i) => selected[i.id])}
-                onChange={(e) => setSelected((prev) => ({ ...prev, ...Object.fromEntries(filtered.map((i) => [i.id, e.target.checked])) }))}
+                onChange={(e) => setSelected((prev) => ({ ...prev, ...Object.fromEntries(filtered.filter((i) => !e.target.checked || !payBlock(i)).map((i) => [i.id, e.target.checked])) }))}
                 title="Select all shown"
               />
               <span>Invoice / supplier</span><span>Project</span><span>Due</span><span>Age</span><span className="text-right">Outstanding</span><span className="text-right">Action</span>
@@ -332,7 +426,7 @@ export function SupplierPaymentsPanel() {
               return (
                 <div key={inv.id} className={`${selected[inv.id] ? "bg-signal/5" : ""}`}>
                   <div className="grid grid-cols-1 lg:grid-cols-[28px_minmax(0,2.2fr)_minmax(0,1.4fr)_110px_110px_120px_minmax(0,260px)] gap-x-3 gap-y-1 px-4 py-3 items-center">
-                    <input type="checkbox" className="accent-signal" checked={!!selected[inv.id]} onChange={() => setSelected((p) => ({ ...p, [inv.id]: !p[inv.id] }))} />
+                    <input type="checkbox" className="accent-signal" checked={!!selected[inv.id]} disabled={!!payBlock(inv) && !selected[inv.id]} title={payBlock(inv) || undefined} onChange={() => setSelected((p) => ({ ...p, [inv.id]: !p[inv.id] }))} />
                     <div className="min-w-0">
                       <p className="text-paper font-medium truncate">{inv.supplier_name}</p>
                       <p className="text-[11px] text-slate-light truncate">
@@ -346,6 +440,9 @@ export function SupplierPaymentsPanel() {
                         {!inv.po_id && <Badge tone="slate">No PO</Badge>}
                         {!inv.grn_id && <Badge tone="slate">No GRN</Badge>}
                         {inv.paid_to_date > 0 && <Badge tone="sky">Part-paid {money(inv.paid_to_date)}</Badge>}
+                        {inv.held_amount > 0 && <Badge tone="violet">Held for release {money(inv.held_amount, 2)}</Badge>}
+                        {inv.supplier_blocked && <Badge tone="red">Supplier {inv.supplier_status}</Badge>}
+                        {inv.supplier_bank_unconfirmed && <Badge tone="red">Bank details unconfirmed</Badge>}
                         {inv.invoice_requests > 0 && <Badge tone="violet">Invoice requested ×{inv.invoice_requests}</Badge>}
                       </div>
                     </div>
@@ -354,7 +451,7 @@ export function SupplierPaymentsPanel() {
                     <span className={`text-xs font-medium ${b?.text || "text-slate"}`}>{inv.days_overdue > 0 ? `${inv.days_overdue}d late` : `${inv.days_outstanding}d old`}</span>
                     <span className="text-right text-paper font-semibold tabular-nums">{money(inv.outstanding, 2)}</span>
                     <div className="flex flex-wrap justify-end gap-1.5">
-                      <RowButton active={isOpen && expanded?.mode === "pay"} tone="signal" onClick={() => openRow(inv, "pay")}><Wallet className="h-3 w-3" />Post payment</RowButton>
+                      <RowButton active={isOpen && expanded?.mode === "pay"} tone="signal" onClick={() => openRow(inv, "pay")} disabled={!!payBlock(inv)} title={payBlock(inv) || undefined}><Wallet className="h-3 w-3" />Post payment</RowButton>
                       <RowButton active={isOpen && expanded?.mode === "request"} tone="sky" onClick={() => openRow(inv, "request")}><FileQuestion className="h-3 w-3" />Request invoice</RowButton>
                       <RowButton active={isOpen && expanded?.mode === "reject"} tone="red" onClick={() => openRow(inv, "reject")} disabled={inv.paid_to_date > 0}><Ban className="h-3 w-3" />Reject</RowButton>
                     </div>
@@ -365,13 +462,13 @@ export function SupplierPaymentsPanel() {
                       {expanded!.mode === "pay" && (
                         <div className="flex flex-wrap items-end gap-3">
                           <div className="w-40">
-                            <label className={labelClass}>Amount (outstanding {money(inv.outstanding, 2)})</label>
-                            <input className={inputClass} type="number" min="0.01" step="0.01" max={inv.outstanding} value={rowAmount} onChange={(e) => setRowAmount(e.target.value)} />
+                            <label className={labelClass}>Amount (available {money(available(inv), 2)})</label>
+                            <input className={inputClass} type="number" min="0.01" step="0.01" max={available(inv)} value={rowAmount} onChange={(e) => setRowAmount(e.target.value)} />
                           </div>
                           {!inv.payable_now && (
                             <div className="flex-1 min-w-[260px]">
-                              <label className={`${labelClass} text-amber-300`}>Override reason (not yet approved for payment)</label>
-                              <input className={inputClass} placeholder="e.g. Cash supplier, goods received on site, MD approved" value={rowText} onChange={(e) => setRowText(e.target.value)} />
+                              <label className={`${labelClass} text-amber-300`}>Why pay before approval? Another person must then release it</label>
+                              <input className={inputClass} placeholder="e.g. Cement received on site 3 Nov (GRN pending), agreed by the MD" value={rowText} onChange={(e) => setRowText(e.target.value)} />
                             </div>
                           )}
                           <div className="text-[11px] text-slate-light pb-2">
@@ -379,7 +476,7 @@ export function SupplierPaymentsPanel() {
                           </div>
                           <button disabled={busy !== null} onClick={() => void payOne(inv)} className="ml-auto inline-flex items-center gap-2 bg-signal text-ink font-semibold px-3 py-2 rounded-sm text-sm disabled:opacity-50">
                             {busy === `pay-${inv.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                            {Number(rowAmount) < Number(inv.outstanding) ? "Post part payment" : "Post payment"}
+                            {!inv.payable_now ? "Hold for release" : Number(rowAmount) < Number(inv.outstanding) ? "Post part payment" : "Post payment"}
                           </button>
                         </div>
                       )}
@@ -424,12 +521,25 @@ export function SupplierPaymentsPanel() {
           <div className="sticky bottom-0 border-t border-signal/30 bg-ink-light/95 backdrop-blur px-4 py-3 flex flex-wrap items-center gap-3">
             <span className="text-sm text-paper">{selectedInvoices.length} selected · <span className="font-semibold tabular-nums">{money(selectedTotal, 2)}</span></span>
             {selectionNeedsOverride && (
-              <input className={`${inputClass} flex-1 min-w-[240px] py-1.5`} placeholder="Override reason: some selected invoices aren't approved yet" value={payForm.override_reason} onChange={(e) => setPayForm({ ...payForm, override_reason: e.target.value })} />
+              <input className={`${inputClass} flex-1 min-w-[240px] py-1.5`} placeholder="Some aren't approved yet: say why to pay anyway. Another person must release it." value={payForm.override_reason} onChange={(e) => setPayForm({ ...payForm, override_reason: e.target.value })} />
             )}
-            <button onClick={() => setSelected({})} className="text-xs text-slate hover:text-paper">Clear</button>
-            <button disabled={busy !== null} onClick={() => void paySelected()} className="ml-auto inline-flex items-center gap-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm disabled:opacity-50">
-              {busy === "batch" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}Pay selected
-            </button>
+            <button onClick={() => { setSelected({}); setConfirming(null); }} className="text-xs text-slate hover:text-paper">Clear</button>
+            {confirming === "batch" ? (
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <span className="text-xs text-paper">
+                  {selectionNeedsOverride ? "Hold" : "Pay"} {plural(selectedInvoices.length, "invoice")} ({money(selectedTotal, 2)}) from {account?.account_name}?
+                  {selectionNeedsOverride && <span className="text-amber-300"> Another person must release it before it counts as paid.</span>}
+                </span>
+                <button disabled={busy !== null} onClick={() => void paySelected()} className="inline-flex items-center gap-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm disabled:opacity-50">
+                  {busy === "batch" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}Confirm
+                </button>
+                <button disabled={busy !== null} onClick={() => setConfirming(null)} className="text-xs text-slate hover:text-paper">Back</button>
+              </div>
+            ) : (
+              <button disabled={busy !== null} onClick={() => { if (checkSelection()) setConfirming("batch"); }} className="ml-auto inline-flex items-center gap-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm disabled:opacity-50">
+                <CheckCircle2 className="h-4 w-4" />{selectionNeedsOverride ? "Hold for release" : "Pay selected"}
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -441,7 +551,7 @@ export function SupplierPaymentsPanel() {
             <ul className="divide-y divide-ink-mid max-h-72 overflow-y-auto">
               {(data?.recent_actions || []).map((a: RecordData) => (
                 <li key={a.id} className="px-4 py-2 text-xs flex flex-wrap gap-x-3 gap-y-0.5">
-                  <span className={`font-medium ${a.action === "rejected" ? "text-red-300" : a.action === "paid" ? "text-emerald-300" : a.action === "match_override" ? "text-amber-300" : "text-sky-300"}`}>{ACTION_LABEL[a.action] || a.action}</span>
+                  <span className={`font-medium ${a.action === "rejected" ? "text-red-300" : a.action === "paid" ? "text-emerald-300" : a.action === "match_override" || a.action === "payment_held" ? "text-amber-300" : "text-sky-300"}`}>{ACTION_LABEL[a.action] || a.action}</span>
                   <span className="text-paper">{a.supplier_name} · <span className="font-mono">{a.invoice_number}</span></span>
                   {a.amount != null && <span className="tabular-nums text-paper">{money(a.amount, 2)}</span>}
                   {a.action === "invoice_requested" && <span className="text-slate">{a.email_sent ? "emailed" : "logged"}</span>}
@@ -457,10 +567,10 @@ export function SupplierPaymentsPanel() {
           {batches.length === 0 ? <p className="p-4 text-sm text-slate-light">No supplier payments posted yet.</p> : (
             <div className="overflow-x-auto max-h-72">
               <table className="w-full text-left text-xs">
-                <thead><tr className="border-b border-ink-mid text-slate uppercase font-mono text-[10px]"><th className="p-2">Batch</th><th className="p-2">Date</th><th className="p-2">Method</th><th className="p-2">Reference</th><th className="p-2 text-right">Total</th></tr></thead>
+                <thead><tr className="border-b border-ink-mid text-slate uppercase font-mono text-[10px]"><th className="p-2">Batch</th><th className="p-2">Date</th><th className="p-2">Method</th><th className="p-2">Reference</th><th className="p-2">Status</th><th className="p-2 text-right">Total</th></tr></thead>
                 <tbody className="divide-y divide-ink-mid">
                   {batches.slice(0, 40).map((b) => (
-                    <tr key={b.id}><td className="p-2 font-mono text-paper">{b.batch_number}</td><td className="p-2 text-slate-light">{fmtDate(b.payment_date)}</td><td className="p-2 text-slate-light">{String(b.payment_method || "").replace("_", " ")}</td><td className="p-2 text-slate-light">{b.reference || "-"}</td><td className="p-2 text-right tabular-nums text-paper">{money(b.total_amount, 2)}</td></tr>
+                    <tr key={b.id}><td className="p-2 font-mono text-paper">{b.batch_number}</td><td className="p-2 text-slate-light">{fmtDate(b.payment_date)}</td><td className="p-2 text-slate-light">{String(b.payment_method || "").replace("_", " ")}</td><td className="p-2 text-slate-light">{b.reference || "-"}</td><td className="p-2 text-slate-light">{b.status === "draft" ? "waiting" : b.status || "-"}</td><td className="p-2 text-right tabular-nums text-paper">{money(b.total_amount, 2)}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -488,6 +598,7 @@ const BADGE_TONES: Record<string, string> = {
   slate: "border-slate-500/30 bg-slate-950/20 text-slate-300",
   sky: "border-sky-500/30 bg-sky-950/20 text-sky-300",
   violet: "border-violet-500/30 bg-violet-950/20 text-violet-300",
+  red: "border-red-500/30 bg-red-950/20 text-red-300",
 };
 function Badge({ tone, children }: { tone: keyof typeof BADGE_TONES; children: React.ReactNode }) {
   return <span className={`px-1.5 py-0.5 rounded-sm text-[9px] uppercase tracking-wider font-mono border ${BADGE_TONES[tone]}`}>{children}</span>;
@@ -498,9 +609,9 @@ const ROW_TONES: Record<string, { idle: string; active: string }> = {
   sky: { idle: "border-sky-500/40 text-sky-300 hover:bg-sky-950/30", active: "border-sky-400 bg-sky-500/20 text-sky-100" },
   red: { idle: "border-red-500/40 text-red-300 hover:bg-red-950/30", active: "border-red-400 bg-red-500/20 text-red-100" },
 };
-function RowButton({ tone, active, onClick, disabled, children }: { tone: "signal" | "sky" | "red"; active: boolean; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+function RowButton({ tone, active, onClick, disabled, title, children }: { tone: "signal" | "sky" | "red"; active: boolean; onClick: () => void; disabled?: boolean; title?: string; children: React.ReactNode }) {
   return (
-    <button onClick={onClick} disabled={disabled} className={`inline-flex items-center gap-1 border px-2 py-1 rounded-sm text-[11px] whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${active ? ROW_TONES[tone].active : ROW_TONES[tone].idle}`}>
+    <button onClick={onClick} disabled={disabled} title={title} className={`inline-flex items-center gap-1 border px-2 py-1 rounded-sm text-[11px] whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${active ? ROW_TONES[tone].active : ROW_TONES[tone].idle}`}>
       {children}
     </button>
   );

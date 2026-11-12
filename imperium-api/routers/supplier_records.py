@@ -8,8 +8,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.database import get_db, supabase
-from core.security import get_current_user, require_permission, user_has_permission
-from app.shared.events import emit_role_notification
+from core.security import get_current_user, is_self_certification, require_permission, user_has_permission
+from app.shared.events import emit_event, emit_role_notification
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -56,6 +56,13 @@ SUPPLIER_EDIT_COLUMNS = {
 # stamped with who/when so procurement_verification.check_supplier_bank_changed
 # can flag a payment approved after a bank-detail edit made post-PO-issuance.
 SUPPLIER_BANK_COLUMNS = {"bank_name", "bank_account_number", "bank_branch_code"}
+# Stamps only the server writes: who changed / confirmed the bank details.
+SUPPLIER_BANK_STAMP_COLUMNS = ("bank_updated_at", "bank_updated_by", "bank_confirmed_at", "bank_confirmed_by")
+BLOCKED_STATUSES = {"suspended", "blacklisted"}
+# Lifting a block on a supplier is a director-level decision.
+LIFT_BLOCK_PERMISSION = "procurement.po.director_signoff"
+# Confirming bank details is done by the people who pay into them.
+BANK_CONFIRM_PERMISSION = "finance.supplier_payment.post"
 
 
 def _apply_vat_status(payload: dict) -> None:
@@ -370,6 +377,13 @@ async def create_item(
     issue_portal_login = bool(payload.pop("issue_portal_login", False))
     _apply_vat_status(payload)
     _validate_supplier_ranges(payload)
+    for key in SUPPLIER_BANK_STAMP_COLUMNS:
+        payload.pop(key, None)
+    # A new supplier's bank details need a second person's confirmation
+    # before the first payment, exactly like a change to them.
+    if any(payload.get(col) for col in SUPPLIER_BANK_COLUMNS):
+        payload["bank_updated_at"] = datetime.now(timezone.utc)
+        payload["bank_updated_by"] = user["sub"]
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
@@ -729,6 +743,7 @@ async def update_item(
     _: dict = Depends(require_permission("supplier_records.update")),
 ):
     payload = await request.json()
+    status_change_reason = str(payload.pop("status_change_reason", "") or "").strip()
     _apply_vat_status(payload)
     _validate_supplier_ranges(payload)
     safe_keys = [
@@ -742,11 +757,46 @@ async def update_item(
             "message": "No fields to update.",
         }
 
+    current = (await db.execute(
+        text("""
+            SELECT status, bank_name, bank_account_number, bank_branch_code
+            FROM procurement.suppliers
+            WHERE id = CAST(:id AS uuid) AND organization_id = :org_id AND is_deleted = false
+            FOR UPDATE
+        """),
+        {"id": item_id, "org_id": user["org_id"]},
+    )).mappings().first()
+    if not current:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    lifting_block = (
+        "status" in safe_keys
+        and current["status"] in BLOCKED_STATUSES
+        and payload.get("status") not in BLOCKED_STATUSES
+    )
+    if lifting_block:
+        if not await user_has_permission(db, user, LIFT_BLOCK_PERMISSION):
+            raise HTTPException(
+                status_code=403,
+                detail=f"This supplier is {current['status']}. Only a director can lift that.",
+            )
+        if len(status_change_reason) < 10:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Say why this supplier is no longer {current['status']} (status_change_reason, at least 10 characters).",
+            )
+
     params = {k: payload[k] for k in safe_keys}
     params["item_id"] = item_id
     params["org_id"] = user["org_id"]
 
-    if SUPPLIER_BANK_COLUMNS.intersection(safe_keys):
+    # Only a real change to the bank details needs re-confirming: forms send
+    # every field back on each save.
+    bank_changed = sorted(
+        col for col in SUPPLIER_BANK_COLUMNS.intersection(safe_keys)
+        if _norm_text(payload[col]) != _norm_text(current[col])
+    )
+    if bank_changed:
         safe_keys = [*safe_keys, "bank_updated_at", "bank_updated_by"]
         params["bank_updated_at"] = datetime.now(timezone.utc)
         params["bank_updated_by"] = user["sub"]
@@ -757,6 +807,27 @@ async def update_item(
         result = await db.execute(query, params)
         if not result.first():
             raise HTTPException(status_code=404, detail="Item not found")
+
+        if lifting_block:
+            await emit_event(
+                db,
+                user=user,
+                event_type="procurement.supplier.block_lifted.v1",
+                aggregate_type="supplier",
+                aggregate_id=item_id,
+                event_data={"from_status": current["status"], "to_status": payload.get("status"), "reason": status_change_reason},
+                idempotency_suffix=datetime.now(timezone.utc).isoformat(),
+            )
+        if bank_changed:
+            await emit_event(
+                db,
+                user=user,
+                event_type="procurement.supplier.bank_details_changed.v1",
+                aggregate_type="supplier",
+                aggregate_id=item_id,
+                event_data={"fields": bank_changed},
+                idempotency_suffix=params["bank_updated_at"].isoformat(),
+            )
 
         subcontractor_id = await sync_supplier_subcontractor_bridge(
             db, org_id=user["org_id"], user_id=user["sub"], supplier_id=item_id
@@ -784,6 +855,66 @@ async def update_item(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+def _norm_text(value) -> str:
+    return "" if value is None else str(value).strip()
+
+
+@router.post("/{item_id}/confirm-bank")
+async def confirm_supplier_bank_details(
+    item_id: UUID,
+    user: dict = Depends(require_permission(BANK_CONFIRM_PERMISSION)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Second person's check on new or changed bank details (by phoning the
+    supplier on a number already on file, not one from the change request).
+    Until this is done the supplier can't be paid."""
+    row = (await db.execute(
+        text("""
+            SELECT supplier_name, bank_updated_at, bank_updated_by, bank_confirmed_at
+            FROM procurement.suppliers
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            FOR UPDATE
+        """),
+        {"id": item_id, "org_id": user["org_id"]},
+    )).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    if row["bank_updated_at"] is None or (
+        row["bank_confirmed_at"] is not None and row["bank_confirmed_at"] >= row["bank_updated_at"]
+    ):
+        raise HTTPException(status_code=409, detail="There are no unconfirmed bank details on this supplier.")
+    if is_self_certification(user["sub"], row["bank_updated_by"]):
+        raise HTTPException(
+            status_code=409,
+            detail="You entered these bank details, so someone else must confirm them.",
+        )
+    confirmed_at = datetime.now(timezone.utc)
+    await db.execute(
+        text("""
+            UPDATE procurement.suppliers
+            SET bank_confirmed_at = :at, bank_confirmed_by = :by, updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {"at": confirmed_at, "by": user["sub"], "id": item_id, "org_id": user["org_id"]},
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="procurement.supplier.bank_details_confirmed.v1",
+        aggregate_type="supplier",
+        aggregate_id=item_id,
+        event_data={"bank_updated_at": row["bank_updated_at"].isoformat()},
+        idempotency_suffix=confirmed_at.isoformat(),
+    )
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"id": str(item_id), "bank_confirmed_at": confirmed_at.isoformat()},
+        "message": f"Bank details for {row['supplier_name']} confirmed. The supplier can be paid.",
+        "meta": {},
+    }
 
 
 @router.post("/{item_id}/portal-login")

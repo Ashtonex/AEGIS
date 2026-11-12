@@ -3607,7 +3607,7 @@ async def decide_purchase_order(
 async def amend_purchase_order(
     po_id: UUID,
     payload: PurchaseOrderAmendmentPayload,
-    user: dict = Depends(require_permission("procurement.po.approve")),
+    user: dict = Depends(require_any_permission("procurement.po.approve", "procurement.po.director_signoff")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -3639,6 +3639,17 @@ async def amend_purchase_order(
             status_code=403,
             detail="Procurement Manager cannot self-authorize commercial PO amendments; independent approval required.",
         )
+    # An amendment raises what Finance and the director signed off, so it is
+    # itself a sign-off: never by whoever raised the PO, and - unless it is
+    # backed by an approved variation - only by someone who can give the
+    # director sign-off.
+    if not is_superadmin(user) and str(po["created_by"]) == user["user_id"]:
+        raise HTTPException(status_code=409, detail="You raised this purchase order, so someone else must authorise an increase to it.")
+    if not payload.variation_id and not await user_has_permission(db, user, SIGNOFF_PERMISSIONS["director"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Increasing a signed-off purchase order without an approved variation needs the director sign-off. Link the approved variation, or ask a director.",
+        )
 
     # If linked variation supplied, ensure it exists and is approved
     if payload.variation_id:
@@ -3657,6 +3668,8 @@ async def amend_purchase_order(
                 status_code=409,
                 detail=f"Linked variation must be approved before amending purchase order (current status: '{var['status']}').",
             )
+        if var.get("project_id") and po["project_id"] and str(var["project_id"]) != str(po["project_id"]):
+            raise HTTPException(status_code=409, detail="The linked variation belongs to a different project from this purchase order.")
 
     # Lock and update finance.commitments
     comm_res = await db.execute(

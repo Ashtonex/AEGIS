@@ -702,6 +702,9 @@ async def accept_vendor_with_onboarding_gaps(
             SET status = 'active',
                 updated_at = NOW()
             WHERE id = :supplier_id AND organization_id = :org_id AND is_deleted = false
+              -- Accepting a vendor never lifts a suspension or blacklisting;
+              -- only a director can, on the supplier record.
+              AND status NOT IN ('suspended', 'blacklisted')
         """),
             {"supplier_id": str(row["linked_supplier_id"]), "org_id": org_id},
         )

@@ -23,6 +23,7 @@ from core.database import get_db
 from core.security import get_current_user, is_self_certification, require_permission
 from app.services.finance import gl_bridge
 from app.services.finance.general_ledger import GeneralLedgerError
+from app.services.finance.supplier_payment_controls import assert_payment_date_allowed, assert_suppliers_payable
 
 router = APIRouter()
 
@@ -308,7 +309,7 @@ async def decide_payment_batch(
     user_id = user.get("sub")
 
     batch = await db.execute(
-        text("SELECT id, batch_number, status, cash_account_id, payment_date, payment_method, reference, created_by FROM finance.supplier_payment_batches WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        text("SELECT id, batch_number, status, cash_account_id, payment_date, payment_method, reference, created_by, held_reason FROM finance.supplier_payment_batches WHERE id = :id AND organization_id = :org_id AND is_deleted = false FOR UPDATE"),
         {"id": str(batch_id), "org_id": org_id},
     )
     batch_row = batch.first()
@@ -317,6 +318,11 @@ async def decide_payment_batch(
 
     current_status = batch_row.status
     action = payload.action
+    if batch_row.held_reason is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This is a held payment of invoices not yet approved for payment. Release or cancel it under Finance > Supplier payments.",
+        )
 
     transitions: dict = {
         "approve": ("draft", "approved"),
@@ -343,6 +349,15 @@ async def decide_payment_batch(
             extra_params = {"approved_by": user_id}
 
         if action == "post":
+            # Same gates as every other supplier payment path: no blocked
+            # supplier, no unconfirmed bank change, no closed/future date.
+            supplier_ids = (await db.execute(
+                text("SELECT DISTINCT supplier_id FROM finance.supplier_payment_items WHERE batch_id = :batch_id"),
+                {"batch_id": str(batch_id)},
+            )).scalars().all()
+            await assert_payment_date_allowed(db, org_id, batch_row.payment_date)
+            await assert_suppliers_payable(db, org_id, supplier_ids)
+
             # 1. Create cashbook transaction
             items_rows = await db.execute(
                 text("SELECT COALESCE(SUM(amount), 0) AS total FROM finance.supplier_payment_items WHERE batch_id = :batch_id"),
