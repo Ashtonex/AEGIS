@@ -3668,8 +3668,11 @@ async def amend_purchase_order(
                 status_code=409,
                 detail=f"Linked variation must be approved before amending purchase order (current status: '{var['status']}').",
             )
-        if var.get("project_id") and po["project_id"] and str(var["project_id"]) != str(po["project_id"]):
-            raise HTTPException(status_code=409, detail="The linked variation belongs to a different project from this purchase order.")
+        if not po["project_id"] or str(var["project_id"]) != str(po["project_id"]):
+            raise HTTPException(
+                status_code=409,
+                detail="A variation can only back an amendment to a purchase order on the same project. Ask a director to authorise this one.",
+            )
 
     # Lock and update finance.commitments
     comm_res = await db.execute(

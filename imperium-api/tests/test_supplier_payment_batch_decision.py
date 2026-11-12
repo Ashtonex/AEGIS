@@ -70,6 +70,7 @@ class FakeSession:
         self.supplier_ids = [uuid4()]
         self.suppliers = [{"supplier_name": "Acme", "status": "active", "bank_unconfirmed": False}]
         self.period = None
+        self.stale_invoices: list[str] = []
         self.item_total = 1250.0
         self.cashbook_txn_id = uuid4()
         self.statements: list[dict] = []
@@ -83,6 +84,8 @@ class FakeSession:
             return SimpleNamespace(first=lambda: self.batch)
         if "SELECT DISTINCT supplier_id" in sql:
             return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self.supplier_ids))
+        if "si.status <> 'approved'" in sql:
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self.stale_invoices))
         if "FROM finance.accounting_periods" in sql:
             return SimpleNamespace(first=lambda: self.period)
         if "FROM procurement.suppliers s" in sql:
@@ -242,3 +245,24 @@ def test_post_refuses_a_closed_period_or_future_date(no_gl_proposal):
     with pytest.raises(HTTPException) as exc:
         decide(db, "post")
     assert exc.value.status_code == 422
+
+
+def test_post_refuses_invoices_no_longer_approved(no_gl_proposal):
+    db = FakeSession("approved")
+    db.stale_invoices = ["INV-9"]
+    with pytest.raises(HTTPException) as exc:
+        decide(db, "post")
+    assert exc.value.status_code == 409 and "INV-9" in exc.value.detail
+    assert not any("INSERT" in s["sql"] for s in db.statements)
+
+
+def test_unchecked_immediate_supplier_payment_endpoint_is_retired():
+    import routers.financial_performance as fp
+
+    payload = fp.SupplierPaymentBatchCreate(
+        batch_number="X-1", cash_account_id=uuid4(),
+        items=[fp.SupplierPaymentItem(supplier_invoice_id=uuid4(), supplier_id=uuid4(), amount=10)],
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(fp.post_supplier_payment_batch(payload=payload, user={"org_id": str(uuid4()), "sub": APPROVER}, db=None))
+    assert exc.value.status_code == 410

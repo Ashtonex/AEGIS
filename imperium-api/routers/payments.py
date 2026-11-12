@@ -164,6 +164,15 @@ async def create_payment_batch(
     already_paid = [i["id"] for i in invoices if i["status"] == "paid"]
     if already_paid:
         raise HTTPException(status_code=409, detail=f"Invoices already paid: {already_paid}")
+    # Only invoices Finance approved for payment (completed PO/GRN/invoice
+    # match). Paying anything else goes through Supplier payments, where it
+    # needs a reason and is held for a second person to release.
+    not_approved = [str(i["id"]) for i in invoices if i["status"] != "approved"]
+    if not_approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Only invoices approved for payment can go in a payment batch. Pay the others from Finance > Supplier payments.",
+        )
 
     total_amount = sum(float(i["total_amount"]) for i in invoices)
 
@@ -357,6 +366,21 @@ async def decide_payment_batch(
             )).scalars().all()
             await assert_payment_date_allowed(db, org_id, batch_row.payment_date)
             await assert_suppliers_payable(db, org_id, supplier_ids)
+            # Still approved for payment - not paid, rejected or reopened since
+            # the batch was drafted.
+            stale = (await db.execute(
+                text("""
+                    SELECT si.invoice_number FROM finance.supplier_payment_items spi
+                    JOIN procurement.supplier_invoices si ON si.id = spi.supplier_invoice_id
+                    WHERE spi.batch_id = :batch_id AND si.status <> 'approved'
+                """),
+                {"batch_id": str(batch_id)},
+            )).scalars().all()
+            if stale:
+                raise HTTPException(
+                    status_code=409,
+                    detail="No longer approved for payment: " + ", ".join(stale) + ". Cancel this batch and pay again.",
+                )
 
             # 1. Create cashbook transaction
             items_rows = await db.execute(

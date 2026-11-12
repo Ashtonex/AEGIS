@@ -42,7 +42,7 @@ from fastapi import HTTPException  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from core.database import AsyncSessionLocal  # noqa: E402
-from routers import finance_ops, payments, payroll_runs, procurement, supplier_records  # noqa: E402
+from routers import finance_ops, financial_performance, payments, payroll_runs, procurement, supplier_records  # noqa: E402
 
 FAILURES: list[str] = []
 ORG = str(uuid.uuid4())
@@ -59,7 +59,7 @@ S_OK, S_BLOCKED = str(uuid.uuid4()), str(uuid.uuid4())
 I_APPROVED, I_UNAPPROVED, I_SPARE, I_BLOCKED = (str(uuid.uuid4()) for _ in range(4))
 EMP = str(uuid.uuid4())
 RUN = str(uuid.uuid4())
-PO = str(uuid.uuid4())
+PO, PO_NO_PROJECT = str(uuid.uuid4()), str(uuid.uuid4())
 VAR_SAME, VAR_OTHER = str(uuid.uuid4()), str(uuid.uuid4())
 TODAY = date.today()
 GOOD_REASON = "Cement received on site 3 Nov, GRN pending; agreed by the MD"
@@ -160,6 +160,10 @@ async def seed() -> None:
                     description, committed_amount, commitment_date)
                  VALUES (:org, :p, 'materials', 'purchase_order', :po, 'PO-TEST-1', 1000, CURRENT_DATE)""",
               org=ORG, p=PROJECT, po=PO)
+    await sql("""INSERT INTO procurement.purchase_orders (id, organization_id, po_number, supplier_id, project_id, status,
+                    subtotal, tax_amount, total_amount, created_by, issued_at)
+                 VALUES (:id, :org, 'PO-TEST-2', :s, NULL, 'issued', 300, 0, 300, :proc, NOW())""",
+              id=PO_NO_PROJECT, org=ORG, s=S_OK, proc=PROC)
     await sql("""INSERT INTO finance.variations (id, organization_id, variation_number, project_id, title, status)
                  VALUES (:a, :org, 'VO-1', :p, 'Extra slab', 'approved'), (:b, :org, 'VO-2', :o, 'Other job', 'approved')""",
               a=VAR_SAME, b=VAR_OTHER, org=ORG, p=PROJECT, o=OTHER_PROJECT)
@@ -248,6 +252,14 @@ async def test_supplier_payments() -> None:
     spare = next(i for i in data["invoices"] if str(i["id"]) == I_SPARE)
     check("cancelled hold frees the invoice again", spare["available_to_pay"] == 50.0 and spare["held_amount"] == 0.0, spare)
 
+    code, res = await call(payments.create_payment_batch, payload=payments.PaymentBatchCreate(
+        cash_account_id=CASH, payment_date=TODAY, supplier_invoice_ids=[uuid.UUID(I_SPARE)]), user=user(MAKER), _={})
+    check("old batch endpoint refuses invoices not approved for payment", code == 409, (code, res))
+    code, res = await call(financial_performance.post_supplier_payment_batch, payload=financial_performance.SupplierPaymentBatchCreate(
+        batch_number="X-1", cash_account_id=CASH,
+        items=[financial_performance.SupplierPaymentItem(supplier_invoice_id=I_SPARE, supplier_id=S_OK, amount=50)]), user=user(MAKER))
+    check("unchecked immediate-post endpoint is retired", code == 410, (code, res))
+
     code, res = await call(finance_ops.pay_payables, payload=pay([I_BLOCKED]), user=user(MAKER))
     check("blacklisted supplier can't be paid", code == 409 and "blocked" in str(res), (code, res))
     code, res = await call(finance_ops.pay_payables, payload=pay([I_SPARE], reason=GOOD_REASON, payment_date=date(2026, 8, 15)), user=user(MAKER))
@@ -335,7 +347,10 @@ async def test_po_amendments() -> None:
     code, res = await amend(CHECKER, "Authorising Officer", "500")
     check("amendment without a variation needs the director", code == 403, (code, res))
     code, res = await amend(DIRECTOR, "Executive (Admin)", "250", VAR_OTHER)
-    check("variation from another project refused", code == 409 and "different project" in str(res), (code, res))
+    check("variation from another project refused", code == 409 and "same project" in str(res), (code, res))
+    payload = procurement.PurchaseOrderAmendmentPayload(additional_amount=D("50"), reason="Extra cement for the slab", variation_id=VAR_SAME)
+    code, res = await call(procurement.amend_purchase_order, po_id=uuid.UUID(PO_NO_PROJECT), payload=payload, user=user(CHECKER, "Authorising Officer"))
+    check("a variation can't back an amendment to a PO with no project", code == 409, (code, res))
     code, res = await amend(CHECKER, "Authorising Officer", "150", VAR_SAME)
     check("approver amends with an approved variation of the same project", code == 200, (code, res))
     code, res = await amend(DIRECTOR, "Executive (Admin)", "100")
