@@ -39,6 +39,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesAnyRole } from '@/lib/rbacMatch';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
+import { toast } from "sonner";
 
 // Roles allowed to change the status of a lead that's already been decided
 // (converted/qualified or disqualified) - matches the backend's
@@ -125,7 +126,6 @@ export default function CRMLeadsApp() {
   } | null>(null);
   const [isGrantingPortalAccess, setIsGrantingPortalAccess] = useState(false);
   const [dismissedLeadIds, setDismissedLeadIds] = useState<string[]>([]);
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
   const [draggedLeadId, setDraggedLeadId] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   const [movingLeadId, setMovingLeadId] = useState<string | null>(null);
@@ -192,10 +192,6 @@ export default function CRMLeadsApp() {
       .catch(() => setComplianceTypes([]));
   }, []);
 
-  const showToast: (message: string, type?: 'success' | 'info' | 'error') => void = useCallback((message: string, type: 'success' | 'info' | 'error' = 'success') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 4000);
-  }, []);
 
   const {
     data: leadsData,
@@ -217,9 +213,9 @@ export default function CRMLeadsApp() {
   useEffect(() => {
     if (leadsError) {
       console.warn("Failed to load CRM leads", leadsError);
-      showToast("CRM leads could not be loaded from the CRM service.", "error");
+      toast.error("CRM leads could not be loaded from the CRM service.");
     }
-  }, [leadsError, showToast]);
+  }, [leadsError]);
 
   useEffect(() => {
     void getCrmTenderSignals({ limit: 50, includeInternalPublicFeed: false })
@@ -264,11 +260,11 @@ export default function CRMLeadsApp() {
   const handleSaveLead = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualForm.contact_name.trim()) {
-      showToast("Client / contact name is required.", "error");
+      toast.error("Client / contact name is required.");
       return;
     }
     if (manualForm.estimated_budget < 0) {
-      showToast("Estimated value / budget can't be negative.", "error");
+      toast.error("Estimated value / budget can't be negative.");
       return;
     }
 
@@ -310,22 +306,22 @@ export default function CRMLeadsApp() {
             body: manualForm.initial_notes.trim()
           }).catch(() => undefined);
         }
-        showToast(editingLead ? "Lead updated." : "Lead logged successfully in database.");
+        toast.success(editingLead ? "Lead updated." : "Lead logged successfully in database.");
         setIsManualModalOpen(false);
         setEditingLead(null);
         setManualForm(DEFAULT_MANUAL_FORM);
         void loadLeads();
       } else {
-        showToast(editingLead ? "Could not update lead." : "Could not save manual lead.", "error");
+        toast.error(editingLead ? "Could not update lead." : "Could not save manual lead.");
       }
     } catch (err) {
       const fallback = editingLead ? "Could not update lead." : "Could not save manual lead.";
       if (err instanceof ApiError && err.status === 409) {
-        showToast("A lead with this name, email, or phone already exists. Check the pipeline before logging it again.", "error");
+        toast.error("A lead with this name, email, or phone already exists. Check the pipeline before logging it again.");
       } else if (err instanceof ApiError && err.message) {
-        showToast(err.message, "error");
+        toast.error(err.message);
       } else {
-        showToast(fallback, "error");
+        toast.error(fallback);
       }
     } finally {
       setIsSavingLead(false);
@@ -370,12 +366,12 @@ export default function CRMLeadsApp() {
         setActivityForm({ channel: activityForm.channel, body: '', outcome: '' });
         const refreshed = await getCrmCommunications({ lead_id: activityLead.id, limit: 50 });
         setActivityItems(refreshed.success && Array.isArray(refreshed.data) ? refreshed.data : []);
-        showToast("Activity logged.");
+        toast.success("Activity logged.");
       } else {
-        showToast("Could not log activity.", "error");
+        toast.error("Could not log activity.");
       }
     } catch {
-      showToast("Could not log activity.", "error");
+      toast.error("Could not log activity.");
     } finally {
       setIsLoggingActivity(false);
     }
@@ -418,7 +414,7 @@ export default function CRMLeadsApp() {
         }
       });
       if (res.success) {
-        showToast("Lead successfully converted to Organization + Opportunity!");
+        toast.success("Lead successfully converted to Organization + Opportunity!");
         const contactId = (res.data as any)?.contact_id;
         if (contactId) {
           setQualifiedLeadPrompt({
@@ -430,7 +426,7 @@ export default function CRMLeadsApp() {
         void loadLeads();
       }
     } catch {
-      showToast("Lead qualification was not saved. Check the CRM service connection and retry.", "error");
+      toast.error("Lead qualification was not saved. Check the CRM service connection and retry.");
     } finally {
       setQualifyingId(null);
     }
@@ -442,13 +438,13 @@ export default function CRMLeadsApp() {
     try {
       const res = await grantClientPortalAccess(qualifiedLeadPrompt.contactId);
       if (res.success) {
-        showToast(`Portal invite sent to ${res.data?.email || qualifiedLeadPrompt.email}.`);
+        toast.success(`Portal invite sent to ${res.data?.email || qualifiedLeadPrompt.email}.`);
         setQualifiedLeadPrompt(null);
       } else {
-        showToast("Portal access was not granted. Check the CRM service connection and retry.", "error");
+        toast.error("Portal access was not granted. Check the CRM service connection and retry.");
       }
     } catch {
-      showToast("Portal access was not granted. Check the CRM service connection and retry.", "error");
+      toast.error("Portal access was not granted. Check the CRM service connection and retry.");
     } finally {
       setIsGrantingPortalAccess(false);
     }
@@ -464,11 +460,11 @@ export default function CRMLeadsApp() {
     if (!selectedLead) return;
     try {
       await disqualifyCrmLead(selectedLead.id, disqualifyReason);
-      showToast("Lead status marked as Disqualified.");
+      toast.success("Lead status marked as Disqualified.");
       setIsDisqualifyModalOpen(false);
       void loadLeads();
     } catch {
-      showToast("Lead disqualification was not saved. Check the CRM service connection and retry.", "error");
+      toast.error("Lead disqualification was not saved. Check the CRM service connection and retry.");
     }
   };
 
@@ -514,7 +510,7 @@ export default function CRMLeadsApp() {
 
     const isDecided = ['converted', 'disqualified'].includes(normalizedStatus(lead.status));
     if (isDecided && !canOverrideLeadStatus) {
-      showToast("This lead is already qualified or disqualified - only Admin, Executive, or Managing Director can change its status further.", "error");
+      toast.error("This lead is already qualified or disqualified - only Admin, Executive, or Managing Director can change its status further.");
       return;
     }
 
@@ -536,10 +532,10 @@ export default function CRMLeadsApp() {
       if (res.success) {
         void loadLeads();
       } else {
-        showToast("Lead stage change was not saved. Check the CRM service connection and retry.", "error");
+        toast.error("Lead stage change was not saved. Check the CRM service connection and retry.");
       }
     } catch {
-      showToast("Lead stage change was not saved. Check the CRM service connection and retry.", "error");
+      toast.error("Lead stage change was not saved. Check the CRM service connection and retry.");
     } finally {
       setMovingLeadId(null);
     }
@@ -562,7 +558,7 @@ export default function CRMLeadsApp() {
       }
       setIsDupModalOpen(true);
     } catch {
-      showToast("Duplicate check completed. No matches found.", "info");
+      toast.info("Duplicate check completed. No matches found.");
     } finally {
       setIsDuplicateChecking(false);
     }
@@ -572,11 +568,11 @@ export default function CRMLeadsApp() {
     if (!selectedLead) return;
     try {
       await mergeCrmLeads(existingLeadId, [selectedLead.id]);
-      showToast("Leads merged successfully.");
+      toast.success("Leads merged successfully.");
       setIsDupModalOpen(false);
       void loadLeads();
     } catch {
-      showToast("Lead merge was not saved. Check the CRM service connection and retry.", "error");
+      toast.error("Lead merge was not saved. Check the CRM service connection and retry.");
     }
   };
 
@@ -590,14 +586,14 @@ export default function CRMLeadsApp() {
     try {
       const res = await deleteCrmLead(selectedLead.id);
       if (res.success) {
-        showToast("Lead deleted.");
+        toast.success("Lead deleted.");
         setIsDeleteModalOpen(false);
         void loadLeads();
       } else {
-        showToast("Lead was not deleted. Check the CRM service connection and retry.", "error");
+        toast.error("Lead was not deleted. Check the CRM service connection and retry.");
       }
     } catch {
-      showToast("Lead was not deleted. Check the CRM service connection and retry.", "error");
+      toast.error("Lead was not deleted. Check the CRM service connection and retry.");
     }
   };
 
@@ -642,15 +638,6 @@ export default function CRMLeadsApp() {
 
   return (
     <main className="min-h-screen bg-[#0A0D14] text-[#E2E8F0] p-4 lg:p-8 font-sans selection:bg-[#3B82F6]/30">
-      {/* Toast Alert */}
-      {notification && (
-        <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-xl flex items-center gap-3 animate-in slide-in-from-bottom-2 ${
-          notification.type === 'error' ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-        }`}>
-          <ShieldCheck className="h-4 w-4" />
-          <span className="text-xs font-semibold">{notification.message}</span>
-        </div>
-      )}
 
       <DashboardPageHeader
         eyebrow={{ label: "CRM", icon: Target }}

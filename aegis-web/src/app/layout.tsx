@@ -8,7 +8,7 @@ import "@/styles/globals.css";
 import { cn } from "@/lib/utils";
 import { AuthProvider } from "@/lib/auth/AuthContext";
 import { AppThemeProvider } from "@/components/theme/AppThemeProvider";
-import { ToastProvider } from "@/components/ui/ToastProvider";
+import { Toaster } from "@/components/ui/sonner";
 
 export const viewport: Viewport = {
   themeColor: "#040810",
@@ -45,13 +45,12 @@ export default function RootLayout({
       )}>
         <AuthProvider>
           <AppThemeProvider>
-            <ToastProvider>
-              <PwaRegistration />
-              <PwaRuntime />
-              <NavigationWrapper>
-                {children}
-              </NavigationWrapper>
-            </ToastProvider>
+            <PwaRegistration />
+            <PwaRuntime />
+            <NavigationWrapper>
+              {children}
+            </NavigationWrapper>
+            <Toaster />
           </AppThemeProvider>
         </AuthProvider>
       </body>
