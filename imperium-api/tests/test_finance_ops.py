@@ -88,7 +88,10 @@ def test_migration_creates_site_payroll_and_payable_event_tables():
 
 def test_paying_unapproved_invoice_requires_override_reason_in_source():
     # The control that keeps 3-way match meaningful: paying an invoice that
-    # isn't approved must demand a written reason and log it.
+    # isn't approved must demand a real written reason, hold the payment, and
+    # only a different person can release it.
     src = (ROOT / "routers" / "finance_ops.py").read_text(encoding="utf-8")
-    assert "if unapproved and not payload.override_reason" in src
+    assert "if unapproved and len(override_reason) < MIN_OVERRIDE_REASON" in src
+    assert '"payment_held"' in src
     assert '"match_override"' in src
+    assert 'str(batch["created_by"]) == str(user_id)' in src

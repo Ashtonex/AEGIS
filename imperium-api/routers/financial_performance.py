@@ -2786,104 +2786,24 @@ async def get_supplier_payments(
     return ok(items, "Supplier payment batches retrieved.")
 
 
-@router.post("/supplier-payments", status_code=status.HTTP_201_CREATED)
+@router.post("/supplier-payments", status_code=status.HTTP_201_CREATED, deprecated=True)
 async def post_supplier_payment_batch(
     payload: SupplierPaymentBatchCreate,
     user: dict = Depends(require_permission("finance.supplier_payment.post")),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        total_amt = sum(item.amount for item in payload.items)
-        batch_id = (
-            await db.execute(
-                text("""
-                    INSERT INTO finance.supplier_payment_batches (
-                        organization_id, batch_number, cash_account_id, payment_date,
-                        status, total_amount, payment_method, reference, notes, created_by
-                    ) VALUES (
-                        :org_id, :batch_number, :cash_account_id, :payment_date,
-                        'posted', :total_amount, :payment_method, :reference, :notes, :user_id
-                    ) RETURNING id
-                """),
-                {
-                    "org_id": user["org_id"],
-                    "batch_number": payload.batch_number,
-                    "cash_account_id": payload.cash_account_id,
-                    "payment_date": payload.payment_date,
-                    "total_amount": total_amt,
-                    "payment_method": payload.payment_method,
-                    "reference": payload.reference,
-                    "notes": payload.notes,
-                    "user_id": user["sub"],
-                },
-            )
-        ).scalar()
+    """Retired: use POST /api/v1/finance/ops/payables/pay.
 
-        for item in payload.items:
-            tx_number = f"PMT-{payload.batch_number}-{str(item.supplier_invoice_id)[:8]}"
-            tx_id = (
-                await db.execute(
-                    text("""
-                        INSERT INTO finance.cashbook_transactions (
-                            organization_id, cash_account_id, transaction_number, transaction_date,
-                            transaction_type, direction, amount, currency, description,
-                            project_id, department_id, counterparty_type, counterparty_name, payment_method,
-                            reference, posted_by
-                        ) VALUES (
-                            :org_id, :cash_account_id, :tx_number, :payment_date,
-                            'payment', 'outflow', :amount, 'USD', :desc,
-                            :project_id, :department_id, 'supplier', '', :payment_method,
-                            :reference, :user_id
-                        ) RETURNING id
-                    """),
-                    {
-                        "org_id": user["org_id"],
-                        "cash_account_id": payload.cash_account_id,
-                        "tx_number": tx_number,
-                        "payment_date": payload.payment_date,
-                        "amount": item.amount,
-                        "desc": f"Supplier payment batch item. Invoice {item.supplier_invoice_id}",
-                        "project_id": item.project_id,
-                        "department_id": item.department_id,
-                        "payment_method": payload.payment_method,
-                        "reference": item.payment_reference or payload.reference,
-                        "user_id": user["sub"],
-                    }
-                )
-            ).scalar()
-
-            await db.execute(
-                text("""
-                    INSERT INTO finance.supplier_payment_items (
-                        organization_id, batch_id, supplier_invoice_id, supplier_id,
-                        project_id, department_id, amount, payment_reference, cashbook_transaction_id
-                    ) VALUES (
-                        :org_id, :batch_id, :supplier_invoice_id, :supplier_id,
-                        :project_id, :department_id, :amount, :payment_ref, :tx_id
-                    )
-                """),
-                {
-                    "org_id": user["org_id"],
-                    "batch_id": batch_id,
-                    "supplier_invoice_id": item.supplier_invoice_id,
-                    "supplier_id": item.supplier_id,
-                    "project_id": item.project_id,
-                    "department_id": item.department_id,
-                    "amount": item.amount,
-                    "payment_ref": item.payment_reference,
-                    "tx_id": tx_id,
-                  }
-              )
-
-            # current_balance is maintained by the cashbook_transactions_sync_balance
-            # trigger, which already fired on the INSERT above - a manual update here
-            # used to double-count every batch item (fixed in Phase 4).
-
-        await db.commit()
-        return ok({"id": str(batch_id)}, "Supplier payment batch posted successfully.")
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="Supplier payment batch number or items duplicate conflict.")
+    It posted any amount against any invoice with no checks (approval, amount
+    outstanding, supplier status, bank-detail confirmation, period locks), so
+    it was a way round every supplier-payment control."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Retired. Pay suppliers from Finance > Supplier payments (/api/v1/finance/ops/payables/pay), "
+            "which checks approval, amounts owed, supplier status, bank details and period locks."
+        ),
+    )
 
 
 @router.get("/payroll/profiles")

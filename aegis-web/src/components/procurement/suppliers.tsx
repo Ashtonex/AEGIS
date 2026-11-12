@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ClipboardList, FileText, Loader2, Plus, Send, ShieldAlert, ShieldCheck, Star, X } from "lucide-react";
-import { createDocument, createSupplierRecord, decideSupplierComplianceDocument, getSupplierComplianceDocuments, getSupplierComplianceDocumentSignedUrl, getProcurementInvoices, getProcurementOrders, getProcurementRfqs, getSupplierCatalogue, issueSupplierPortalLogin, recordSupplierComplianceDocument, updateSupplierRecord, type SupplierComplianceDocumentStatus, type SupplierComplianceDocumentType, type VendorDocument } from "@/lib/api";
+import { confirmSupplierBankDetails, createDocument, createSupplierRecord, decideSupplierComplianceDocument, getSupplierComplianceDocuments, getSupplierComplianceDocumentSignedUrl, getProcurementInvoices, getProcurementOrders, getProcurementRfqs, getSupplierCatalogue, issueSupplierPortalLogin, recordSupplierComplianceDocument, updateSupplierRecord, type SupplierComplianceDocumentStatus, type SupplierComplianceDocumentType, type VendorDocument } from "@/lib/api";
 import { PortalDocumentUpload, type UploadedDocumentResult } from "@/components/portal/PortalDocumentUpload";
 import { Banner, EmptyState, LoadingState, type Rec, dt, money, normalizeActionError, num, pct, supplierStatusClass, tx } from "@/components/procurement/shared";
 
@@ -57,6 +57,7 @@ export function SuppliersTable({ rows, onView }: { rows: Rec[]; onView: (row: Re
 
 
 export const SUPPLIER_STATUSES = ["active", "pending_approval", "suspended", "blacklisted"] as const;
+const BLOCKED_SUPPLIER_STATUSES: string[] = ["suspended", "blacklisted"];
 
 export const SUPPLIER_COMPLIANCE_STATUSES = ["pending", "compliant", "non_compliant", "exempt"] as const;
 
@@ -235,12 +236,42 @@ export function Supplier360Modal({
         performance_score: form.performance_score === "" ? null : Number(form.performance_score),
         on_time_delivery_pct: form.on_time_delivery_pct === "" ? null : Number(form.on_time_delivery_pct),
       };
+      if (liftingBlock) {
+        if (liftReason.trim().length < 10) {
+          setError(`Say why this supplier is no longer ${tx(supplier.status, "")} (at least 10 characters).`);
+          return;
+        }
+        payload.status_change_reason = liftReason.trim();
+      }
       await updateSupplierRecord(supplier.id, payload);
-      onSaved({ ...supplier, ...payload });
+      const { status_change_reason: _reason, ...saved } = payload;
+      void _reason;
+      onSaved({ ...supplier, ...saved });
     } catch (e) {
       setError(normalizeActionError(e, "Supplier could not be updated."));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const [liftReason, setLiftReason] = useState("");
+  const liftingBlock = BLOCKED_SUPPLIER_STATUSES.includes(tx(supplier.status, "")) && !BLOCKED_SUPPLIER_STATUSES.includes(form.status);
+  const bankUnconfirmed = Boolean(
+    supplier.bank_updated_at
+    && (!supplier.bank_confirmed_at || new Date(String(supplier.bank_confirmed_at)) < new Date(String(supplier.bank_updated_at))),
+  );
+  const [confirmingBank, setConfirmingBank] = useState(false);
+  const [bankCheckDone, setBankCheckDone] = useState(false);
+  const confirmBank = async () => {
+    setConfirmingBank(true);
+    setError(null);
+    try {
+      const res = await confirmSupplierBankDetails(supplier.id);
+      onSaved({ ...supplier, bank_confirmed_at: res.data?.bank_confirmed_at ?? new Date().toISOString() });
+    } catch (e) {
+      setError(normalizeActionError(e, "Bank details could not be confirmed."));
+    } finally {
+      setConfirmingBank(false);
     }
   };
 
@@ -305,6 +336,18 @@ export function Supplier360Modal({
         </div>
         <div className="max-h-[76vh] overflow-y-auto p-4">
           {error && <div className="mb-4"><Banner tone="error" message={error} /></div>}
+          {bankUnconfirmed && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border border-amber-500/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+              <span>Bank details were changed on {new Date(String(supplier.bank_updated_at)).toLocaleDateString("en-GB")} and are not confirmed. This supplier can&apos;t be paid until someone other than the person who changed them confirms them with the supplier on a number already on file.</span>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" className="accent-signal" checked={bankCheckDone} onChange={(e) => setBankCheckDone(e.target.checked)} />
+                I checked them with the supplier on a number already on file
+              </label>
+              <button type="button" disabled={confirmingBank || !bankCheckDone} onClick={() => void confirmBank()} className="border border-amber-400/60 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-100 hover:bg-amber-500/20 disabled:opacity-50">
+                {confirmingBank ? "Confirming..." : "Confirm bank details"}
+              </button>
+            </div>
+          )}
           {activeTab === "overview" ? (
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
             <section className="space-y-4">
@@ -331,6 +374,9 @@ export function Supplier360Modal({
                   <SupplierField label="Address" value={form.address} onChange={(v) => updateField("address", v)} />
                   <SupplierField label="Currency" value={form.currency} onChange={(v) => updateField("currency", v.toUpperCase().slice(0, 3))} />
                   <SupplierSelect label="Supplier status" value={form.status} options={SUPPLIER_STATUSES} onChange={(v) => updateField("status", v)} />
+                  {liftingBlock && (
+                    <SupplierField label={`Why is the ${tx(supplier.status, "")} status being lifted? (directors only)`} value={liftReason} onChange={setLiftReason} required />
+                  )}
                   <SupplierSelect label="Compliance status" value={form.compliance_status} options={SUPPLIER_COMPLIANCE_STATUSES} onChange={(v) => updateField("compliance_status", v)} />
                   <SupplierField label="Payment terms days" type="number" value={form.payment_terms_days} onChange={(v) => updateField("payment_terms_days", v)} />
                   <SupplierField label="Performance score (0-5)" type="number" min={0} max={5} step="0.1" value={form.performance_score} onChange={(v) => updateField("performance_score", v)} />

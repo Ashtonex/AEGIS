@@ -242,6 +242,13 @@ export async function createSupplierRecord(payload: Record<string, unknown>): Pr
   });
 }
 
+export async function confirmSupplierBankDetails(id: string): Promise<ApiResponse<{ id: string; bank_confirmed_at: string }>> {
+  return fetchApi<ApiResponse<{ id: string; bank_confirmed_at: string }>>(`/api/v1/supplier-records/${encodeURIComponent(id)}/confirm-bank`, {
+    method: "POST",
+    allowFallback: false,
+  });
+}
+
 export async function updateSupplierRecord(id: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
   return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/supplier-records/${encodeURIComponent(id)}`, {
     method: "PUT",

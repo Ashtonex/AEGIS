@@ -35,6 +35,14 @@ export async function payFinancePayables(payload: {
   return fetchApi<ApiResponse<any>>(`${OPS}/payables/pay`, { method: "POST", body: JSON.stringify(payload), allowFallback: false });
 }
 
+export async function releaseHeldPayablePayment(batchId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${OPS}/payables/held/${batchId}/release`, { method: "POST", allowFallback: false });
+}
+
+export async function cancelHeldPayablePayment(batchId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${OPS}/payables/held/${batchId}/cancel`, { method: "POST", body: JSON.stringify({ reason }), allowFallback: false });
+}
+
 export async function rejectFinancePayable(invoiceId: string, reason: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`${OPS}/payables/${invoiceId}/reject`, { method: "POST", body: JSON.stringify({ reason }), allowFallback: false });
 }

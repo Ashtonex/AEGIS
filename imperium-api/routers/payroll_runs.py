@@ -20,8 +20,9 @@ from app.shared.pagination import ok, page_offset, paginated
 from app.services.finance import gl_bridge, payroll_allocation, payroll_service
 from app.services.finance.payroll_service import ItemInput, OneOffInput, PayrollServiceError, RunInput
 from app.services.finance.general_ledger import GeneralLedgerError
+from app.services.finance.payroll_exports import RECENT_CHANGE_DAYS
 from core.database import get_db
-from core.security import get_current_user, require_permission
+from core.security import get_current_user, is_self_certification, require_permission
 
 router = APIRouter()
 
@@ -277,6 +278,40 @@ async def get_payroll_run(
     return ok({"run": dict(row._mapping), "items": item_rows}, "Payroll run retrieved.")
 
 
+async def _assert_independent_approver(db: AsyncSession, org_id: str, run_id: str, approver_id, created_by) -> None:
+    """Maker-checker on payroll: the approver can't be whoever drafted the run,
+    nor anyone who set where an employee on this run is paid recently - the
+    classic "change the account, then approve the run" fraud."""
+    if is_self_certification(approver_id, created_by):
+        raise HTTPException(
+            status_code=409,
+            detail="You drafted this payroll run, so someone else with payroll posting rights must approve it.",
+        )
+    changed = (await db.execute(
+        text("""
+            SELECT DISTINCT e.employee_name
+            FROM finance.payroll_items pi
+            JOIN hr.employees e ON e.id = pi.employee_id
+            JOIN finance.employee_payment_accounts a
+              ON a.employee_id = pi.employee_id AND a.organization_id = pi.organization_id
+            WHERE pi.payroll_run_id = CAST(:run_id AS uuid) AND pi.organization_id = :org_id
+              AND a.created_by = CAST(:approver AS uuid)
+              AND a.created_at >= NOW() - make_interval(days => :days)
+            ORDER BY e.employee_name
+            LIMIT 5
+        """),
+        {"run_id": run_id, "org_id": org_id, "approver": str(approver_id), "days": RECENT_CHANGE_DAYS},
+    )).scalars().all()
+    if changed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"You changed where {', '.join(changed)} {'is' if len(changed) == 1 else 'are'} paid in the last "
+                f"{RECENT_CHANGE_DAYS} days, so someone else must approve this run."
+            ),
+        )
+
+
 @router.post("/{run_id}/decision", summary="Approve, post or cancel a payroll run")
 async def decide_payroll_run(
     run_id: UUID,
@@ -291,7 +326,8 @@ async def decide_payroll_run(
     run = await db.execute(
         text("""
             SELECT id, run_number, status, cash_account_id, payment_date, net_pay,
-                   base_currency, secondary_currency, exchange_rate, secondary_cash_account_id
+                   base_currency, secondary_currency, exchange_rate, secondary_cash_account_id,
+                   created_by
             FROM finance.payroll_runs
             WHERE id = :id AND organization_id = :org_id AND is_deleted = false
             FOR UPDATE
@@ -312,6 +348,9 @@ async def decide_payroll_run(
     required_from = transitions[action]
     if required_from and current_status != required_from:
         raise HTTPException(status_code=409, detail=f"Run must be '{required_from}' to {action}. Currently '{current_status}'.")
+
+    if action == "approve":
+        await _assert_independent_approver(db, org_id, str(run_id), user_id, run_row.created_by)
 
     base_currency = run_row.base_currency or "USD"
     try:

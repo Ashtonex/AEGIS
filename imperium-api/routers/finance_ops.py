@@ -38,6 +38,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.finance import draft_budget_reminders
+from app.services.finance.supplier_payment_controls import (
+    BANK_UNCONFIRMED_SQL,
+    BLOCKED_SUPPLIER_STATUSES,
+    assert_payment_date_allowed,
+    assert_suppliers_payable,
+)
 from app.shared.pagination import ok
 from core.database import get_db
 from core.email import send_email
@@ -253,19 +259,25 @@ async def finance_dashboard(
 
 async def _open_payables(db: AsyncSession, org_id: str, invoice_ids: Optional[list[str]] = None) -> list[dict]:
     rows = await db.execute(
-        text("""
+        text(f"""
             SELECT inv.id, inv.invoice_number, inv.supplier_invoice_ref, inv.supplier_id, inv.project_id,
                    inv.po_id, inv.grn_id, inv.invoice_date, inv.due_date, inv.currency, inv.total_amount,
                    inv.status, inv.match_status, inv.notes,
                    s.supplier_name, s.primary_contact_email AS supplier_email,
+                   s.status AS supplier_status, {BANK_UNCONFIRMED_SQL} AS supplier_bank_unconfirmed,
                    p.name AS project_name, p.department_id,
-                   COALESCE(paid.amount, 0) AS paid_to_date,
+                   COALESCE(paid.posted, 0) AS paid_to_date,
+                   COALESCE(paid.held, 0) AS held_amount,
                    ev.last_action, ev.last_action_at, ev.invoice_requests
             FROM procurement.supplier_invoices inv
             JOIN procurement.suppliers s ON s.id = inv.supplier_id
             LEFT JOIN projects.projects p ON p.id = inv.project_id
             LEFT JOIN LATERAL (
-                SELECT SUM(spi.amount) AS amount
+                -- posted: money that has left. held: in a batch not yet posted
+                -- (waiting for release or approval) - still owed, but not
+                -- available to pay again. Cancelled batches count for nothing.
+                SELECT SUM(spi.amount) FILTER (WHERE b.status = 'posted') AS posted,
+                       SUM(spi.amount) FILTER (WHERE b.status IN ('draft', 'approved')) AS held
                 FROM finance.supplier_payment_items spi
                 JOIN finance.supplier_payment_batches b ON b.id = spi.batch_id AND b.is_deleted = false
                 WHERE spi.supplier_invoice_id = inv.id
@@ -299,6 +311,10 @@ async def _open_payables(db: AsyncSession, org_id: str, invoice_ids: Optional[li
             days_overdue=max(overdue, 0),
             bucket=_bucket(overdue),
             outstanding=float(outstanding),
+            # Not floored at zero: negative means more is held than owed.
+            available_to_pay=float(outstanding - _d(item["held_amount"])),
+            held_amount=float(item["held_amount"] or 0),
+            supplier_blocked=item["supplier_status"] in BLOCKED_SUPPLIER_STATUSES,
             total_amount=float(item["total_amount"] or 0),
             paid_to_date=float(item["paid_to_date"] or 0),
             three_way_matched=item["match_status"] == "matched" and bool(item["po_id"]) and bool(item["grn_id"]),
@@ -348,6 +364,7 @@ async def list_payables(
         """),
         {"org_id": org_id},
     )
+    held = await _held_payments(db, org_id, _uid(user))
     total = sum(i["outstanding"] for i in items)
     overdue = sum(i["outstanding"] for i in items if i["days_overdue"] > 0)
     return ok(
@@ -368,9 +385,42 @@ async def list_payables(
             "by_supplier": sorted(by_supplier.values(), key=lambda s: -s["outstanding"]),
             "by_project": sorted(by_project.values(), key=lambda p: -p["outstanding"]),
             "recent_actions": [dict(r._mapping) for r in recent],
+            "held_payments": held,
         },
         "Open payables.",
     )
+
+
+async def _held_payments(db: AsyncSession, org_id: str, viewer_id: Optional[str]) -> list[dict]:
+    """Payments of not-yet-approved invoices waiting for a second person."""
+    rows = (await db.execute(
+        text("""
+            SELECT b.id, b.batch_number, b.payment_date, b.payment_method, b.reference, b.held_reason,
+                   b.total_amount, b.created_by, b.created_at, ca.account_name, u.full_name AS held_by_name,
+                   COALESCE(json_agg(json_build_object(
+                       'invoice_id', spi.supplier_invoice_id, 'invoice_number', inv.invoice_number,
+                       'supplier_name', s.supplier_name, 'amount', spi.amount
+                   ) ORDER BY inv.invoice_number) FILTER (WHERE spi.id IS NOT NULL), '[]') AS items
+            FROM finance.supplier_payment_batches b
+            LEFT JOIN finance.cash_accounts ca ON ca.id = b.cash_account_id
+            LEFT JOIN core.users u ON u.id = b.created_by
+            LEFT JOIN finance.supplier_payment_items spi ON spi.batch_id = b.id
+            LEFT JOIN procurement.supplier_invoices inv ON inv.id = spi.supplier_invoice_id
+            LEFT JOIN procurement.suppliers s ON s.id = inv.supplier_id
+            WHERE b.organization_id = :org_id AND b.is_deleted = false
+              AND b.status = 'draft' AND b.held_reason IS NOT NULL
+            GROUP BY b.id, ca.account_name, u.full_name
+            ORDER BY b.created_at
+        """),
+        {"org_id": org_id},
+    )).mappings().all()
+    out = []
+    for r in rows:
+        item = dict(r)
+        item["total_amount"] = float(item["total_amount"] or 0)
+        item["can_release"] = bool(viewer_id) and str(item["created_by"]) != str(viewer_id)
+        out.append(item)
+    return out
 
 
 class PayableLine(BaseModel):
@@ -389,89 +439,57 @@ class PayablesPay(BaseModel):
     items: List[PayableLine] = Field(min_length=1)
 
 
-@router.post("/payables/pay", status_code=status.HTTP_201_CREATED)
-async def pay_payables(
-    payload: PayablesPay,
-    user: dict = Depends(require_permission("finance.supplier_payment.post")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Pay one or more supplier invoices from a cash account in one batch.
+# Paying an invoice that isn't approved for payment needs a reason someone
+# else can judge - "Cleared" or "md approved" isn't one.
+MIN_OVERRIDE_REASON = 15
 
-    An invoice Finance has approved for payment pays straight away. One that
-    isn't approved yet (no completed PO/GRN/invoice match) can still be paid,
-    but only with a written override reason - kept on the invoice's event
-    trail so the exception is visible later, not silent."""
-    org_id = user["org_id"]
-    user_id = _uid(user)
-    ids = [str(i.invoice_id) for i in payload.items]
-    if len(set(ids)) != len(ids):
-        raise HTTPException(status_code=422, detail="An invoice appears twice in this payment.")
-    open_by_id = {str(i["id"]): i for i in await _open_payables(db, org_id, ids)}
-    missing = [i for i in ids if i not in open_by_id]
-    if missing:
-        raise HTTPException(status_code=409, detail="One or more invoices are already paid, rejected or not found. Refresh and try again.")
-    unapproved = [open_by_id[i] for i in ids if not open_by_id[i]["payable_now"]]
-    if unapproved and not payload.override_reason:
-        names = ", ".join(i["invoice_number"] for i in unapproved[:5])
-        raise HTTPException(
-            status_code=409,
-            detail=f"Not yet approved for payment: {names}. Give an override reason to pay without a completed PO/GRN/invoice match.",
-        )
-    account = (await db.execute(
-        text("SELECT id, account_name FROM finance.cash_accounts WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
-        {"id": payload.cash_account_id, "org_id": org_id},
-    )).first()
-    if not account:
-        raise HTTPException(status_code=404, detail="Cash account not found.")
 
-    lines = []
-    for item in payload.items:
-        inv = open_by_id[str(item.invoice_id)]
-        amount = _d(item.amount) if item.amount is not None else _d(inv["outstanding"])
-        if amount > _d(inv["outstanding"]):
-            raise HTTPException(status_code=422, detail=f"{inv['invoice_number']}: payment exceeds the {inv['outstanding']:,.2f} outstanding.")
-        lines.append((inv, amount))
-
-    total = sum((a for _, a in lines), Decimal("0"))
-    batch_number = f"SPB-{payload.payment_date:%Y%m%d}-{uuid4().hex[:6].upper()}"
-    batch_id = (await db.execute(
+async def _record_payable_payment(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    user_id,
+    batch_id,
+    batch_number: str,
+    cash_account_id,
+    payment_date: date,
+    method: str,
+    reference: Optional[str],
+    inv: dict,
+    amount: Decimal,
+    item_id=None,
+) -> bool:
+    """Write the money leaving for one invoice: its cashbook payment, the
+    batch line (new, or the held line being released), and the invoice's
+    paid status when this settles it. True when the invoice is now settled."""
+    tx_id = (await db.execute(
         text("""
-            INSERT INTO finance.supplier_payment_batches (
-                organization_id, batch_number, cash_account_id, payment_date, status,
-                total_amount, payment_method, reference, notes, created_by
-            ) VALUES (:org_id, :batch_number, :cash_account_id, :payment_date, 'posted',
-                      :total, :method, :reference, :notes, :user_id)
-            RETURNING id
+            INSERT INTO finance.cashbook_transactions (
+                organization_id, cash_account_id, transaction_number, transaction_date,
+                transaction_type, direction, source_type, source_id, amount, currency, description,
+                project_id, department_id, counterparty_type, counterparty_name, payment_method,
+                reference, posted_by, is_posted, posted_at
+            ) VALUES (
+                :org_id, :cash_account_id, :tx_number, :payment_date,
+                'payment', 'outflow', 'supplier_invoice', :invoice_id, :amount, :currency, :description,
+                :project_id, :department_id, 'supplier', :supplier_name, :method,
+                :reference, :user_id, true, NOW()
+            ) RETURNING id
         """),
-        {"org_id": org_id, "batch_number": batch_number, "cash_account_id": payload.cash_account_id,
-         "payment_date": payload.payment_date, "total": total, "method": payload.payment_method,
-         "reference": payload.reference, "notes": payload.override_reason, "user_id": user_id},
+        {"org_id": org_id, "cash_account_id": cash_account_id,
+         "tx_number": f"PMT-{batch_number}-{str(inv['id'])[:8]}", "payment_date": payment_date,
+         "invoice_id": inv["id"], "amount": amount, "currency": inv["currency"] or "USD",
+         "description": f"Payment of {inv['supplier_name']} invoice {inv['invoice_number']}",
+         "project_id": inv["project_id"], "department_id": inv["department_id"],
+         "supplier_name": inv["supplier_name"], "method": method,
+         "reference": reference or inv["supplier_invoice_ref"], "user_id": user_id},
     )).scalar_one()
-
-    fully_paid = 0
-    for inv, amount in lines:
-        tx_id = (await db.execute(
-            text("""
-                INSERT INTO finance.cashbook_transactions (
-                    organization_id, cash_account_id, transaction_number, transaction_date,
-                    transaction_type, direction, source_type, source_id, amount, currency, description,
-                    project_id, department_id, counterparty_type, counterparty_name, payment_method,
-                    reference, posted_by, is_posted, posted_at
-                ) VALUES (
-                    :org_id, :cash_account_id, :tx_number, :payment_date,
-                    'payment', 'outflow', 'supplier_invoice', :invoice_id, :amount, :currency, :description,
-                    :project_id, :department_id, 'supplier', :supplier_name, :method,
-                    :reference, :user_id, true, NOW()
-                ) RETURNING id
-            """),
-            {"org_id": org_id, "cash_account_id": payload.cash_account_id,
-             "tx_number": f"PMT-{batch_number}-{str(inv['id'])[:8]}", "payment_date": payload.payment_date,
-             "invoice_id": inv["id"], "amount": amount, "currency": inv["currency"] or "USD",
-             "description": f"Payment of {inv['supplier_name']} invoice {inv['invoice_number']}",
-             "project_id": inv["project_id"], "department_id": inv["department_id"],
-             "supplier_name": inv["supplier_name"], "method": payload.payment_method,
-             "reference": payload.reference or inv["supplier_invoice_ref"], "user_id": user_id},
-        )).scalar_one()
+    if item_id:
+        await db.execute(
+            text("UPDATE finance.supplier_payment_items SET cashbook_transaction_id = :tx_id WHERE id = :id"),
+            {"tx_id": tx_id, "id": item_id},
+        )
+    else:
         await db.execute(
             text("""
                 INSERT INTO finance.supplier_payment_items (
@@ -482,30 +500,256 @@ async def pay_payables(
             """),
             {"org_id": org_id, "batch_id": batch_id, "invoice_id": inv["id"], "supplier_id": inv["supplier_id"],
              "project_id": inv["project_id"], "department_id": inv["department_id"], "amount": amount,
-             "reference": payload.reference, "tx_id": tx_id},
+             "reference": reference, "tx_id": tx_id},
         )
-        settled = amount >= _d(inv["outstanding"])
-        if settled:
-            fully_paid += 1
+    settled = amount >= _d(inv["outstanding"])
+    if settled:
+        await db.execute(
+            text("""
+                UPDATE procurement.supplier_invoices
+                SET status = 'paid', paid_at = NOW(), payment_reference = COALESCE(:reference, :batch_number), updated_at = NOW()
+                WHERE id = :id
+            """),
+            {"id": inv["id"], "reference": reference, "batch_number": batch_number},
+        )
+    return settled
+
+
+@router.post("/payables/pay", status_code=status.HTTP_201_CREATED)
+async def pay_payables(
+    payload: PayablesPay,
+    user: dict = Depends(require_permission("finance.supplier_payment.post")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Pay one or more supplier invoices from a cash account in one batch.
+
+    Invoices Finance has approved for payment pay straight away. If any is
+    not approved yet (no completed PO/GRN/invoice match), the whole payment
+    is held instead: it needs a written reason, and a different person with
+    supplier-payment rights must release it before any money is recorded as
+    paid. Blocked suppliers, unconfirmed bank details and dates in closed
+    periods or the future are refused either way."""
+    org_id = user["org_id"]
+    user_id = _uid(user)
+    ids = [str(i.invoice_id) for i in payload.items]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=422, detail="An invoice appears twice in this payment.")
+    open_by_id = {str(i["id"]): i for i in await _open_payables(db, org_id, ids)}
+    missing = [i for i in ids if i not in open_by_id]
+    if missing:
+        raise HTTPException(status_code=409, detail="One or more invoices are already paid, rejected or not found. Refresh and try again.")
+    unapproved = [open_by_id[i] for i in ids if not open_by_id[i]["payable_now"]]
+    override_reason = (payload.override_reason or "").strip()
+    if unapproved and len(override_reason) < MIN_OVERRIDE_REASON:
+        names = ", ".join(i["invoice_number"] for i in unapproved[:5])
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Not yet approved for payment: {names}. To pay without a completed PO/GRN/invoice match, say why "
+                f"in at least {MIN_OVERRIDE_REASON} characters (who agreed it and what was received). "
+                "The payment will then wait for another person to release it."
+            ),
+        )
+    account = (await db.execute(
+        text("SELECT id, account_name FROM finance.cash_accounts WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": payload.cash_account_id, "org_id": org_id},
+    )).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Cash account not found.")
+    await assert_payment_date_allowed(db, org_id, payload.payment_date)
+    await assert_suppliers_payable(db, org_id, [open_by_id[i]["supplier_id"] for i in ids])
+
+    lines = []
+    for item in payload.items:
+        inv = open_by_id[str(item.invoice_id)]
+        available = _d(inv["available_to_pay"])
+        amount = _d(item.amount) if item.amount is not None else available
+        if amount <= 0:
+            raise HTTPException(status_code=409, detail=f"{inv['invoice_number']}: everything outstanding is already in a payment waiting for release.")
+        if amount > available:
+            held_note = f" ({inv['held_amount']:,.2f} is already in a payment waiting for release)" if inv["held_amount"] else ""
+            raise HTTPException(status_code=422, detail=f"{inv['invoice_number']}: payment exceeds the {available:,.2f} available to pay{held_note}.")
+        lines.append((inv, amount))
+
+    total = sum((a for _, a in lines), Decimal("0"))
+    batch_number = f"SPB-{payload.payment_date:%Y%m%d}-{uuid4().hex[:6].upper()}"
+    held = bool(unapproved)
+    batch_id = (await db.execute(
+        text("""
+            INSERT INTO finance.supplier_payment_batches (
+                organization_id, batch_number, cash_account_id, payment_date, status,
+                total_amount, payment_method, reference, notes, held_reason, created_by,
+                posted_by, posted_at
+            ) VALUES (:org_id, :batch_number, :cash_account_id, :payment_date, :status,
+                      :total, :method, :reference, :notes, :held_reason, :user_id,
+                      CASE WHEN CAST(:held AS boolean) THEN NULL ELSE CAST(:user_id AS uuid) END,
+                      CASE WHEN CAST(:held AS boolean) THEN NULL ELSE NOW() END)
+            RETURNING id
+        """),
+        {"org_id": org_id, "batch_number": batch_number, "cash_account_id": payload.cash_account_id,
+         "payment_date": payload.payment_date, "status": "draft" if held else "posted", "total": total,
+         "method": payload.payment_method, "reference": payload.reference, "notes": override_reason or None,
+         "held_reason": override_reason if held else None, "user_id": user_id, "held": held},
+    )).scalar_one()
+
+    if held:
+        for inv, amount in lines:
             await db.execute(
                 text("""
-                    UPDATE procurement.supplier_invoices
-                    SET status = 'paid', paid_at = NOW(), payment_reference = COALESCE(:reference, :batch_number), updated_at = NOW()
-                    WHERE id = :id
+                    INSERT INTO finance.supplier_payment_items (
+                        organization_id, batch_id, supplier_invoice_id, supplier_id, project_id, department_id,
+                        amount, payment_reference
+                    ) VALUES (:org_id, :batch_id, :invoice_id, :supplier_id, :project_id, :department_id,
+                              :amount, :reference)
                 """),
-                {"id": inv["id"], "reference": payload.reference, "batch_number": batch_number},
+                {"org_id": org_id, "batch_id": batch_id, "invoice_id": inv["id"], "supplier_id": inv["supplier_id"],
+                 "project_id": inv["project_id"], "department_id": inv["department_id"], "amount": amount,
+                 "reference": payload.reference},
             )
-        if not inv["payable_now"]:
-            await _event(db, org_id, inv["id"], "match_override", user_id, amount=amount, reason=payload.override_reason, batch_id=batch_id)
+            await _event(db, org_id, inv["id"], "payment_held", user_id, amount=amount, reason=override_reason, batch_id=batch_id)
+        await db.commit()
+        return ok(
+            {"batch_id": str(batch_id), "batch_number": batch_number, "total": float(total),
+             "invoices": len(lines), "fully_paid": 0, "held": True},
+            f"Payment of {float(total):,.2f} is held: {len(unapproved)} of the invoices aren't approved for payment. "
+            "Another person with supplier-payment rights must release it before it is recorded as paid.",
+        )
+
+    fully_paid = 0
+    for inv, amount in lines:
+        settled = await _record_payable_payment(
+            db, org_id=org_id, user_id=user_id, batch_id=batch_id, batch_number=batch_number,
+            cash_account_id=payload.cash_account_id, payment_date=payload.payment_date,
+            method=payload.payment_method, reference=payload.reference, inv=inv, amount=amount,
+        )
+        fully_paid += int(settled)
         await _event(db, org_id, inv["id"], "paid", user_id, amount=amount,
                      reason=None if settled else "Part payment", batch_id=batch_id)
 
     await db.commit()
     return ok(
         {"batch_id": str(batch_id), "batch_number": batch_number, "total": float(total),
-         "invoices": len(lines), "fully_paid": fully_paid},
+         "invoices": len(lines), "fully_paid": fully_paid, "held": False},
         f"Paid {len(lines)} invoice{'s' if len(lines) != 1 else ''} ({float(total):,.2f}) from {account.account_name}.",
     )
+
+
+async def _held_batch_for_update(db: AsyncSession, org_id: str, batch_id: UUID) -> dict:
+    batch = (await db.execute(
+        text("""
+            SELECT id, batch_number, cash_account_id, payment_date, payment_method, reference,
+                   held_reason, status, created_by
+            FROM finance.supplier_payment_batches
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            FOR UPDATE
+        """),
+        {"id": batch_id, "org_id": org_id},
+    )).mappings().first()
+    if not batch or batch["held_reason"] is None:
+        raise HTTPException(status_code=404, detail="Held payment not found.")
+    if batch["status"] != "draft":
+        raise HTTPException(status_code=409, detail=f"This payment is already {batch['status']}.")
+    return dict(batch)
+
+
+@router.post("/payables/held/{batch_id}/release")
+async def release_held_payment(
+    batch_id: UUID,
+    user: dict = Depends(require_permission("finance.supplier_payment.post")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The second person's decision on a payment of not-yet-approved
+    invoices: record it as paid. The person who held it can't release it."""
+    org_id = user["org_id"]
+    user_id = _uid(user)
+    batch = await _held_batch_for_update(db, org_id, batch_id)
+    if str(batch["created_by"]) == str(user_id):
+        raise HTTPException(
+            status_code=409,
+            detail="You held this payment, so someone else with supplier-payment rights must release it.",
+        )
+    items = (await db.execute(
+        text("SELECT id, supplier_invoice_id, amount FROM finance.supplier_payment_items WHERE batch_id = :id"),
+        {"id": batch_id},
+    )).mappings().all()
+    if not items:
+        raise HTTPException(status_code=422, detail="This held payment has no invoices.")
+    ids = [str(i["supplier_invoice_id"]) for i in items]
+    open_by_id = {str(i["id"]): i for i in await _open_payables(db, org_id, ids)}
+    for it in items:
+        inv = open_by_id.get(str(it["supplier_invoice_id"]))
+        # This batch's own lines are inside held_amount, so a negative
+        # available_to_pay means other payments now cover part of it.
+        if not inv or inv["available_to_pay"] < 0 or _d(it["amount"]) > _d(inv["outstanding"]):
+            raise HTTPException(
+                status_code=409,
+                detail="An invoice in this payment has since been paid, rejected or part-paid elsewhere. Cancel this held payment and pay again.",
+            )
+    await assert_payment_date_allowed(db, org_id, batch["payment_date"])
+    await assert_suppliers_payable(db, org_id, [open_by_id[i]["supplier_id"] for i in ids])
+
+    fully_paid = 0
+    for it in items:
+        inv = open_by_id[str(it["supplier_invoice_id"])]
+        amount = _d(it["amount"])
+        settled = await _record_payable_payment(
+            db, org_id=org_id, user_id=user_id, batch_id=batch_id, batch_number=batch["batch_number"],
+            cash_account_id=batch["cash_account_id"], payment_date=batch["payment_date"],
+            method=batch["payment_method"], reference=batch["reference"], inv=inv, amount=amount, item_id=it["id"],
+        )
+        fully_paid += int(settled)
+        if not inv["payable_now"]:
+            # Who asked for the exception, with their reason; the paid event
+            # below names who agreed to it.
+            await _event(db, org_id, inv["id"], "match_override", batch["created_by"], amount=amount,
+                         reason=batch["held_reason"], batch_id=batch_id)
+        await _event(db, org_id, inv["id"], "paid", user_id, amount=amount,
+                     reason="Released held payment" if settled else "Released held part payment", batch_id=batch_id)
+    await db.execute(
+        text("""
+            UPDATE finance.supplier_payment_batches
+            SET status = 'posted', approved_by = :u, approved_at = NOW(), posted_by = :u, posted_at = NOW(), updated_at = NOW()
+            WHERE id = :id
+        """),
+        {"id": batch_id, "u": user_id},
+    )
+    await db.commit()
+    return ok(
+        {"batch_id": str(batch_id), "batch_number": batch["batch_number"], "invoices": len(items), "fully_paid": fully_paid},
+        f"Released {batch['batch_number']}: {len(items)} invoice{'s' if len(items) != 1 else ''} recorded as paid.",
+    )
+
+
+class HeldPaymentCancel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+@router.post("/payables/held/{batch_id}/cancel")
+async def cancel_held_payment(
+    batch_id: UUID,
+    payload: HeldPaymentCancel,
+    user: dict = Depends(require_permission("finance.supplier_payment.post")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Drop a held payment (declined, or the invoice is being settled another
+    way). The invoices go back to unpaid."""
+    org_id = user["org_id"]
+    user_id = _uid(user)
+    batch = await _held_batch_for_update(db, org_id, batch_id)
+    items = (await db.execute(
+        text("SELECT supplier_invoice_id, amount FROM finance.supplier_payment_items WHERE batch_id = :id"),
+        {"id": batch_id},
+    )).mappings().all()
+    await db.execute(
+        text("UPDATE finance.supplier_payment_batches SET status = 'cancelled', updated_at = NOW() WHERE id = :id"),
+        {"id": batch_id},
+    )
+    for it in items:
+        await _event(db, org_id, it["supplier_invoice_id"], "payment_hold_cancelled", user_id,
+                     amount=it["amount"], reason=payload.reason, batch_id=batch_id)
+    await db.commit()
+    return ok({"batch_id": str(batch_id), "status": "cancelled"}, f"Held payment {batch['batch_number']} cancelled.")
 
 
 async def _event(db: AsyncSession, org_id: str, invoice_id, action: str, user_id, *, amount=None, reason=None, email_sent=None, batch_id=None):
