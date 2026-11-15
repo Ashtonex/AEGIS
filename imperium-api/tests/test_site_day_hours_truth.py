@@ -13,6 +13,7 @@ Regression tests for REG-018..REG-020 (SYSTEM_REPAIR_REGISTER.md).
 import re
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -54,6 +55,14 @@ class ClockOutTimeTests(unittest.TestCase):
             clock_out_time(briefing_date=DAY, shift="day", clock_in_at=local(DAY, 7), now=local(DAY, 9), left_site_at=local(DAY, 6))
         with self.assertRaises(HTTPException):  # in the future
             clock_out_time(briefing_date=DAY, shift="day", clock_in_at=local(DAY, 7), now=local(DAY, 9), left_site_at=local(DAY, 15))
+
+    def test_day_close_accepts_leaving_time_before_a_late_start(self):
+        # Register captured at 21:18, closed two days later: people left at
+        # 17:00. The day close passes no clock-in, so this is not refused.
+        at = local(DAY, 17)
+        got = clock_out_time(briefing_date=DAY, shift="day", clock_in_at=None, now=local(DAY + timedelta(days=2), 10), left_site_at=at)
+        self.assertEqual(got, at)
+        self.assertEqual(split_hours(local(DAY, 21, 18), max(got, local(DAY, 21, 18)), cap=Decimal("8"), break_minutes=60), (Decimal("0"), Decimal("0")))
 
     def test_naive_leaving_time_is_site_local(self):
         got = clock_out_time(briefing_date=DAY, shift="day", clock_in_at=None, now=local(DAY + timedelta(days=1), 8),
