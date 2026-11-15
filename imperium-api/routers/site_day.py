@@ -1132,17 +1132,27 @@ async def clock_out_attendance(
         raise HTTPException(status_code=409, detail="This person hasn't clocked in yet.")
     if row["clock_out_at"]:
         raise HTTPException(status_code=409, detail="Already clocked out.")
+    # As in the day close: a register captured after the fact has a clock-in
+    # later than any honest leaving time. That is not refused; the person is
+    # booked no clocked time and their hours are set by hand on the daily report.
     at = clock_out_time(
-        briefing_date=row["briefing_date"], shift=row["shift"], clock_in_at=row["clock_in_at"],
+        briefing_date=row["briefing_date"], shift=row["shift"], clock_in_at=None,
         now=datetime.now(timezone.utc), left_site_at=payload.left_site_at if payload else None,
     )
-    await _clock_out(db, row, at, row["regular_hours_cap"], row["break_minutes"])
+    no_hours = at <= row["clock_in_at"] and not row.get("hours_overridden")
+    await _clock_out(db, row, max(at, row["clock_in_at"]), row["regular_hours_cap"], row["break_minutes"])
     briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
     report_id = await _linked_report_id(db, user["org_id"], briefing["id"])
     if report_id:
         await sync_attendance_to_daily_report(db, org_id=user["org_id"], briefing_id=briefing["id"], report_id=report_id)
     await db.commit()
-    return result(await _day_payload(db, user["org_id"], briefing), f"{row['worker_name']} clocked out.")
+    message = f"{row['worker_name']} clocked out."
+    if no_hours:
+        message = (
+            f"{row['worker_name']} clocked out, but they were clocked in on the system after the leaving time you gave, "
+            "so no hours were booked. Set their hours on the daily report before HR accepts them."
+        )
+    return result(await _day_payload(db, user["org_id"], briefing), message)
 
 
 @router.post("/day/{briefing_id}/close")

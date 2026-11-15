@@ -64,6 +64,13 @@ class ClockOutTimeTests(unittest.TestCase):
         self.assertEqual(got, at)
         self.assertEqual(split_hours(local(DAY, 21, 18), max(got, local(DAY, 21, 18)), cap=Decimal("8"), break_minutes=60), (Decimal("0"), Decimal("0")))
 
+    def test_neither_clock_out_path_refuses_a_time_before_a_late_start(self):
+        # Day close and single clock-out both pass no clock-in to the check,
+        # and the single clock-out never books time before the clock-in.
+        calls = re.findall(r"clock_in_at=([^,\n]+),\s*\n\s*now=", SITE_DAY)
+        self.assertEqual(calls, ["None", "None"])
+        self.assertIn('max(at, row["clock_in_at"])', SITE_DAY)
+
     def test_naive_leaving_time_is_site_local(self):
         got = clock_out_time(briefing_date=DAY, shift="day", clock_in_at=None, now=local(DAY + timedelta(days=1), 8),
                              left_site_at=datetime(DAY.year, DAY.month, DAY.day, 16, 30))
