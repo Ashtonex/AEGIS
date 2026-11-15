@@ -1998,8 +1998,8 @@ async def decide_weekly_budget(
         text("""
         UPDATE projects.weekly_budgets
         SET status=:status,
-            approved_at=CASE WHEN :status='approved' THEN NOW() ELSE approved_at END,
-            approved_by=CASE WHEN :status='approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
+            approved_at=CASE WHEN CAST(:status AS varchar)='approved' THEN NOW() ELSE approved_at END,
+            approved_by=CASE WHEN CAST(:status AS varchar)='approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
             site_agent_notes=:reason,
             updated_at=NOW()
         WHERE id=:budget_id AND organization_id=:org_id AND is_deleted=false
@@ -2118,7 +2118,7 @@ async def review_site_variance_qs(
             notes=COALESCE(:notes, notes),
             status=:status,
             execution_blocked=CASE
-                WHEN :qs_status='rejected' THEN true
+                WHEN CAST(:qs_status AS varchar)='rejected' THEN true
                 WHEN client_approval_required AND client_approval_status != 'approved' THEN true
                 ELSE false
             END,
@@ -2181,13 +2181,13 @@ async def decide_site_variance_client(
         text("""
         UPDATE finance.variations
         SET client_approval_status=:decision,
-            client_approved_by=CASE WHEN :decision='approved' THEN CAST(:user_id AS uuid) ELSE client_approved_by END,
-            client_approved_at=CASE WHEN :decision='approved' THEN NOW() ELSE client_approved_at END,
-            rejection_reason=CASE WHEN :decision='rejected' THEN :notes ELSE rejection_reason END,
+            client_approved_by=CASE WHEN CAST(:decision AS varchar)='approved' THEN CAST(:user_id AS uuid) ELSE client_approved_by END,
+            client_approved_at=CASE WHEN CAST(:decision AS varchar)='approved' THEN NOW() ELSE client_approved_at END,
+            rejection_reason=CASE WHEN CAST(:decision AS varchar)='rejected' THEN :notes ELSE rejection_reason END,
             notes=COALESCE(:notes, notes),
             status=:status,
             execution_blocked=CASE
-                WHEN :decision='rejected' THEN true
+                WHEN CAST(:decision AS varchar)='rejected' THEN true
                 WHEN qs_review_status != 'reviewed' THEN true
                 ELSE false
             END,
@@ -3714,7 +3714,7 @@ async def engineer_decide_daily_report(
             engineer_reviewed_at=NOW(),
             engineer_review_reason=:reason,
             status=:report_status,
-            rejection_reason=CASE WHEN :report_status='rejected' THEN :reason ELSE rejection_reason END,
+            rejection_reason=CASE WHEN CAST(:report_status AS varchar)='rejected' THEN :reason ELSE rejection_reason END,
             updated_at=NOW()
         WHERE id=:report_id AND organization_id=:org_id
     """),

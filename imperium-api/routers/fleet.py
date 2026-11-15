@@ -1871,7 +1871,7 @@ async def record_external_hire_supplier_invoice(
                 supplier_payable_amount = :supplier_payable,
                 supplier_payment_status = :supplier_status,
                 debtor_follow_up_notes = CASE
-                    WHEN :notes IS NOT NULL THEN COALESCE(debtor_follow_up_notes || E'\n', '') || :notes
+                    WHEN CAST(:notes AS text) IS NOT NULL THEN COALESCE(debtor_follow_up_notes || E'\n', '') || CAST(:notes AS text)
                     ELSE debtor_follow_up_notes
                 END,
                 updated_at = NOW()
@@ -2111,7 +2111,7 @@ async def decide_defect(
 ):
     row = await db.execute(
         text("""UPDATE fleet.fleet_defects SET status=:status,resolution_notes=:resolution_notes,
-        resolved_at=CASE WHEN :status='resolved' THEN NOW() ELSE NULL END,resolved_by=CASE WHEN :status='resolved' THEN CAST(:user_id AS uuid) ELSE NULL END,updated_at=NOW()
+        resolved_at=CASE WHEN CAST(:status AS varchar)='resolved' THEN NOW() ELSE NULL END,resolved_by=CASE WHEN CAST(:status AS varchar)='resolved' THEN CAST(:user_id AS uuid) ELSE NULL END,updated_at=NOW()
         WHERE id=:id AND organization_id=:org_id AND is_deleted=false AND status <> 'resolved' RETURNING id"""),
         {
             **payload.model_dump(),
@@ -3197,8 +3197,8 @@ async def create_plant_request(
             :expected_revenue, :estimated_cost, :contribution_margin, :risk_level,
             CAST(:readiness_pack AS jsonb), CAST(:readiness_blockers AS jsonb),
             :readiness_status,
-            CASE WHEN :readiness_status='ready' THEN NOW() ELSE NULL END,
-            CASE WHEN :readiness_status='ready' THEN CAST(:user_id AS uuid) ELSE NULL END,
+            CASE WHEN CAST(:readiness_status AS varchar)='ready' THEN NOW() ELSE NULL END,
+            CASE WHEN CAST(:readiness_status AS varchar)='ready' THEN CAST(:user_id AS uuid) ELSE NULL END,
             :user_id
         ) RETURNING id, request_number
     """),
@@ -4749,7 +4749,7 @@ async def close_plant_financials(
             :transport_cost_amount, :maintenance_cost_amount, :damage_charge_amount,
             :discount_amount, :tax_amount, :outstanding_balance, :contribution_margin,
             :invoice_reference, :finance_notes, :user_id,
-            CASE WHEN :status='closed' THEN NOW() ELSE NULL END, :user_id
+            CASE WHEN CAST(:status AS varchar)='closed' THEN NOW() ELSE NULL END, :user_id
         )
         ON CONFLICT (organization_id, plant_request_id) DO UPDATE
         SET status=EXCLUDED.status,

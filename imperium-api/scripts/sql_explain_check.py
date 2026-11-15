@@ -9,6 +9,12 @@ bad functions, type errors and invalid syntax before a user hits them.
 Bind parameters are replaced with NULL, so a few failures can be artefacts of
 that substitution; they are reported under a separate heading.
 
+A NULL per occurrence cannot show that one parameter is used in two type
+contexts (``SET status=:s, x=CASE WHEN :s='approved' ...`` on a varchar column:
+"inconsistent types deduced for parameter"), which fails every time at runtime.
+So each statement is also prepared with numbered parameters, the way asyncpg
+sends it, and only that error (42P08) is taken from the second pass.
+
 Usage (inside the API container):
     python scripts/sql_explain_check.py            # human-readable report
     python scripts/sql_explain_check.py --json     # machine-readable
@@ -35,7 +41,8 @@ PARAM_ARTEFACT_STATES = {
     "22004",  # null value not allowed
     "2201W", "2201X",  # invalid LIMIT/OFFSET
 }
-DYNAMIC_REAL_STATES = {"42703", "42883"}  # undefined column / undefined function
+INCONSISTENT_PARAM = "42P08"  # one bind parameter deduced as two different types
+DYNAMIC_REAL_STATES = {"42703", "42883", INCONSISTENT_PARAM}  # + undefined column / function
 
 
 def _filler(preceding: str) -> str | None:
@@ -102,6 +109,19 @@ def substitute_params(sql: str) -> str:
     return sql.strip().rstrip(";")
 
 
+def number_params(sql: str) -> str:
+    """``:name`` -> ``$n`` (same name, same number), as the asyncpg driver sends it."""
+    order: list[str] = []
+
+    def repl(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in order:
+            order.append(name)
+        return f"${order.index(name) + 1}"
+
+    return re.sub(r"(?<![:\w]):([A-Za-z_]\w*)", repl, sql).strip().rstrip(";")
+
+
 WORKERS = 6
 
 
@@ -154,6 +174,22 @@ async def _check_chunk(dsn: str, chunk, failures, progress) -> None:
                 except Exception:  # noqa: BLE001 - start over on a fresh connection
                     await _close(conn)
                     conn = await _open(dsn)
+            else:
+                # Second pass: parse with real parameters. Anything but 42P08 here
+                # (e.g. an undeterminable type for a lone parameter) is ignored.
+                try:
+                    await conn.prepare(number_params(raw))
+                except Exception as exc:  # noqa: BLE001 - driver errors included
+                    if getattr(exc, "sqlstate", None) == INCONSISTENT_PARAM:
+                        failures.append({
+                            "file": file, "line": line, "state": INCONSISTENT_PARAM,
+                            "error": str(exc).splitlines()[0][:300], "dynamic": is_dynamic,
+                        })
+                    try:
+                        await conn.execute("ROLLBACK TO SAVEPOINT chk")
+                    except Exception:  # noqa: BLE001 - start over on a fresh connection
+                        await _close(conn)
+                        conn = await _open(dsn)
             progress[0] += 1
             if progress[0] % 250 == 0:
                 print(f"  ... {progress[0]} planned", flush=True)
