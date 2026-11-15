@@ -133,6 +133,8 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Leads & Inbound", href: "/dashboard/crm/leads", icon: Target, requiredPermission: "crm_leads.read" },
       { name: "Opportunities Pipeline", href: "/dashboard/crm/opportunities", icon: Briefcase, requiredPermission: "crm.view_opportunities" },
       { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2, requiredPermission: ["crm.view_tenders", "tender_bids.read"] },
+      { name: "e-GP Tender Discovery", href: "/dashboard/crm/tenders/discovery", icon: FileSearch, requiredPermission: "tender_discovery.read" },
+      { name: "Tender Automation", href: "/dashboard/crm/tenders/automation", icon: Bot, requiredPermission: ["tender_workflow.review", "tender_workflow.qs", "tender_workflow.admin"] },
       { name: "Organizations & Clients", href: "/dashboard/crm/organizations", icon: Handshake, requiredPermission: "crm_organizations.read" },
       { name: "Contacts", href: "/dashboard/crm/contacts", icon: Users, requiredPermission: "crm_contacts.read" },
       { name: "Subcontractors", href: "/dashboard/crm/subcontractors", icon: HardHat, requiredPermission: "crm.view_subcontractors" },
