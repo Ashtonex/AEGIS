@@ -97,7 +97,12 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload, invento
     return new Date(now).toLocaleDateString("en-CA") > last.toLocaleDateString("en-CA");
   }, [running, briefing?.briefing_date, briefing?.shift, now]);
   const leftSiteIso = lateClose && leftSiteAt ? new Date(leftSiteAt).toISOString() : undefined;
-  const needsLeftTime = lateClose && !leftSiteIso;
+  // The register may have been captured after the fact (Start pressed once
+  // everyone had gone): then the hours run from when work really started.
+  const [workStartedAt, setWorkStartedAt] = useState("");
+  const workStartedIso = lateClose && workStartedAt ? new Date(workStartedAt).toISOString() : undefined;
+  const startedAfterLeaving = !!leftSiteIso && !!briefing?.started_at && new Date(String(briefing.started_at)) >= new Date(leftSiteIso);
+  const needsLeftTime = lateClose && (!leftSiteIso || (startedAfterLeaving && !workStartedIso));
 
   useEffect(() => {
     setToolbox({ toolbox_topic: briefing?.toolbox_topic ?? "", toolbox_notes: briefing?.toolbox_notes ?? "" });
@@ -430,7 +435,7 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload, invento
                       ) : null}
                       {working && running ? (
                         <Btn tone="ghost" className="h-8 px-2" busy={busy === `out-${a.id}`} disabled={needsLeftTime} icon={<LogOut className="h-3.5 w-3.5" />}
-                          onClick={() => void run(`out-${a.id}`, () => clockOutSiteDayAttendance(a.id, leftSiteIso))}>Out</Btn>
+                          onClick={() => void run(`out-${a.id}`, () => clockOutSiteDayAttendance(a.id, leftSiteIso, workStartedIso))}>Out</Btn>
                       ) : null}
                       {editable ? (
                         <button aria-label={`Remove ${a.worker_name}`} disabled={busy === `rm-${a.id}`} onClick={() => void run(`rm-${a.id}`, () => removeSiteDayAttendance(a.id))}
@@ -517,6 +522,16 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload, invento
                     className="h-11 w-full border border-amber-500/40 bg-ink-light px-3 text-sm text-paper" />
                 </label>
               ) : null}
+              {lateClose ? (
+                <label className="mb-3 grid gap-1.5 text-sm text-amber-200">
+                  {startedAfterLeaving
+                    ? "The register was started on the system after that time. When did work actually start?"
+                    : "When did work actually start? (only if the register was started late)"}
+                  <input type="datetime-local" value={workStartedAt} min={`${String(briefing?.briefing_date ?? "").slice(0, 10)}T00:00`}
+                    max={leftSiteAt || undefined} onChange={(e) => setWorkStartedAt(e.target.value)}
+                    className="h-11 w-full border border-amber-500/40 bg-ink-light px-3 text-sm text-paper" />
+                </label>
+              ) : null}
               <Btn className="w-full" tone="danger" busy={busy === "close"} disabled={needsLeftTime} icon={<Square className="h-4 w-4" />}
                 onClick={() => setClosing(true)}>
                 Close site day
@@ -536,6 +551,7 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload, invento
           briefingId={String(briefing.id)}
           clockedIn={clockedIn}
           leftSiteIso={leftSiteIso}
+          workStartedIso={workStartedIso}
           inventoryItems={inventoryItems}
           onClose={() => setClosing(false)}
           onOpenRecon={onOpenRecon}
