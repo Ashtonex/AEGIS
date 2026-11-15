@@ -83,12 +83,12 @@ async def sync_gate_from_task(
                         project_id, organization_id, check_name, check_type, status,
                         evidence_reference, completed_at
                     )
-                    SELECT CAST(:project_id AS uuid), :org_id, :check_name, :check_type, 'complete',
+                    SELECT CAST(:project_id AS uuid), :org_id, CAST(:check_name AS varchar), CAST(:check_type AS varchar), 'complete',
                            NULLIF(:evidence, ''), NOW()
                     WHERE NOT EXISTS (
                         SELECT 1 FROM projects.project_checks
                         WHERE project_id = CAST(:project_id AS uuid) AND organization_id = :org_id
-                          AND check_type = :check_type AND check_name = :check_name
+                          AND check_type = CAST(:check_type AS varchar) AND check_name = CAST(:check_name AS varchar)
                     )
                     RETURNING id
                 """),

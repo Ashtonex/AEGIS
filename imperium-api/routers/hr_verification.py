@@ -674,10 +674,10 @@ async def accept_vendor_with_onboarding_gaps(
                     'onboarding_bypass', jsonb_build_object(
                         'enabled', true,
                         'accepted_by', CAST(:user_id AS text),
-                        'accepted_by_name', :actor_name,
+                        'accepted_by_name', CAST(:actor_name AS text),
                         'accepted_at', NOW(),
                         'missing_items', CAST(:missing_items AS jsonb),
-                        'notes', :notes,
+                        'notes', CAST(:notes AS text),
                         'message', 'Vendor was accepted before onboarding was complete. Complete onboarding properly before relying on this vendor as fully compliant.'
                     )
                 ),

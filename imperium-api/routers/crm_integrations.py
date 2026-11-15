@@ -703,8 +703,8 @@ async def queue_sync_job(
             VALUES (
                 :org_id, :account_id, :provider, :sync_type, :direction, :status,
                 :cursor_before, :error_summary, CAST(:metadata AS jsonb), :created_by,
-                CASE WHEN :status = 'blocked' THEN NOW() ELSE NULL END,
-                CASE WHEN :status = 'blocked' THEN NOW() ELSE NULL END
+                CASE WHEN CAST(:status AS varchar) = 'blocked' THEN NOW() ELSE NULL END,
+                CASE WHEN CAST(:status AS varchar) = 'blocked' THEN NOW() ELSE NULL END
             )
             RETURNING id
             """),

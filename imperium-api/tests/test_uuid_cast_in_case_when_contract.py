@@ -83,7 +83,7 @@ class UuidCastInCaseWhenContractTests(unittest.TestCase):
 
     def test_fleet_defect_decision_casts_resolved_by(self):
         self.assertIn(
-            "resolved_by=CASE WHEN :status='resolved' THEN CAST(:user_id AS uuid) ELSE NULL END",
+            "resolved_by=CASE WHEN CAST(:status AS varchar)='resolved' THEN CAST(:user_id AS uuid) ELSE NULL END",
             FLEET,
         )
 
