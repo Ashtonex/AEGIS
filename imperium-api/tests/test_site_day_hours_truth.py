@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from routers.site_day import HARARE, clock_out_time, split_hours
+from routers.site_day import HARARE, booked_clock_in, clock_out_time, split_hours, work_start_time
 
 ROOT = Path(__file__).resolve().parents[1]
 SITE_DAY = (ROOT / "routers" / "site_day.py").read_text(encoding="utf-8")
@@ -70,6 +70,38 @@ class ClockOutTimeTests(unittest.TestCase):
         calls = re.findall(r"clock_in_at=([^,\n]+),\s*\n\s*now=", SITE_DAY)
         self.assertEqual(calls, ["None", "None"])
         self.assertIn('max(at, row["clock_in_at"])', SITE_DAY)
+
+    def test_stated_work_start_books_a_register_captured_after_the_fact(self):
+        # Start pressed at 21:18, everyone left at 17:00, work began 07:00.
+        started, left = local(DAY, 21, 18), local(DAY, 17)
+        work = work_start_time(briefing_date=DAY, shift="day", left_at=left, work_started_at=datetime(DAY.year, DAY.month, DAY.day, 7, 0))
+        self.assertEqual(work, local(DAY, 7))
+        got = booked_clock_in(clock_in_at=started, day_started_at=started, left_at=left, work_started_at=work)
+        self.assertEqual(got, local(DAY, 7))
+        self.assertEqual(split_hours(got, left, cap=Decimal("8"), break_minutes=60), (Decimal("8"), Decimal("1")))
+        # A day started late in the morning (11:41) is restated too.
+        self.assertEqual(booked_clock_in(clock_in_at=local(DAY, 11, 41), day_started_at=local(DAY, 11, 41), left_at=left, work_started_at=work), local(DAY, 7))
+
+    def test_stated_work_start_leaves_real_clock_ins_alone(self):
+        left, work = local(DAY, 17), local(DAY, 7)
+        # Arrived at 10:00, after the day was started at 07:05: a real clock-in.
+        self.assertEqual(booked_clock_in(clock_in_at=local(DAY, 10), day_started_at=local(DAY, 7, 5), left_at=left, work_started_at=work), local(DAY, 10))
+        # No stated start: the system clock-in stands.
+        self.assertEqual(booked_clock_in(clock_in_at=local(DAY, 7, 5), day_started_at=local(DAY, 7, 5), left_at=left, work_started_at=None), local(DAY, 7, 5))
+
+    def test_clock_in_after_leaving_needs_a_work_start(self):
+        with self.assertRaises(HTTPException) as ctx:
+            booked_clock_in(clock_in_at=local(DAY, 21, 18), day_started_at=local(DAY, 21, 18), left_at=local(DAY, 17), work_started_at=None)
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertIn("work actually started", ctx.exception.detail)
+
+    def test_work_start_is_validated(self):
+        left = local(DAY, 17)
+        self.assertIsNone(work_start_time(briefing_date=DAY, shift="day", left_at=left, work_started_at=None))
+        with self.assertRaises(HTTPException):  # not before leaving
+            work_start_time(briefing_date=DAY, shift="day", left_at=left, work_started_at=local(DAY, 17))
+        with self.assertRaises(HTTPException):  # another day
+            work_start_time(briefing_date=DAY, shift="day", left_at=left, work_started_at=local(DAY - timedelta(days=1), 7))
 
     def test_naive_leaving_time_is_site_local(self):
         got = clock_out_time(briefing_date=DAY, shift="day", clock_in_at=None, now=local(DAY + timedelta(days=1), 8),

@@ -29,8 +29,12 @@ export const updateSiteDay = (briefingId: string, payload: Record<string, unknow
 export const startSiteDay = (briefingId: string) => post(`${SITE}/day/${briefingId}/start`);
 // leftSiteAt (ISO) is required by the server when the day is closed on a
 // later calendar day than the shift ran, so overnight hours aren't booked.
-export const closeSiteDay = (briefingId: string, leftSiteAt?: string) =>
-  post(`${SITE}/day/${briefingId}/close`, leftSiteAt ? { left_site_at: leftSiteAt } : undefined);
+// workStartedAt (ISO) is for a register captured after the fact: the server
+// books hours from it when the system clock-in is later than the leaving time.
+const lateTimes = (leftSiteAt?: string, workStartedAt?: string) =>
+  leftSiteAt ? { left_site_at: leftSiteAt, ...(workStartedAt ? { work_started_at: workStartedAt } : {}) } : undefined;
+export const closeSiteDay = (briefingId: string, leftSiteAt?: string, workStartedAt?: string) =>
+  post(`${SITE}/day/${briefingId}/close`, lateTimes(leftSiteAt, workStartedAt));
 export const addSiteDayAttendance = (briefingId: string, payload: { site_worker_id?: string; employee_id?: string; ppe_ok: boolean }) =>
   post(`${SITE}/day/${briefingId}/attendance`, payload);
 export const addSiteDayAttendanceBatch = (briefingId: string, payload: { items: Array<{ site_worker_id?: string; employee_id?: string; ppe_ok: boolean }> }) =>
@@ -38,8 +42,8 @@ export const addSiteDayAttendanceBatch = (briefingId: string, payload: { items: 
 export const updateSiteDayAttendance = (attendanceId: string, payload: { ppe_ok?: boolean; notes?: string }) =>
   post(`${SITE}/day/attendance/${attendanceId}`, payload, "PATCH");
 export const removeSiteDayAttendance = (attendanceId: string) => post(`${SITE}/day/attendance/${attendanceId}`, undefined, "DELETE");
-export const clockOutSiteDayAttendance = (attendanceId: string, leftSiteAt?: string) =>
-  post(`${SITE}/day/attendance/${attendanceId}/clock-out`, leftSiteAt ? { left_site_at: leftSiteAt } : undefined);
+export const clockOutSiteDayAttendance = (attendanceId: string, leftSiteAt?: string, workStartedAt?: string) =>
+  post(`${SITE}/day/attendance/${attendanceId}/clock-out`, lateTimes(leftSiteAt, workStartedAt));
 export const registerProjectHire = (payload: Record<string, unknown>) => post(`${SITE}/day/project-hires`, payload);
 
 export const generateDailyTargets = (budgetId: string, payload: { working_days: number[]; replace_open?: boolean; notify?: boolean }) =>

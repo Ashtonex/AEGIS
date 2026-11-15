@@ -107,6 +107,9 @@ class ClockOut(Payload):
     # When people actually left site. Required when the day is being closed
     # (or someone clocked out) on a later calendar day than the shift allows.
     left_site_at: Optional[datetime] = None
+    # When work actually started. Needed when the register was captured after
+    # the fact, so the system clock-in is later than the time people left.
+    work_started_at: Optional[datetime] = None
 
 
 class DayUpdate(Payload):
@@ -240,7 +243,7 @@ async def _attendance_row(db: AsyncSession, org_id: str, attendance_id: UUID) ->
         await db.execute(
             text("""
             SELECT a.*, b.status AS day_status, b.regular_hours_cap, b.break_minutes,
-                   b.briefing_date, b.shift
+                   b.briefing_date, b.shift, b.started_at AS day_started_at
             FROM projects.site_day_attendance a
             JOIN projects.site_day_briefings b ON b.id=a.briefing_id
             WHERE a.id=:id AND a.organization_id=:org_id
@@ -1104,9 +1107,59 @@ def clock_out_time(
     return now
 
 
-async def _clock_out(db: AsyncSession, row: dict[str, Any], at: datetime, cap: Decimal, break_minutes: int) -> None:
+def work_start_time(
+    *, briefing_date: date, shift: Optional[str], left_at: datetime, work_started_at: Optional[datetime],
+) -> Optional[datetime]:
+    """The stated time work started, checked: on the shift's own day(s) and
+    before people left."""
+    if work_started_at is None:
+        return None
+    at = work_started_at if work_started_at.tzinfo else work_started_at.replace(tzinfo=HARARE)
+    last_day = briefing_date + timedelta(days=0 if (shift or "day") == "day" else 1)
+    if not briefing_date <= at.astimezone(HARARE).date() <= last_day:
+        raise HTTPException(status_code=422, detail=f"The time work started must be on the site day itself ({briefing_date}).")
+    if at >= left_at:
+        raise HTTPException(status_code=422, detail="The time work started must be before the time people left site.")
+    return at
+
+
+def booked_clock_in(
+    *, clock_in_at: datetime, day_started_at: Optional[datetime], left_at: datetime, work_started_at: Optional[datetime],
+) -> datetime:
+    """The clock-in to book hours from. The system clock-in stands unless the
+    register was captured after the fact: someone clocked in by the Start
+    button (or after everyone had already left) takes the stated start of
+    work instead, when one is given and it is earlier. With no stated start,
+    a clock-in after the leaving time is refused - it would book no hours,
+    and a person with no hours has no daily-report line to correct."""
+    after_the_fact = clock_in_at >= left_at or (day_started_at is not None and clock_in_at <= day_started_at)
+    if work_started_at is not None and after_the_fact and work_started_at < clock_in_at:
+        return work_started_at
+    if clock_in_at >= left_at:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The register was started on the system at {clock_in_at.astimezone(HARARE):%H:%M on %a %d %b}, "
+                "after the time people left site. Enter the time work actually started so the hours can be booked."
+            ),
+        )
+    return clock_in_at
+
+
+async def _clock_out(
+    db: AsyncSession, row: dict[str, Any], at: datetime, cap: Decimal, break_minutes: int,
+    clock_in_at: Optional[datetime] = None,
+) -> None:
+    """`clock_in_at`, when given and different, replaces the recorded clock-in
+    (the stated start of work for a register captured after the fact)."""
     if not row["clock_in_at"] or row["clock_out_at"]:
         return
+    if clock_in_at is not None and clock_in_at != row["clock_in_at"]:
+        await db.execute(
+            text("UPDATE projects.site_day_attendance SET clock_in_at=:at WHERE id=:id AND organization_id=:org_id"),
+            {"at": clock_in_at, "id": row["id"], "org_id": row["organization_id"]},
+        )
+        row = {**row, "clock_in_at": clock_in_at}
     regular, overtime = split_hours(row["clock_in_at"], at, cap=Decimal(str(cap)), break_minutes=int(break_minutes))
     # Hours a clerk already set by hand are kept; only the clock-out time is stamped.
     await db.execute(
@@ -1133,26 +1186,29 @@ async def clock_out_attendance(
     if row["clock_out_at"]:
         raise HTTPException(status_code=409, detail="Already clocked out.")
     # As in the day close: a register captured after the fact has a clock-in
-    # later than any honest leaving time. That is not refused; the person is
-    # booked no clocked time and their hours are set by hand on the daily report.
+    # later than any honest leaving time, so the stated start of work is used.
     at = clock_out_time(
         briefing_date=row["briefing_date"], shift=row["shift"], clock_in_at=None,
         now=datetime.now(timezone.utc), left_site_at=payload.left_site_at if payload else None,
     )
-    no_hours = at <= row["clock_in_at"] and not row.get("hours_overridden")
-    await _clock_out(db, row, max(at, row["clock_in_at"]), row["regular_hours_cap"], row["break_minutes"])
+    started = work_start_time(
+        briefing_date=row["briefing_date"], shift=row["shift"], left_at=at,
+        work_started_at=payload.work_started_at if payload else None,
+    )
+    if row.get("hours_overridden"):
+        # Hand-set hours stand; only the clock-out time is stamped.
+        await _clock_out(db, row, max(at, row["clock_in_at"]), row["regular_hours_cap"], row["break_minutes"])
+    else:
+        clock_in = booked_clock_in(
+            clock_in_at=row["clock_in_at"], day_started_at=row.get("day_started_at"), left_at=at, work_started_at=started,
+        )
+        await _clock_out(db, row, at, row["regular_hours_cap"], row["break_minutes"], clock_in_at=clock_in)
     briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
     report_id = await _linked_report_id(db, user["org_id"], briefing["id"])
     if report_id:
         await sync_attendance_to_daily_report(db, org_id=user["org_id"], briefing_id=briefing["id"], report_id=report_id)
     await db.commit()
-    message = f"{row['worker_name']} clocked out."
-    if no_hours:
-        message = (
-            f"{row['worker_name']} clocked out, but they were clocked in on the system after the leaving time you gave, "
-            "so no hours were booked. Set their hours on the daily report before HR accepts them."
-        )
-    return result(await _day_payload(db, user["org_id"], briefing), message)
+    return result(await _day_payload(db, user["org_id"], briefing), f"{row['worker_name']} clocked out.")
 
 
 @router.post("/day/{briefing_id}/close")
@@ -1176,22 +1232,31 @@ async def close_site_day(
     now = datetime.now(timezone.utc)
     # No clock-in to check against here: a day whose register was captured
     # after the fact (started in the evening, closed days later) has a start
-    # time later than any honest leaving time. Refusing it left the day
-    # impossible to close; those people are booked no clocked time below and
-    # their hours are set by hand on the daily report.
+    # time later than any honest leaving time. The stated start of work is
+    # booked for those people instead (booked_clock_in).
     left_at = clock_out_time(
         briefing_date=briefing["briefing_date"], shift=briefing.get("shift"), clock_in_at=None,
         now=now, left_site_at=payload.left_site_at if payload else None,
     )
-    rows = (await _day_payload(db, org_id, briefing))["attendance"]
-    no_hours = sum(
-        1 for r in rows
-        if r.get("clock_in_at") and not r.get("clock_out_at") and not r.get("hours_overridden") and r["clock_in_at"] >= left_at
+    work_started = work_start_time(
+        briefing_date=briefing["briefing_date"], shift=briefing.get("shift"), left_at=left_at,
+        work_started_at=payload.work_started_at if payload else None,
     )
+    rows = (await _day_payload(db, org_id, briefing))["attendance"]
+    restated = 0
     for row in rows:
-        # Someone clocked in after the given leaving time worked no time.
-        await _clock_out(db, row, max(left_at, row["clock_in_at"]) if row.get("clock_in_at") else left_at,
-                         briefing["regular_hours_cap"], briefing["break_minutes"])
+        if not row.get("clock_in_at") or row.get("clock_out_at"):
+            continue
+        if row.get("hours_overridden"):
+            # Hand-set hours stand; only the clock-out time is stamped.
+            await _clock_out(db, row, max(left_at, row["clock_in_at"]), briefing["regular_hours_cap"], briefing["break_minutes"])
+            continue
+        clock_in = booked_clock_in(
+            clock_in_at=row["clock_in_at"], day_started_at=briefing.get("started_at"), left_at=left_at,
+            work_started_at=work_started,
+        )
+        restated += clock_in != row["clock_in_at"]
+        await _clock_out(db, row, left_at, briefing["regular_hours_cap"], briefing["break_minutes"], clock_in_at=clock_in)
     await db.execute(
         text("UPDATE projects.site_day_attendance SET hr_status='pending', updated_at=NOW() WHERE briefing_id=:id AND organization_id=:org_id AND hr_status='open'"),
         {"id": briefing_id, "org_id": org_id},
@@ -1214,15 +1279,19 @@ async def close_site_day(
     )
     await emit_event(
         db, user=user, event_type="site.day.closed.v1", aggregate_type="site_day_briefing", aggregate_id=briefing_id,
-        project_id=briefing["project_id"], event_data={"headcount": len(rows), "project_hires": hires},
+        project_id=briefing["project_id"],
+        event_data={
+            "headcount": len(rows), "project_hires": hires, "left_site_at": left_at.isoformat(),
+            # Audit: clock-ins replaced by the stated start of work.
+            "work_started_at": work_started.isoformat() if work_started else None, "clock_ins_restated": restated,
+        },
     )
     await db.commit()
     data = await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user))
-    if no_hours:
+    if restated:
         data["close_note"] = (
-            f"Site day closed, but {no_hours} {'person was' if no_hours == 1 else 'people were'} clocked in on the system "
-            "after the leaving time you gave, so no hours were booked for them. "
-            "Set their hours on the daily report (Set hours for everyone) before HR accepts them."
+            f"Site day closed. {restated} {'person was' if restated == 1 else 'people were'} booked from the start of work "
+            f"you gave ({work_started.astimezone(HARARE):%H:%M}) to {left_at.astimezone(HARARE):%H:%M}. Hours sent to HR for acceptance."
         )
         return result(data, data["close_note"])
     return result(data, "Site day closed. Hours sent to HR for acceptance.")

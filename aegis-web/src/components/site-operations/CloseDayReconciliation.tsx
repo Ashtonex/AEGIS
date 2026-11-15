@@ -16,6 +16,7 @@ type Props = {
   briefingId: string;
   clockedIn: number;
   leftSiteIso?: string;
+  workStartedIso?: string;
   inventoryItems: ApiRecord[];
   onClose: () => void;
   onDone: (dayPayload: any) => Promise<void> | void;
@@ -29,7 +30,7 @@ function assetName(f: ApiRecord) {
 }
 
 /** Closing the site day asks for the day's material and plant usage first. */
-export function CloseDayReconciliation({ briefingId, clockedIn, leftSiteIso, inventoryItems, onClose, onDone, onOpenRecon }: Props) {
+export function CloseDayReconciliation({ briefingId, clockedIn, leftSiteIso, workStartedIso, inventoryItems, onClose, onDone, onOpenRecon }: Props) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
   const [step, setStep] = useState<1 | 2>(1);
@@ -172,7 +173,7 @@ export function CloseDayReconciliation({ briefingId, clockedIn, leftSiteIso, inv
         setWarnings(res?.data?.warnings ?? []);
       }
       if (closeAfter) {
-        const closed = await closeSiteDay(briefingId, leftSiteIso);
+        const closed = await closeSiteDay(briefingId, leftSiteIso, workStartedIso);
         await onDone(closed?.data);
         onClose();
       } else {
