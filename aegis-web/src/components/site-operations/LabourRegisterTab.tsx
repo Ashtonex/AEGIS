@@ -542,7 +542,9 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload, invento
           onDone={async (payload) => {
             if (payload && ("attendance" in payload || "briefing" in payload)) {
               onDay(payload);
-              setMessage({ tone: "success", text: "Usage recorded and site day closed. Hours sent to HR for acceptance." });
+              setMessage(payload.close_note
+                ? { tone: "info", text: String(payload.close_note) }
+                : { tone: "success", text: "Usage recorded and site day closed. Hours sent to HR for acceptance." });
             } else {
               await reload();
               setMessage({ tone: "success", text: "Today's material and plant usage recorded. Site stock updated." });

@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, PackageCheck, Plus, Search, Square, Trash2, Truck, X } from "lucide-react";
 import { closeSiteDay, getDayUsageReconciliation, reconcileDayUsage } from "@/lib/api";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { ApiRecord, Btn, Notice, Pill, errorText, fieldClass, num, qty } from "./ui";
 
 type MatRow = { key: string; item_id: string; store_id: string | null; consumes_stock: boolean; label: string; code?: string; uom?: string; source: string; available?: number; issued?: number; unit_cost: number; used: string; wasted: string };
@@ -40,6 +44,7 @@ export function CloseDayReconciliation({ briefingId, clockedIn, leftSiteIso, inv
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [reconBlocked, setReconBlocked] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -213,14 +218,16 @@ export function CloseDayReconciliation({ briefingId, clockedIn, leftSiteIso, inv
           ))}
         </nav>
 
+        {/* Outside the scrolling list, so a refusal is seen wherever the list is scrolled to. */}
+        {error || warnings.length ? (
+          <div className="space-y-2 border-b border-ink-mid px-5 py-3">
+            {error ? <Notice tone="error" onClose={() => setError(null)}>{error}</Notice> : null}
+            {error && reconBlocked && onOpenRecon ? <Btn tone="ghost" onClick={() => { onClose(); onOpenRecon(); }}>Open the Weekly Recon tab</Btn> : null}
+            {warnings.map((w) => <Notice key={w} tone="info">{w}</Notice>)}
+          </div>
+        ) : null}
+
         <div className="flex-1 overflow-y-auto p-5">
-          {error ? (
-            <div className="mb-3 space-y-2">
-              <Notice tone="error" onClose={() => setError(null)}>{error}</Notice>
-              {reconBlocked && onOpenRecon ? <Btn tone="ghost" onClick={() => { onClose(); onOpenRecon(); }}>Open the Weekly Recon tab</Btn> : null}
-            </div>
-          ) : null}
-          {warnings.map((w) => <Notice key={w} tone="info">{w}</Notice>)}
           {loading ? (
             <div className="flex h-40 items-center justify-center gap-2 text-sm text-slate-light"><Loader2 className="h-5 w-5 animate-spin text-signal" /> Loading today&apos;s stock and plant</div>
           ) : data?.editable === false ? (
@@ -368,12 +375,26 @@ export function CloseDayReconciliation({ briefingId, clockedIn, leftSiteIso, inv
             {step === 1 && data?.editable !== false ? <Btn tone="ghost" onClick={() => setStep(2)}>Next: plant</Btn> : null}
             {data?.editable !== false ? <Btn tone="ghost" busy={busy === "save"} disabled={!!busy || loading} onClick={() => void save(false)}>Save usage only</Btn> : null}
             <Btn tone="danger" busy={busy === "close"} disabled={!!busy || loading} icon={<Square className="h-4 w-4" />}
-              onClick={() => { if (window.confirm(`Record this usage, clock out ${clockedIn} people and close the site day?`)) void save(true); }}>
+              onClick={() => setConfirming(true)}>
               Save &amp; close site day
             </Btn>
           </div>
         </footer>
       </div>
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close the site day?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This records the usage, clocks out {clockedIn} {clockedIn === 1 ? "person" : "people"} and sends the hours to HR.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Not yet</AlertDialogCancel>
+            <AlertDialogAction destructive onClick={() => void save(true)}>Save &amp; close</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

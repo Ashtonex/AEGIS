@@ -1164,11 +1164,20 @@ async def close_site_day(
 
     await guard_close_site_day(db, org_id, briefing, report_status)
     now = datetime.now(timezone.utc)
+    # No clock-in to check against here: a day whose register was captured
+    # after the fact (started in the evening, closed days later) has a start
+    # time later than any honest leaving time. Refusing it left the day
+    # impossible to close; those people are booked no clocked time below and
+    # their hours are set by hand on the daily report.
     left_at = clock_out_time(
-        briefing_date=briefing["briefing_date"], shift=briefing.get("shift"), clock_in_at=briefing.get("started_at"),
+        briefing_date=briefing["briefing_date"], shift=briefing.get("shift"), clock_in_at=None,
         now=now, left_site_at=payload.left_site_at if payload else None,
     )
     rows = (await _day_payload(db, org_id, briefing))["attendance"]
+    no_hours = sum(
+        1 for r in rows
+        if r.get("clock_in_at") and not r.get("clock_out_at") and not r.get("hours_overridden") and r["clock_in_at"] >= left_at
+    )
     for row in rows:
         # Someone clocked in after the given leaving time worked no time.
         await _clock_out(db, row, max(left_at, row["clock_in_at"]) if row.get("clock_in_at") else left_at,
@@ -1198,8 +1207,15 @@ async def close_site_day(
         project_id=briefing["project_id"], event_data={"headcount": len(rows), "project_hires": hires},
     )
     await db.commit()
-    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user)),
-                  "Site day closed. Hours sent to HR for acceptance.")
+    data = await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user))
+    if no_hours:
+        data["close_note"] = (
+            f"Site day closed, but {no_hours} {'person was' if no_hours == 1 else 'people were'} clocked in on the system "
+            "after the leaving time you gave, so no hours were booked for them. "
+            "Set their hours on the daily report (Set hours for everyone) before HR accepts them."
+        )
+        return result(data, data["close_note"])
+    return result(data, "Site day closed. Hours sent to HR for acceptance.")
 
 
 @router.post("/day/{briefing_id}/daily-report")
