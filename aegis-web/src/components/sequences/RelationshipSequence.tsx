@@ -51,7 +51,7 @@ export function RelationshipSequence() {
           >
             07 — Relationship
           </h2>
-          <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-slate/40">
+          <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-slate)_75%,transparent)]">
             End Sequence
           </span>
         </motion.div>
@@ -107,7 +107,7 @@ export function RelationshipSequence() {
                 operations@sixnineconstruction.com
                 <ArrowUpRight className="w-4 h-4 transition-transform duration-300 group-hover:translate-x-1 group-hover:-translate-y-1" />
               </a>
-              <div className="mt-3 font-mono text-[12px] text-slate/70">
+              <div className="mt-3 font-mono text-[12px] text-[color-mix(in_srgb,var(--dxl-slate)_70%,transparent)]">
                 +263 242 123 456
               </div>
             </div>
@@ -115,7 +115,7 @@ export function RelationshipSequence() {
             {/* Physical Headquarters */}
             <div>
               <span className="dxl-eyebrow mb-4 block">Headquarters</span>
-              <address className="not-italic font-mono text-[12px] leading-[1.6] text-slate/80 uppercase tracking-[0.05em]">
+              <address className="not-italic font-mono text-[12px] leading-[1.6] text-[color-mix(in_srgb,var(--dxl-slate)_80%,transparent)] uppercase tracking-[0.05em]">
                 14 Infrastructure Way<br />
                 Borrowdale, Harare<br />
                 Zimbabwe

@@ -35,6 +35,7 @@ import {
   scrollIndicatorVariants,
   transitions,
 } from "@/lib/motion";
+import { AmbientVideo } from "@/components/cinematic/AmbientVideo";
 
 const MotionLink = motion(Link);
 
@@ -54,6 +55,8 @@ export function ArrivalSequence() {
   const shouldReduceMotion = useReducedMotion();
   const [activeImage, setActiveImage] = useState(0);
   const [isLoaded, setIsLoaded] = useState(false);
+  // True once the hero clip (CLIPS.heroArrival) is playing over the stills
+  const [videoPlaying, setVideoPlaying] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Start crossfade cycle after initial load
@@ -63,14 +66,15 @@ export function ArrivalSequence() {
   }, []);
 
   useEffect(() => {
-    if (shouldReduceMotion) return; // No crossfade in reduced-motion mode
+    // No crossfade in reduced-motion mode, or once the hero clip has taken over
+    if (shouldReduceMotion || videoPlaying) return;
     intervalRef.current = setInterval(() => {
       setActiveImage((prev) => (prev + 1) % ARRIVAL_IMAGES.length);
     }, CROSSFADE_INTERVAL);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [shouldReduceMotion]);
+  }, [shouldReduceMotion, videoPlaying]);
 
   return (
     <section
@@ -115,11 +119,19 @@ export function ArrivalSequence() {
           </motion.div>
         ))}
 
+        {/* Cinematic clip — fades in over the stills once it is playing */}
+        <AmbientVideo
+          clip="heroArrival"
+          showPoster={false}
+          position="center 40%"
+          onPlayingChange={setVideoPlaying}
+        />
+
         {/* ── Gradient overlays — creates depth, ensures text legibility ──── */}
         {/* Bottom-to-top — text sits here */}
-        <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/70 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-ink via-[color-mix(in_srgb,var(--dxl-ink)_70%,transparent)] to-transparent" />
         {/* Top overlay — navigation legibility */}
-        <div className="absolute inset-0 bg-gradient-to-b from-ink/60 via-transparent to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-b from-[color-mix(in_srgb,var(--dxl-ink)_60%,transparent)] via-transparent to-transparent" />
         {/* Vignette edges */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(10,22,40,0.7)_100%)]" />
       </div>
@@ -190,7 +202,7 @@ export function ArrivalSequence() {
 
           {/* ── Body copy — operational mandate ─────────────────────────── */}
           <motion.p
-            className="text-[18px] leading-[1.6] text-slate-light max-w-[560px] mb-12 font-light"
+            className="text-[18px] leading-[1.6] text-[color-mix(in_srgb,var(--dxl-paper)_72%,transparent)] max-w-[560px] mb-12 font-light"
             custom={0.9}
             variants={arrivalTextVariants}
             initial="hidden"
@@ -224,7 +236,7 @@ export function ArrivalSequence() {
             {/* Secondary Commit */}
             <MotionLink
               href="/projects"
-              className="group inline-flex items-center gap-3 border border-paper/30 text-paper font-semibold text-[13px] tracking-[0.08em] uppercase px-8 py-4 transition-all duration-fast ease-dxl hover:border-paper/70 hover:bg-paper/5"
+              className="group inline-flex items-center gap-3 border border-[color-mix(in_srgb,var(--dxl-paper)_30%,transparent)] text-paper font-semibold text-[13px] tracking-[0.08em] uppercase px-8 py-4 transition-all duration-fast ease-dxl hover:border-[color-mix(in_srgb,var(--dxl-paper)_70%,transparent)] hover:bg-[color-mix(in_srgb,var(--dxl-paper)_5%,transparent)]"
               whileHover={shouldReduceMotion ? {} : { y: -2 }}
               transition={transitions.fast}
               aria-label="Explore SNC project portfolio"
@@ -248,7 +260,7 @@ export function ArrivalSequence() {
               "7+ Years",
             ].map((cert, i) => (
               <div key={cert} className="flex items-center gap-6">
-                <span className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate-light">
+                <span className="font-mono text-[11px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_72%,transparent)]">
                   {cert}
                 </span>
                 {i < 3 && (
@@ -274,10 +286,10 @@ export function ArrivalSequence() {
         }}
         aria-hidden="true"
       >
-        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-slate rotate-90 mb-4">
+        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] rotate-90 mb-4">
           Scroll
         </span>
-        <div className="w-[1px] h-12 bg-gradient-to-b from-paper/50 to-transparent relative overflow-hidden">
+        <div className="w-[1px] h-12 bg-gradient-to-b from-[color-mix(in_srgb,var(--dxl-paper)_50%,transparent)] to-transparent relative overflow-hidden">
           <motion.div
             className="absolute inset-x-0 top-0 h-6 bg-signal"
             animate={
@@ -301,13 +313,13 @@ export function ArrivalSequence() {
       <motion.div
         className="absolute bottom-8 right-6 md:right-10 lg:right-16 xl:right-20 z-10"
         initial={{ opacity: 0 }}
-        animate={{ opacity: isLoaded ? 1 : 0 }}
-        transition={{ delay: 1.8, ...transitions.slow }}
+        animate={{ opacity: isLoaded && !videoPlaying ? 1 : 0 }}
+        transition={{ delay: videoPlaying ? 0 : 1.8, ...transitions.slow }}
         aria-hidden="true"
       >
-        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-slate">
+        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]">
           {String(activeImage + 1).padStart(2, "0")}{" "}
-          <span className="text-paper/20">/{" "}</span>
+          <span className="text-[color-mix(in_srgb,var(--dxl-paper)_20%,transparent)]">/{" "}</span>
           {String(ARRIVAL_IMAGES.length).padStart(2, "0")}
         </span>
       </motion.div>

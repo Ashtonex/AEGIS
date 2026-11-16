@@ -81,14 +81,35 @@ function buildEvidenceStats(stats: EvidenceStats) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function EvidenceSequence({ stats }: { stats: EvidenceStats }) {
+// A row with a zero is hidden: on a public homepage "0 projects" reads as a
+// broken site, not as honesty. Safety incidents are the exception — zero is
+// good news — but only shown alongside other real figures, so a section of
+// nothing but "0 incidents" never appears.
+function visibleEvidenceStats(stats: EvidenceStats | null) {
+  if (!stats) return [];
+  const all = buildEvidenceStats(stats);
+  const positive = all.filter((s) => s.id !== "safety" && s.value > 0);
+  if (positive.length === 0) return [];
+  return all.filter((s) => s.id === "safety" || s.value > 0);
+}
+
+// Shown when live figures are unavailable — only facts already stated in the
+// Arrival sequence's trust strip, expanded. No numbers are invented here.
+const CREDENTIALS = [
+  { code: "ISO 9001:2015", label: "Quality management", note: "Certified quality system across delivery, procurement and handover." },
+  { code: "PRAZ Category A", label: "Public procurement", note: "Registered to tender for public works at the highest category." },
+  { code: "CIFOZ Class A", label: "Industry standing", note: "Construction Industry Federation of Zimbabwe, Class A contractor." },
+  { code: "7+ Years", label: "Continuous delivery", note: "Mining infrastructure, roads and commercial construction since incorporation." },
+] as const;
+
+export function EvidenceSequence({ stats }: { stats: EvidenceStats | null }) {
   const shouldReduceMotion = useReducedMotion();
   const sectionRef = useRef<HTMLElement>(null);
   const isInView = useInView(sectionRef, {
     once: true,      // Count up exactly once — Volume II mandate
     margin: "-10% 0px",
   });
-  const evidenceStats = buildEvidenceStats(stats);
+  const evidenceStats = visibleEvidenceStats(stats);
 
   return (
     <section
@@ -107,13 +128,13 @@ export function EvidenceSequence({ stats }: { stats: EvidenceStats }) {
         variants={sequenceFadeVariants}
         aria-hidden="true"
       >
-        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-slate/40">
+        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-slate)_75%,transparent)]">
           02 / Evidence
         </span>
       </motion.div>
 
       {/* ── Section header ─────────────────────────────────────────────────── */}
-      <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 pt-24 pb-12 border-b border-slate/10">
+      <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 pt-24 pb-12 border-b border-[color-mix(in_srgb,var(--dxl-slate)_10%,transparent)]">
         <motion.div
           initial="hidden"
           animate={isInView ? "visible" : "hidden"}
@@ -131,6 +152,7 @@ export function EvidenceSequence({ stats }: { stats: EvidenceStats }) {
       </div>
 
       {/* ── Stats — each on its own row, separated by hairline rules ─────── */}
+      {evidenceStats.length > 0 ? (
       <div className="max-w-[1440px] mx-auto">
         {evidenceStats.map((stat, index) => (
           <StatRow
@@ -143,6 +165,9 @@ export function EvidenceSequence({ stats }: { stats: EvidenceStats }) {
           />
         ))}
       </div>
+      ) : (
+        <CredentialsGrid isInView={isInView} />
+      )}
 
       {/* ── Bottom context line ───────────────────────────────────────────── */}
       <motion.div
@@ -152,12 +177,12 @@ export function EvidenceSequence({ stats }: { stats: EvidenceStats }) {
         custom={5}
         variants={sequenceRevealVariants}
       >
-        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate/60 max-w-md">
+        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-slate)_75%,transparent)] max-w-md">
           Delivery evidence across mining infrastructure, roads, and commercial construction
         </p>
         <Link
           href="/projects"
-          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-ink border-b border-ink/30 pb-0.5 transition-colors duration-fast hover:text-signal hover:border-signal"
+          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-ink border-b border-[color-mix(in_srgb,var(--dxl-ink)_30%,transparent)] pb-0.5 transition-colors duration-fast hover:text-signal hover:border-signal"
           aria-label="View full project portfolio"
         >
           Full portfolio
@@ -186,7 +211,7 @@ function StatRow({ stat, index, isInView, shouldReduceMotion, isLast }: StatRowP
         grid grid-cols-1 lg:grid-cols-12 gap-0
         px-6 md:px-10 lg:px-16 xl:px-20
         py-12 lg:py-16
-        ${!isLast ? "border-b border-slate/10" : ""}
+        ${!isLast ? "border-b border-[color-mix(in_srgb,var(--dxl-slate)_10%,transparent)]" : ""}
         group cursor-default
       `}
       initial="hidden"
@@ -249,7 +274,7 @@ function StatRow({ stat, index, isInView, shouldReduceMotion, isLast }: StatRowP
        * Supporting element — lower visual weight than the number
        * One area of intentional silence (empty space above descriptor)
        */}
-      <div className="lg:col-span-5 lg:flex lg:flex-col lg:justify-end lg:pb-4 lg:pl-16 lg:border-l lg:border-slate/10">
+      <div className="lg:col-span-5 lg:flex lg:flex-col lg:justify-end lg:pb-4 lg:pl-16 lg:border-l lg:border-[color-mix(in_srgb,var(--dxl-slate)_10%,transparent)]">
         <p className="text-[16px] leading-[1.65] text-slate max-w-[400px]">
           {stat.descriptor}
         </p>
@@ -310,4 +335,42 @@ function CountUp({ target, shouldAnimate, shouldReduceMotion }: CountUpProps) {
   }, [shouldAnimate, target, shouldReduceMotion]);
 
   return <span aria-hidden="true">{displayed.toLocaleString()}</span>;
+}
+
+// ── CredentialsGrid — fallback when no live figures are available ────────────
+function CredentialsGrid({ isInView }: { isInView: boolean }) {
+  return (
+    <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 pt-16 lg:pt-24">
+      <motion.p
+        className="font-black text-ink leading-[0.95] tracking-[-0.03em] max-w-[14ch] mb-16 lg:mb-24"
+        style={{ fontSize: "clamp(40px, 6.5vw, 96px)" }}
+        initial="hidden"
+        animate={isInView ? "visible" : "hidden"}
+        custom={1}
+        variants={sequenceRevealVariants}
+      >
+        Accredited to build. <span className="text-signal">On record.</span>
+      </motion.p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border-t border-[color-mix(in_srgb,var(--dxl-slate)_20%,transparent)]">
+        {CREDENTIALS.map((c, i) => (
+          <motion.div
+            key={c.code}
+            className="py-10 lg:py-12 sm:pr-8 lg:pl-8 lg:first:pl-0 border-b lg:border-b-0 lg:border-l lg:first:border-l-0 border-[color-mix(in_srgb,var(--dxl-slate)_20%,transparent)]"
+            initial="hidden"
+            animate={isInView ? "visible" : "hidden"}
+            custom={i + 2}
+            variants={sequenceRevealVariants}
+          >
+            <span className="font-mono text-[11px] tracking-[0.12em] uppercase text-signal block mb-6">
+              {String(i + 1).padStart(2, "0")} — {c.label}
+            </span>
+            <p className="text-[26px] lg:text-[30px] font-black tracking-[-0.02em] text-ink leading-tight mb-4">
+              {c.code}
+            </p>
+            <p className="text-[15px] leading-[1.65] text-slate max-w-[300px]">{c.note}</p>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
 }

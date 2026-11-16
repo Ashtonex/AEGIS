@@ -76,7 +76,7 @@ export function Footer() {
             <div className="mt-8 flex flex-wrap gap-3">
               <Link
                 href="/projects"
-                className="inline-flex items-center gap-2 border border-paper/15 px-4 py-2 text-[11px] font-semibold tracking-[0.12em] uppercase text-paper transition-colors duration-fast hover:border-signal hover:text-signal"
+                className="inline-flex items-center gap-2 border border-[color-mix(in_srgb,var(--dxl-paper)_15%,transparent)] px-4 py-2 text-[11px] font-semibold tracking-[0.12em] uppercase text-paper transition-colors duration-fast hover:border-signal hover:text-signal"
               >
                 View projects
                 <ArrowUpRight className="h-3.5 w-3.5" />
@@ -97,7 +97,7 @@ export function Footer() {
                   href={link.href}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex h-10 w-10 items-center justify-center border border-paper/15 text-[10px] font-bold tracking-[0.14em] uppercase text-slate-light transition-colors duration-fast hover:border-signal hover:text-signal"
+                  className="inline-flex h-10 w-10 items-center justify-center border border-[color-mix(in_srgb,var(--dxl-paper)_15%,transparent)] text-[10px] font-bold tracking-[0.14em] uppercase text-slate-light transition-colors duration-fast hover:border-signal hover:text-signal"
                   aria-label={link.label}
                 >
                   {link.short}

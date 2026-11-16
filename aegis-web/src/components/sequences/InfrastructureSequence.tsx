@@ -61,7 +61,7 @@ interface FeaturedProject {
 
 const STATUS_COLORS: Record<string, string> = {
   Completed: "text-[#2ECC71] border-[#2ECC71]/40 bg-[#2ECC71]/10",
-  Active: "text-signal border-signal/40 bg-signal/10",
+  Active: "text-signal border-[color-mix(in_srgb,var(--dxl-signal)_40%,transparent)] bg-[color-mix(in_srgb,var(--dxl-signal)_10%,transparent)]",
   "In Progress": "text-[#3498DB] border-[#3498DB]/40 bg-[#3498DB]/10",
 };
 
@@ -139,10 +139,10 @@ export function InfrastructureSequence() {
           </p>
         </div>
         <div className="hidden lg:flex flex-col items-end gap-1">
-          <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-slate/40">04 / 07</span>
+          <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]">04 / 07</span>
           <Link
             href="/projects"
-            className="group inline-flex items-center gap-2 font-mono text-[11px] tracking-[0.1em] uppercase text-paper/50 border-b border-paper/10 pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal mt-2"
+            className="group inline-flex items-center gap-2 font-mono text-[11px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)] border-b border-[color-mix(in_srgb,var(--dxl-paper)_10%,transparent)] pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal mt-2"
           >
             Full portfolio
             <svg viewBox="0 0 16 8" fill="none" className="w-3 h-3 transition-transform duration-fast group-hover:translate-x-1" aria-hidden="true">
@@ -208,12 +208,12 @@ export function InfrastructureSequence() {
         custom={7}
         variants={sequenceRevealVariants}
       >
-        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate/50">
+        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]">
           {metrics ? `${metrics.projectsDelivered} projects completed · USD ${metrics.contractValueM}M contract value executed` : "Project register loading"}
         </p>
         <Link
           href="/projects"
-          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-paper/20 pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
+          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-[color-mix(in_srgb,var(--dxl-paper)_20%,transparent)] pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
         >
           Access full project register
           <svg viewBox="0 0 16 8" fill="none" className="w-4 h-4 transition-transform duration-fast group-hover:translate-x-1" aria-hidden="true">
@@ -264,7 +264,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
       </motion.div>
 
       {/* ── Permanent gradient overlay — ensures project ID legible at rest ── */}
-      <div className="absolute inset-0 bg-gradient-to-t from-ink/90 via-ink/30 to-transparent z-10" />
+      <div className="absolute inset-0 bg-gradient-to-t from-[color-mix(in_srgb,var(--dxl-ink)_90%,transparent)] via-[color-mix(in_srgb,var(--dxl-ink)_30%,transparent)] to-transparent z-10" />
 
       {/* ── Rest state — project ID and sector, bottom-left ─────────────────── */}
       <motion.div
@@ -275,13 +275,13 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
         }}
         transition={transitions.fast}
       >
-        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-paper/50 block mb-1">
+        <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)] block mb-1">
           {project.id}
         </span>
         <h3 className="font-bold text-[16px] leading-[1.2] text-paper tracking-[-0.01em]">
           {project.title}
         </h3>
-        <p className="font-mono text-[11px] tracking-[0.08em] uppercase text-slate-light mt-1">
+        <p className="font-mono text-[11px] tracking-[0.08em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_72%,transparent)] mt-1">
           {project.sector}
         </p>
       </motion.div>
@@ -319,7 +319,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
               </motion.h3>
 
               <motion.p
-                className="font-mono text-[11px] tracking-[0.08em] uppercase text-slate-light mb-6"
+                className="font-mono text-[11px] tracking-[0.08em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_72%,transparent)] mb-6"
                 initial={{ y: 8, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ ...transitions.reveal, delay: 0.1 }}
@@ -329,7 +329,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
 
               {/* Stats row — the proof layer */}
               <motion.div
-                className="grid grid-cols-3 gap-4 pt-4 border-t border-paper/10"
+                className="grid grid-cols-3 gap-4 pt-4 border-t border-[color-mix(in_srgb,var(--dxl-paper)_10%,transparent)]"
                 initial={{ y: 8, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ ...transitions.reveal, delay: 0.15 }}
@@ -340,7 +340,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
                   { label: "Sector", value: project.sector.split(" ")[0] },
                 ].map((stat) => (
                   <div key={stat.label}>
-                    <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-slate/60 mb-1">
+                    <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] mb-1">
                       {stat.label}
                     </div>
                     <div className="font-bold text-[14px] leading-none text-signal tracking-[-0.01em]">
@@ -352,7 +352,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
 
               {/* Scope line */}
               <motion.p
-                className="font-mono text-[10px] tracking-[0.08em] text-slate/50 mt-4"
+                className="font-mono text-[10px] tracking-[0.08em] text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] mt-4"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ ...transitions.reveal, delay: 0.2 }}
@@ -369,7 +369,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
               >
                 <Link
                   href={`/projects/${project.slug}`}
-                  className="inline-flex items-center gap-2 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-paper/20 pb-0.5 transition-colors duration-micro hover:text-signal hover:border-signal"
+                  className="inline-flex items-center gap-2 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-[color-mix(in_srgb,var(--dxl-paper)_20%,transparent)] pb-0.5 transition-colors duration-micro hover:text-signal hover:border-signal"
                   tabIndex={isHovered ? 0 : -1}
                 >
                   Project brief

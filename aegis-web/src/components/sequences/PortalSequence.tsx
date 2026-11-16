@@ -113,7 +113,7 @@ export function PortalSequence() {
             </p>
           </div>
           <div className="mt-6 md:mt-0">
-            <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-slate/40 block text-right">
+            <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] block text-right">
               06 / 07
             </span>
           </div>
@@ -124,7 +124,7 @@ export function PortalSequence() {
           
           {/* Top Status Bar (col-span-12) */}
           <motion.div
-            className="lg:col-span-12 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-ink-mid/30 border border-ink-mid p-4 rounded-sm"
+            className="lg:col-span-12 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-[color-mix(in_srgb,var(--dxl-ink-mid)_30%,transparent)] border border-ink-mid p-4 rounded-sm"
             initial="hidden"
             animate={isInView ? "visible" : "hidden"}
             custom={1}
@@ -142,13 +142,13 @@ export function PortalSequence() {
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-slate"></span>
                   )}
                 </div>
-                <span className={`font-mono text-[10px] tracking-[0.1em] uppercase ${systemStatus?.status === 'online' ? 'text-[#2ECC71]' : 'text-slate'}`}>
+                <span className={`font-mono text-[10px] tracking-[0.1em] uppercase ${systemStatus?.status === 'online' ? 'text-[#2ECC71]' : 'text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]'}`}>
                   {systemStatus ? `AEGIS Core ${systemStatus.status}` : 'Connecting...'}
                 </span>
               </div>
               <div className="hidden sm:flex items-center gap-2">
-                <Server className="w-3 h-3 text-slate/50" />
-                <span className="font-mono text-[10px] tracking-[0.1em] uppercase text-slate/50">
+                <Server className="w-3 h-3 text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]" />
+                <span className="font-mono text-[10px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]">
                   Latency: {systemStatus ? `${systemStatus.latency}ms` : '--'}
                 </span>
               </div>
@@ -159,13 +159,13 @@ export function PortalSequence() {
               <span className="font-mono text-[11px] tracking-[0.15em] uppercase text-paper w-[72px]" suppressHydrationWarning>
                 {time || "00:00:00"}
               </span>
-              <span className="font-mono text-[10px] tracking-[0.1em] text-slate/50 ml-1">CAT</span>
+              <span className="font-mono text-[10px] tracking-[0.1em] text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] ml-1">CAT</span>
             </div>
           </motion.div>
 
           {/* Client Portal (col-span-7, row-span-2) */}
           <motion.div
-            className="lg:col-span-7 lg:row-span-2 group relative bg-ink-mid/20 border border-ink-mid p-8 md:p-12 rounded-sm transition-colors duration-300 hover:border-signal/50 hover:bg-ink-mid/40 flex flex-col justify-between min-h-[380px]"
+            className="lg:col-span-7 lg:row-span-2 group relative bg-[color-mix(in_srgb,var(--dxl-ink-mid)_20%,transparent)] border border-ink-mid p-8 md:p-12 rounded-sm transition-colors duration-300 hover:border-[color-mix(in_srgb,var(--dxl-signal)_50%,transparent)] hover:bg-[color-mix(in_srgb,var(--dxl-ink-mid)_40%,transparent)] flex flex-col justify-between min-h-[380px]"
             initial="hidden"
             animate={isInView ? "visible" : "hidden"}
             custom={2}
@@ -176,7 +176,7 @@ export function PortalSequence() {
               <h3 className="font-black text-[28px] md:text-[36px] leading-[1.1] text-paper mb-4">
                 Client Dashboard
               </h3>
-              <p className="text-[15px] leading-[1.6] text-slate max-w-md">
+              <p className="text-[15px] leading-[1.6] text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] max-w-md">
                 Secure access to live project telemetry. Review daily site reports, 
                 financial drawdowns, drone progression scans, and health & safety metrics.
               </p>
@@ -195,7 +195,7 @@ export function PortalSequence() {
 
           {/* Partner & Subcontractor Portal (col-span-5, row-span-1) */}
           <motion.div
-            className="lg:col-span-5 lg:row-span-1 group relative bg-ink-mid/20 border border-ink-mid p-8 rounded-sm transition-colors duration-300 hover:border-paper/30 hover:bg-ink-mid/40 flex flex-col justify-between min-h-[182px]"
+            className="lg:col-span-5 lg:row-span-1 group relative bg-[color-mix(in_srgb,var(--dxl-ink-mid)_20%,transparent)] border border-ink-mid p-8 rounded-sm transition-colors duration-300 hover:border-[color-mix(in_srgb,var(--dxl-paper)_30%,transparent)] hover:bg-[color-mix(in_srgb,var(--dxl-ink-mid)_40%,transparent)] flex flex-col justify-between min-h-[182px]"
             initial="hidden"
             animate={isInView ? "visible" : "hidden"}
             custom={3}
@@ -204,15 +204,15 @@ export function PortalSequence() {
              <div>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-bold text-[18px] text-paper">Partner Network</h3>
-                <Lock className="w-4 h-4 text-slate/40" />
+                <Lock className="w-4 h-4 text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]" />
               </div>
-              <p className="font-mono text-[11px] leading-[1.5] text-slate/70 max-w-sm uppercase tracking-[0.05em]">
+              <p className="font-mono text-[11px] leading-[1.5] text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] max-w-sm uppercase tracking-[0.05em]">
                 Subcontractor procurement, invoicing, and supply chain logistics.
               </p>
             </div>
             <Link 
                 href="/login" 
-                className="inline-flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] uppercase text-paper/60 mt-6 hover:text-paper transition-colors duration-300"
+                className="inline-flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)] mt-6 hover:text-paper transition-colors duration-300"
               >
                 Enter Portal
                 <ArrowRight className="w-3 h-3 transition-transform duration-300 group-hover:translate-x-1" />
@@ -221,7 +221,7 @@ export function PortalSequence() {
 
           {/* Internal Systems (col-span-5, row-span-1) */}
           <motion.div
-            className="lg:col-span-5 lg:row-span-1 group relative bg-ink-mid/20 border border-ink-mid p-8 rounded-sm transition-colors duration-300 hover:border-paper/30 hover:bg-ink-mid/40 flex flex-col justify-between min-h-[182px]"
+            className="lg:col-span-5 lg:row-span-1 group relative bg-[color-mix(in_srgb,var(--dxl-ink-mid)_20%,transparent)] border border-ink-mid p-8 rounded-sm transition-colors duration-300 hover:border-[color-mix(in_srgb,var(--dxl-paper)_30%,transparent)] hover:bg-[color-mix(in_srgb,var(--dxl-ink-mid)_40%,transparent)] flex flex-col justify-between min-h-[182px]"
             initial="hidden"
             animate={isInView ? "visible" : "hidden"}
             custom={4}
@@ -230,15 +230,15 @@ export function PortalSequence() {
             <div>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-bold text-[18px] text-paper">Staff Operations</h3>
-                <Lock className="w-4 h-4 text-slate/40" />
+                <Lock className="w-4 h-4 text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]" />
               </div>
-              <p className="font-mono text-[11px] leading-[1.5] text-slate/70 max-w-sm uppercase tracking-[0.05em]">
+              <p className="font-mono text-[11px] leading-[1.5] text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] max-w-sm uppercase tracking-[0.05em]">
                 AEGIS internal system access. Resource allocation, HR, and fleet management.
               </p>
             </div>
             <Link 
                 href="/login" 
-                className="inline-flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] uppercase text-paper/60 mt-6 hover:text-paper transition-colors duration-300"
+                className="inline-flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)] mt-6 hover:text-paper transition-colors duration-300"
               >
                 Secured Access
                 <ArrowRight className="w-3 h-3 transition-transform duration-300 group-hover:translate-x-1" />
