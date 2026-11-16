@@ -42,11 +42,13 @@ import {
   hoverElevation,
   transitions,
 } from "@/lib/motion";
+import { AmbientVideo } from "@/components/cinematic/AmbientVideo";
 
 // ── Capability data ───────────────────────────────────────────────────────────
 const CAPABILITIES = [
   {
     id: "civil",
+    clip: "capCivil",
     ref: "CAP-01",
     title: "Civil Engineering",
     subtitle: "Foundation-first infrastructure delivery.",
@@ -59,6 +61,7 @@ const CAPABILITIES = [
   },
   {
     id: "plant",
+    clip: "capPlant",
     ref: "CAP-02",
     title: "Plant & Logistics",
     subtitle: "Fleet ownership, not rental dependency.",
@@ -71,6 +74,7 @@ const CAPABILITIES = [
   },
   {
     id: "structural",
+    clip: "capStructural",
     ref: "CAP-03",
     title: "Structural Construction",
     subtitle: "Vertical integration from concrete to cladding.",
@@ -83,6 +87,7 @@ const CAPABILITIES = [
   },
   {
     id: "advisory",
+    clip: "capAdvisory",
     ref: "CAP-04",
     title: "Technical Advisory",
     subtitle: "Engineering intelligence before ground breaks.",
@@ -139,7 +144,7 @@ export function CapabilitySequence() {
 
         {/* Sequence counter — ambient data texture */}
         <span
-          className="hidden md:block font-mono text-[10px] tracking-[0.15em] uppercase text-slate/40"
+          className="hidden md:block font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]"
           aria-hidden="true"
         >
           03 / 07
@@ -167,12 +172,12 @@ export function CapabilitySequence() {
         custom={6}
         variants={sequenceRevealVariants}
       >
-        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate/50">
+        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]">
           Full technical capability specifications available on request
         </p>
         <Link
           href="/capabilities"
-          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-paper/20 pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
+          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-[color-mix(in_srgb,var(--dxl-paper)_20%,transparent)] pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
           aria-label="View full capabilities"
         >
           All capabilities
@@ -262,11 +267,13 @@ function CapabilityEntry({
               role="img"
               aria-label={capability.imageAlt}
             />
+            {/* Ambient clip — loops over the still once CLIPS[clip].src is set */}
+            <AmbientVideo clip={capability.clip} showPoster={false} />
           </motion.div>
 
           {/* Reference number — bottom corner, engineering doc texture */}
           <div className="absolute bottom-6 left-6 z-20" aria-hidden="true">
-            <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-paper/50">
+            <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)]">
               {capability.ref}
             </span>
           </div>
@@ -328,7 +335,7 @@ function CapabilityEntry({
 
           {/* Description */}
           <motion.p
-            className="text-[16px] leading-[1.7] text-slate-light mb-8 max-w-[540px]"
+            className="text-[16px] leading-[1.7] text-[color-mix(in_srgb,var(--dxl-paper)_72%,transparent)] mb-8 max-w-[540px]"
             initial="hidden"
             animate={isInView ? "visible" : "hidden"}
             custom={(index + 1) * 1.5}
@@ -339,7 +346,7 @@ function CapabilityEntry({
 
           {/* Operational detail — monospace, data texture */}
           <motion.p
-            className="font-mono text-[11px] tracking-[0.08em] uppercase text-slate/60 mb-10"
+            className="font-mono text-[11px] tracking-[0.08em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] mb-10"
             initial="hidden"
             animate={isInView ? "visible" : "hidden"}
             custom={(index + 1) * 1.6}
@@ -357,7 +364,7 @@ function CapabilityEntry({
           >
             <Link
               href={capability.href}
-              className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-paper/60 border-b border-paper/10 pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
+              className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)] border-b border-[color-mix(in_srgb,var(--dxl-paper)_10%,transparent)] pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
               aria-label={`Learn more about SNC ${capability.title}`}
             >
               Capability specification

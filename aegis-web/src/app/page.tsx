@@ -14,6 +14,7 @@ import { constructMetadata } from "@/lib/metadata";
 import { getPublicMetricsSummary } from "@/lib/api";
 import { ArrivalSequence } from "@/components/sequences/ArrivalSequence";
 import { EvidenceSequence, type EvidenceStats } from "@/components/sequences/EvidenceSequence";
+import { BuildSequence } from "@/components/sequences/BuildSequence";
 import { CapabilitySequence } from "@/components/sequences/CapabilitySequence";
 import { InfrastructureSequence } from "@/components/sequences/InfrastructureSequence";
 import { OperationsSequence } from "@/components/sequences/OperationsSequence";
@@ -31,12 +32,14 @@ export const metadata = constructMetadata({
   image: "/arrival-01.jpg",
 });
 
-async function getEvidenceStats(): Promise<EvidenceStats> {
+async function getEvidenceStats(): Promise<EvidenceStats | null> {
   // Public homepage numbers must always be real. If the metrics service is
-  // unreachable, show honest zeros rather than fall back to placeholder data.
+  // unreachable, return null so the section shows credentials instead of
+  // zeros — never placeholder numbers.
   try {
     const response = await getPublicMetricsSummary();
     const data = response.data;
+    if (!data) return null;
     return {
       projectsDelivered: data?.projects_delivered ?? 0,
       fleetAssetsDeployed: data?.fleet_assets_deployed ?? 0,
@@ -44,12 +47,7 @@ async function getEvidenceStats(): Promise<EvidenceStats> {
       safetyIncidentsLogged: data?.safety_incidents_logged ?? 0,
     };
   } catch {
-    return {
-      projectsDelivered: 0,
-      fleetAssetsDeployed: 0,
-      contractValueUsd: 0,
-      safetyIncidentsLogged: 0,
-    };
+    return null;
   }
 }
 
@@ -65,6 +63,10 @@ export default async function GatewayPage() {
       {/* ── Sequence 02: Evidence ─────────────────────────────────────────── */}
       {/* Objective: prove the confidence was earned — massive numbers, no cards */}
       <EvidenceSequence stats={evidenceStats} />
+
+      {/* ── Build: scroll-scrubbed timelapse, earthworks → handover ───────── */}
+      {/* Objective: the visitor's scroll builds the project */}
+      <BuildSequence />
 
       {/* ── Sequences 03–07: Built sequentially, pausing for directorial review */}
       {/* ── Sequence 03: Capability ───────────────────────────────────────── */}

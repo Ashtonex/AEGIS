@@ -161,10 +161,10 @@ export function OperationsSequence() {
           </p>
         </div>
         <div className="hidden lg:block text-right">
-          <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-slate/40 block">
+          <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] block">
             05 / 07
           </span>
-          <p className="font-mono text-[11px] tracking-[0.08em] uppercase text-slate/50 mt-2 max-w-[240px] text-right leading-relaxed">
+          <p className="font-mono text-[11px] tracking-[0.08em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] mt-2 max-w-[240px] text-right leading-relaxed">
             {fleetAssets !== null ? `${fleetAssets} fleet assets deployed` : "Fleet data loading"}
           </p>
         </div>
@@ -245,12 +245,12 @@ export function OperationsSequence() {
         custom={4}
         variants={sequenceRevealVariants}
       >
-        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate/50">
+        <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]">
           Incorporated 2019 · Harare, Zimbabwe
         </p>
         <a
           href="/about"
-          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-paper/20 pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
+          className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-[color-mix(in_srgb,var(--dxl-paper)_20%,transparent)] pb-0.5 transition-all duration-fast hover:text-signal hover:border-signal"
         >
           Corporate history
           <svg viewBox="0 0 16 8" fill="none" className="w-4 h-4 transition-transform duration-fast group-hover:translate-x-1" aria-hidden="true">
@@ -308,7 +308,7 @@ function YearNode({
             rounded-full transition-all duration-fast ease-dxl
             ${isActive
               ? "w-4 h-4 bg-signal shadow-[0_0_16px_rgba(200,150,12,0.5)]"
-              : "w-2 h-2 bg-ink-mid border border-slate/50 group-hover:border-signal/60 group-hover:bg-signal/20"
+              : "w-2 h-2 bg-ink-mid border border-[color-mix(in_srgb,var(--dxl-slate)_50%,transparent)] group-hover:border-[color-mix(in_srgb,var(--dxl-signal)_60%,transparent)] group-hover:bg-[color-mix(in_srgb,var(--dxl-signal)_20%,transparent)]"
             }
           `}
           animate={isActive ? { scale: 1 } : { scale: 1 }}
@@ -330,7 +330,7 @@ function YearNode({
         className={`
           font-black text-[clamp(20px,2.5vw,32px)] leading-none tracking-[-0.02em] block
           transition-colors duration-fast
-          ${isActive ? "text-paper" : "text-slate/50 group-hover:text-slate-light"}
+          ${isActive ? "text-paper" : "text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] group-hover:text-[color-mix(in_srgb,var(--dxl-paper)_72%,transparent)]"}
         `}
       >
         {entry.year}
@@ -363,7 +363,7 @@ function MilestonePanel({ entry }: MilestonePanelProps) {
   return (
     <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 py-12 md:py-16">
       {/* Summary headline */}
-      <p className="font-semibold text-[16px] md:text-[18px] leading-[1.5] text-slate-light mb-10 max-w-xl">
+      <p className="font-semibold text-[16px] md:text-[18px] leading-[1.5] text-[color-mix(in_srgb,var(--dxl-paper)_72%,transparent)] mb-10 max-w-xl">
         {entry.summary}
       </p>
 
@@ -393,7 +393,7 @@ function MilestonePanel({ entry }: MilestonePanelProps) {
 
             {/* Description */}
             <div className="md:col-span-7">
-              <span className="text-[14px] leading-[1.6] text-slate">
+              <span className="text-[14px] leading-[1.6] text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)]">
                 {milestone.desc}
               </span>
             </div>

@@ -303,6 +303,11 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/api/")) return;
 
+  // Media: let the browser handle range requests itself. The Cache API cannot
+  // store 206 partial responses, and website video clips are too large to
+  // keep in the offline shell cache.
+  if (request.headers.has("range") || url.pathname.startsWith("/video/")) return;
+
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached;

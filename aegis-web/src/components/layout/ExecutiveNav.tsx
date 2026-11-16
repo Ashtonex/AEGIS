@@ -118,7 +118,7 @@ export function ExecutiveNav() {
         className={cn(
           "fixed top-0 inset-x-0 z-50 transition-[padding,background-color,border-color] ease-dxl",
           scrolled || mobileMenuOpen
-            ? "bg-ink/95 backdrop-blur-md border-b border-ink-mid py-4"
+            ? "bg-[color-mix(in_srgb,var(--dxl-ink)_95%,transparent)] backdrop-blur-md border-b border-ink-mid py-4"
             : "bg-transparent border-b-0 py-6"
         )}
         // Nav arrives 300ms after page loads — Sequence 01 Arrival spec
@@ -158,7 +158,7 @@ export function ExecutiveNav() {
                     href={item.href}
                     className={cn(
                       "font-sans font-semibold text-[13px] tracking-[0.06em] uppercase transition-colors duration-micro ease-dxl py-4 block",
-                      isActive ? "text-signal" : "text-slate-light hover:text-paper"
+                      isActive ? "text-signal" : "text-[color-mix(in_srgb,var(--dxl-paper)_82%,transparent)] hover:text-paper"
                     )}
                   >
                     {item.label}
@@ -175,7 +175,7 @@ export function ExecutiveNav() {
           {/* ACTIONS */}
           <div className="hidden md:flex items-center gap-4">
             <button
-              className="text-slate-light hover:text-paper transition-colors duration-micro p-2"
+              className="text-[color-mix(in_srgb,var(--dxl-paper)_82%,transparent)] hover:text-paper transition-colors duration-micro p-2"
               aria-label="Search"
             >
               <Search className="w-4 h-4" />
@@ -221,7 +221,7 @@ export function ExecutiveNav() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
               onMouseEnter={() => handleMouseEnter(activePanel, true)}
-              className="absolute top-full left-0 right-0 bg-ink/98 backdrop-blur-xl border-y border-ink-mid shadow-2xl overflow-hidden"
+              className="absolute top-full left-0 right-0 bg-[color-mix(in_srgb,var(--dxl-ink)_98%,transparent)] backdrop-blur-xl border-y border-ink-mid shadow-2xl overflow-hidden"
             >
               <div className="max-w-container mx-auto px-6 md:px-10 lg:px-16 xl:px-20 py-10">
                 <div className="flex items-center gap-4 mb-8">
@@ -258,14 +258,14 @@ export function ExecutiveNav() {
                     {/* Left: Project Data Metrics */}
                     <div className="col-span-5 grid grid-cols-2 gap-8 border-t border-ink-mid pt-4">
                       <div>
-                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-slate/60 mb-2">Delivery Record</div>
+                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-[color-mix(in_srgb,var(--dxl-slate)_75%,transparent)] mb-2">Delivery Record</div>
                         <div className="font-bold text-[32px] leading-none text-paper tracking-[-0.02em] mb-1">
                           {metrics ? metrics.projectsDelivered : '--'}
                         </div>
                         <div className="font-mono text-[10px] tracking-[0.05em] text-slate uppercase">Projects Delivered</div>
                       </div>
                       <div>
-                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-slate/60 mb-2">Capital Deployed</div>
+                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-[color-mix(in_srgb,var(--dxl-slate)_75%,transparent)] mb-2">Capital Deployed</div>
                         <div className="font-bold text-[32px] leading-none text-signal tracking-[-0.02em] mb-1">
                           {metrics ? `$${metrics.contractValueM}M` : '--'}
                         </div>
@@ -288,7 +288,7 @@ export function ExecutiveNav() {
                         <p className="text-[13px] text-slate leading-relaxed mb-4">
                           Browse civil, structural, and mining infrastructure work executed across Zimbabwe, with scope and delivery detail per project.
                         </p>
-                        <span className="font-mono text-[10px] tracking-[0.1em] text-paper/50 uppercase group-hover:text-paper transition-colors duration-fast inline-flex items-center gap-2">
+                        <span className="font-mono text-[10px] tracking-[0.1em] text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)] uppercase group-hover:text-paper transition-colors duration-fast inline-flex items-center gap-2">
                           View Project 
                           <svg viewBox="0 0 16 8" fill="none" className="w-3 h-3 group-hover:translate-x-1 transition-transform duration-fast">
                             <path d="M0 4h14M11 1l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -300,7 +300,7 @@ export function ExecutiveNav() {
                           className="absolute inset-0 bg-cover bg-center transition-transform duration-reveal ease-dxl group-hover:scale-105" 
                           style={{ backgroundImage: "url('/proj-highway.jpg')" }} 
                         />
-                        <div className="absolute inset-0 bg-ink/20 transition-opacity duration-fast group-hover:opacity-0" />
+                        <div className="absolute inset-0 bg-[color-mix(in_srgb,var(--dxl-ink)_20%,transparent)] transition-opacity duration-fast group-hover:opacity-0" />
                       </div>
                     </Link>
 
