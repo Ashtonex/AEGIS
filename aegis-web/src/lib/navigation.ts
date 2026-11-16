@@ -22,6 +22,12 @@ export type ModuleNavItem = {
   // Access is permission-driven only: grant or revoke it per role in
   // Settings > Access Control, no code change needed.
   requiredPermission?: PermissionRequirement;
+  // Set to false when the listed permissions are distinct working roles
+  // (e.g. tender reviewer / QS / admin) rather than interchangeable "can
+  // view" keys. The page is then left out of the Access Control page list,
+  // where one checkbox would stand for only the first key and ticking it
+  // would hand out that role; grant those permissions per role instead.
+  pageAccess?: false;
 };
 
 // The 8 top-level business domains the sidebar groups into (see
@@ -134,7 +140,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Opportunities Pipeline", href: "/dashboard/crm/opportunities", icon: Briefcase, requiredPermission: "crm.view_opportunities" },
       { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2, requiredPermission: ["crm.view_tenders", "tender_bids.read"] },
       { name: "e-GP Tender Discovery", href: "/dashboard/crm/tenders/discovery", icon: FileSearch, requiredPermission: "tender_discovery.read" },
-      { name: "Tender Automation", href: "/dashboard/crm/tenders/automation", icon: Bot, requiredPermission: ["tender_workflow.review", "tender_workflow.qs", "tender_workflow.admin"] },
+      { name: "Tender Automation", href: "/dashboard/crm/tenders/automation", icon: Bot, requiredPermission: ["tender_workflow.review", "tender_workflow.qs", "tender_workflow.admin"], pageAccess: false },
       { name: "Organizations & Clients", href: "/dashboard/crm/organizations", icon: Handshake, requiredPermission: "crm_organizations.read" },
       { name: "Contacts", href: "/dashboard/crm/contacts", icon: Users, requiredPermission: "crm_contacts.read" },
       { name: "Subcontractors", href: "/dashboard/crm/subcontractors", icon: HardHat, requiredPermission: "crm.view_subcontractors" },
@@ -528,6 +534,7 @@ const SCOPE_ACCESS_ENTRIES: PageAccessEntry[] = [
 export const PAGE_ACCESS_CATALOGUE: PageAccessEntry[] = [...MODULE_GROUPS.flatMap((group) => {
   const byKey = new Map<string, ModuleNavItem[]>();
   for (const item of group.subItems) {
+    if (item.pageAccess === false) continue;
     const requirement = itemRequirement(group, item);
     const key = Array.isArray(requirement) ? requirement[0] : requirement;
     if (!key) continue;
