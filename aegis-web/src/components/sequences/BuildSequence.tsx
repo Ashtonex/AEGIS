@@ -166,20 +166,21 @@ export function BuildSequence() {
             </video>
           )}
 
-          {/* Legibility scrims — explicit rgba: alpha modifiers on the
-              var()-based ink token render transparent */}
+          {/* Legibility scrims — color-mix on the ink token, so they follow the
+              selected theme like the text-paper captions above them (Tailwind
+              alpha modifiers on the var()-based token render transparent) */}
           <div
             className="absolute inset-0"
             style={{
               background:
-                "linear-gradient(to right, rgba(10,22,40,0.92) 0%, rgba(10,22,40,0.75) 40%, rgba(10,22,40,0.2) 75%, rgba(10,22,40,0) 100%)",
+                "linear-gradient(to right, color-mix(in srgb, var(--dxl-ink) 92%, transparent) 0%, color-mix(in srgb, var(--dxl-ink) 75%, transparent) 40%, color-mix(in srgb, var(--dxl-ink) 20%, transparent) 75%, transparent 100%)",
             }}
           />
           <div
             className="absolute inset-0"
             style={{
               background:
-                "linear-gradient(to top, rgba(10,22,40,0.8) 0%, rgba(10,22,40,0) 50%, rgba(10,22,40,0.4) 100%)",
+                "linear-gradient(to top, color-mix(in srgb, var(--dxl-ink) 80%, transparent) 0%, transparent 50%, color-mix(in srgb, var(--dxl-ink) 40%, transparent) 100%)",
             }}
           />
           {/* Right-edge scrim behind the stage rail (desktop only) */}
@@ -187,7 +188,7 @@ export function BuildSequence() {
             className="absolute inset-0 hidden md:block"
             style={{
               background:
-                "linear-gradient(to left, rgba(10,22,40,0.85) 0%, rgba(10,22,40,0.5) 18%, rgba(10,22,40,0) 34%)",
+                "linear-gradient(to left, color-mix(in srgb, var(--dxl-ink) 85%, transparent) 0%, color-mix(in srgb, var(--dxl-ink) 50%, transparent) 18%, transparent 34%)",
             }}
           />
         </div>
