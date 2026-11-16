@@ -36,6 +36,7 @@ from app.services.finance.ccb_monitor import (
 )
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
 from app.services.finance import draft_budget_reminders
+from app.services.finance import accounting_period_rollover
 from app.services.hr import expiry_alerts as hr_expiry_alerts
 from app.services import procurement_notice_emails
 from app.services.hr import time_tracking as hr_time_tracking
@@ -1059,6 +1060,23 @@ async def procurement_notice_emails_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def ensure_accounting_periods_job(ctx):
+    """Daily, and whenever the worker starts: open any missing accounting
+    period from this month to two months out, so a new month never begins
+    without one (app/services/finance/accounting_period_rollover.py)."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            created = await accounting_period_rollover.ensure_upcoming_periods(db)
+        return {"created": created}
+    except Exception as exc:
+        logger.exception(f"Accounting period rollover job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 async def close_attendance_day_job(ctx):
     """Daily 17:05 Harare: stops the clock at each person's day end (17:00 at
     the latest, for site staff Mon-Thu) for everyone checked in by signing in
@@ -1158,6 +1176,7 @@ class WorkerSettings:
         hr_expiry_alerts_job,
         close_attendance_day_job,
         procurement_notice_emails_job,
+        ensure_accounting_periods_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -1231,6 +1250,8 @@ class WorkerSettings:
         cron(hr_expiry_alerts_job, minute=25, run_at_startup=False),
         # 14:35 UTC = 16:35 Harare: the attendance clock stops at 16:30.
         cron(close_attendance_day_job, hour=15, minute=5, run_at_startup=False),
+        # 22:40 UTC = 00:40 Harare. Also at startup, so a deploy fills any gap at once.
+        cron(ensure_accounting_periods_job, hour=22, minute=40, run_at_startup=True),
     ]
     redis_settings = redis_settings
     on_startup = startup
