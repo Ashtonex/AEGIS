@@ -220,7 +220,13 @@ async def _ensure_channel(client: GraphClient, team_id: str, name: str, descript
     try:
         return await client.post(
             f"teams/{team_id}/channels",
-            json={"displayName": name, "description": description[:1024], "membershipType": "standard"},
+            # isFavoriteByDefault = "Recommended": shows the channel in every
+            # member's list. Without it Teams files app-created channels under
+            # Hidden and nobody sees them.
+            json={
+                "displayName": name, "description": description[:1024],
+                "membershipType": "standard", "isFavoriteByDefault": True,
+            },
         )
     except GraphError as exc:
         # 400/409 when a channel of that name already exists (e.g. created by
