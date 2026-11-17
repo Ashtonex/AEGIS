@@ -46,7 +46,7 @@ from routers.site_day import (
     ensure_daily_report_draft,
     harare_today,
 )
-from routers.site_reports import daily_report_lines, sync_material_line_stock
+from routers.site_reports import daily_report_lines, procurement_unit_cost, sync_material_line_stock
 
 router = APIRouter()
 
@@ -411,7 +411,13 @@ async def reconcile_day_usage(
             if consumes and str(m.store_id) not in project_stores:
                 # Material sitting in a central store reaches site through an issue, not a usage line.
                 consumes = False
-        unit_cost = m.unit_cost if m.unit_cost is not None else _d(item["standard_cost"])
+        # Valued at the procurement price; what the screen sent only stands in
+        # when procurement has no price for the item at all.
+        unit_cost, price_source = await procurement_unit_cost(
+            db, org_id=org_id, item_id=m.item_id, store_id=m.store_id
+        )
+        if price_source == "none":
+            unit_cost = m.unit_cost if m.unit_cost is not None else _d(item["standard_cost"])
         if consumes:
             available = await inventory_service.stock_balance(db, org_id=org_id, item_id=m.item_id, store_id=m.store_id)
             already = _d((

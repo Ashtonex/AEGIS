@@ -1763,6 +1763,19 @@ export async function addDailyReportMaterial(reportId: string, payload: Record<s
   });
 }
 
+/** The procurement price a material usage line will be valued at, and where it came from. */
+export async function getMaterialUsagePrice(
+  itemId: string,
+  storeId?: string | null
+): Promise<ApiResponse<{ item_id: string; unit_cost: string; source: string; source_label: string }>> {
+  const search = new URLSearchParams({ item_id: itemId });
+  if (storeId) search.set('store_id', storeId);
+  return fetchApi(`/api/v1/site-operations/materials/price?${search.toString()}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
 export async function submitDailySiteReport(reportId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/submit`, {
     method: 'POST',

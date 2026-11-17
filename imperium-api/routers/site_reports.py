@@ -12,7 +12,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from fastapi.concurrency import run_in_threadpool
+
+from core.database import get_db, supabase
 from core.logging import logger
 from core.security import get_current_user, require_any_permission, require_permission
 from core.project_scope import (
@@ -338,6 +340,14 @@ class VariationClientDecisionPayload(Payload):
 class DocumentLinkPayload(Payload):
     document_id: UUID
     link_role: str = Field(default="evidence", min_length=1, max_length=80)
+
+
+class EvidenceUploadPayload(Payload):
+    storage_path: str = Field(min_length=1, max_length=500)
+    file_name: str = Field(min_length=1, max_length=255)
+    mime_type: Optional[str] = Field(default=None, max_length=100)
+    size_bytes: int = Field(default=0, ge=0)
+    link_role: Literal["evidence_photo", "delivery_docket", "evidence"] = "evidence_photo"
 
 
 class DecisionPayload(Payload):
@@ -963,6 +973,98 @@ async def daily_report_lines(db: AsyncSession, *, report_id: UUID, org_id: str) 
     }
 
 
+MATERIAL_PRICE_SOURCES = {
+    "store_receipts": "Average price paid on goods received into this store",
+    "all_receipts": "Average price paid on goods received (all stores)",
+    "purchase_order": "Latest purchase order price",
+    "item_price": "Item list price in procurement",
+    "standard_cost": "Item standard cost in procurement",
+    "none": "No price in procurement yet",
+}
+
+
+async def procurement_unit_cost(
+    db: AsyncSession, *, org_id: str, item_id: UUID, store_id: Optional[UUID] = None
+) -> tuple[Decimal, str]:
+    """The unit price procurement holds for an item, best evidence first:
+    the quantity-weighted average actually paid on goods received into the
+    store the material is drawn from, then the same across every store, then
+    the latest purchase order line, then the item's list price / standard
+    cost. Returns (price, source key); (0, "none") when nothing is priced."""
+    row = (
+        await db.execute(
+            text("""
+            SELECT
+                (SELECT SUM(ABS(sl.quantity) * sl.unit_cost) / NULLIF(SUM(ABS(sl.quantity)), 0)
+                   FROM procurement.stock_ledger sl
+                  WHERE sl.organization_id = i.organization_id AND sl.item_id = i.id
+                    AND sl.store_id = CAST(:store_id AS uuid)
+                    AND sl.movement_type = 'receipt' AND sl.unit_cost > 0) AS store_receipts,
+                (SELECT SUM(ABS(sl.quantity) * sl.unit_cost) / NULLIF(SUM(ABS(sl.quantity)), 0)
+                   FROM procurement.stock_ledger sl
+                  WHERE sl.organization_id = i.organization_id AND sl.item_id = i.id
+                    AND sl.movement_type = 'receipt' AND sl.unit_cost > 0) AS all_receipts,
+                (SELECT pol.unit_price
+                   FROM procurement.purchase_order_lines pol
+                   JOIN procurement.purchase_orders po ON po.id = pol.po_id AND po.is_deleted = false
+                  WHERE pol.organization_id = i.organization_id AND pol.item_id = i.id
+                    AND pol.is_deleted = false AND pol.unit_price > 0
+                    AND po.status NOT IN ('cancelled', 'rejected')
+                  ORDER BY pol.created_at DESC LIMIT 1) AS purchase_order,
+                i.unit_price_ex_vat AS item_price,
+                i.standard_cost
+            FROM procurement.inventory_items i
+            WHERE i.id = CAST(:item_id AS uuid) AND i.organization_id = CAST(:org_id AS uuid)
+        """),
+            {
+                "org_id": str(org_id),
+                "item_id": str(item_id),
+                "store_id": str(store_id) if store_id else None,
+            },
+        )
+    ).mappings().first()
+    if row:
+        for source in ("store_receipts", "all_receipts", "purchase_order", "item_price", "standard_cost"):
+            value = row[source]
+            if value is not None and Decimal(str(value)) > 0:
+                return Decimal(str(value)).quantize(Decimal("0.0001")), source
+    return Decimal("0"), "none"
+
+
+async def reprice_unpriced_material_lines(
+    db: AsyncSession, user: dict, *, report: dict[str, Any]
+) -> int:
+    """Gives every material line still at a zero price on this report the
+    procurement price, and re-values its stock movement to match."""
+    lines = (
+        await db.execute(
+            text("""
+            SELECT id, item_id, store_id FROM projects.daily_report_materials
+            WHERE report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+              AND is_deleted = false AND COALESCE(unit_cost, 0) = 0
+        """),
+            {"report_id": report["id"], "org_id": user["org_id"]},
+        )
+    ).mappings().all()
+    repriced = 0
+    for line in lines:
+        price, source = await procurement_unit_cost(
+            db, org_id=user["org_id"], item_id=line["item_id"], store_id=line["store_id"]
+        )
+        if source == "none":
+            continue
+        await db.execute(
+            text("UPDATE projects.daily_report_materials SET unit_cost = :cost WHERE id = :id AND organization_id = CAST(:org_id AS uuid)"),
+            {"cost": price, "id": line["id"], "org_id": user["org_id"]},
+        )
+        await sync_material_line_stock(
+            db, user, line_id=line["id"], project_id=report["project_id"],
+            reference=f"DSR-{report['report_date']}",
+        )
+        repriced += 1
+    return repriced
+
+
 async def sync_material_line_stock(db: AsyncSession, user: dict, *, line_id: UUID, project_id: UUID, reference: str) -> None:
     """Keep the one stock-ledger consumption row of a daily report material
     line equal to the line: created when it first draws stock, re-quantified
@@ -1520,6 +1622,29 @@ async def decide_site_material_request_engineer(
     )
     await db.commit()
     return result(processed, f"Material request {payload.decision} by Site Engineer.")
+
+
+@router.get("/materials/price")
+async def material_price(
+    item_id: UUID,
+    store_id: Optional[UUID] = None,
+    user: dict = Depends(require_any_permission("site_operations.material.record", "site_operations.material.request", "inventory_items.read", "site_operations.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The procurement price a usage line for this item will be valued at,
+    and where it came from, so the site screen can show it before saving."""
+    price, source = await procurement_unit_cost(
+        db, org_id=user["org_id"], item_id=item_id, store_id=store_id
+    )
+    return result(
+        {
+            "item_id": str(item_id),
+            "unit_cost": str(price),
+            "source": source,
+            "source_label": MATERIAL_PRICE_SOURCES[source],
+        },
+        "Material price retrieved.",
+    )
 
 
 @router.get("/materials/suggest")
@@ -2687,6 +2812,7 @@ async def get_daily_report(
                             )
                     except Exception as inner_exc:
                         logger.warning(f"Skipped duplicate or invalid material line in get_daily_report: {inner_exc}")
+            await reprice_unpriced_material_lines(db, user, report=report)
             await db.commit()
         except Exception as exc:
             logger.warning(f"Failed to auto-sync materials in get_daily_report: {exc}")
@@ -2970,6 +3096,13 @@ async def add_material(
     await tenant_reference(
         db, "procurement.stores", payload.store_id, user["org_id"], "Store"
     )
+    # The price comes from procurement, not from what was typed on site; a
+    # typed figure only stands in when procurement has no price for the item.
+    price, price_source = await procurement_unit_cost(
+        db, org_id=user["org_id"], item_id=payload.item_id, store_id=payload.store_id
+    )
+    if price_source == "none":
+        price = payload.unit_cost
     line_id = (
         await db.execute(
             text("""
@@ -2983,6 +3116,7 @@ async def add_material(
     """),
             {
                 **payload.model_dump(),
+                "unit_cost": price,
                 "org_id": user["org_id"],
                 "report_id": report_id,
                 "user_id": user["user_id"],
@@ -3002,7 +3136,15 @@ async def add_material(
         event_data={"line_id": str(line_id), "approval_pending": True},
     )
     await db.commit()
-    return result({"id": str(line_id)}, "Material consumption staged.")
+    return result(
+        {
+            "id": str(line_id),
+            "unit_cost": str(price),
+            "price_source": price_source,
+            "line_value": str((payload.quantity_used * price).quantize(Decimal("0.01"))),
+        },
+        "Material consumption staged.",
+    )
 
 
 @router.patch("/daily-reports/{report_id}/labour/{line_id}")
@@ -3263,6 +3405,23 @@ async def update_daily_report_material(
     values = payload.model_dump(exclude_unset=True)
     if not values:
         return result({"id": str(line_id)}, "No fields to update.")
+    current = (
+        await db.execute(
+            text("""
+            SELECT item_id, store_id FROM projects.daily_report_materials
+            WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+              AND is_deleted = false
+        """),
+            {"line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not current:
+        raise HTTPException(status_code=404, detail="Material line not found.")
+    price, price_source = await procurement_unit_cost(
+        db, org_id=user["org_id"], item_id=current["item_id"], store_id=current["store_id"]
+    )
+    if price_source != "none":
+        values["unit_cost"] = price
     set_clauses = [f"{k} = :{k}" for k in values.keys()]
     await db.execute(
         text(f"""
@@ -3421,6 +3580,14 @@ async def sync_all_daily_report(
                     logger.warning(f"Skipped duplicate or invalid material line in sync_all: {inner_mat_exc}")
     except Exception as exc:
         logger.warning(f"Failed to auto-sync store issues to daily report {report_id}: {exc}")
+
+    # Price anything still at zero from procurement before totalling the day
+    if report["status"] in {"draft", "rejected"}:
+        try:
+            async with db.begin_nested():
+                await reprice_unpriced_material_lines(db, user, report=report)
+        except Exception as exc:
+            logger.warning(f"Failed to price material lines on daily report {report_id}: {exc}")
 
     # Recalculate total daily report cost exposure across labour, equipment & materials
     try:
@@ -3595,6 +3762,199 @@ async def link_document(
             status_code=409, detail="Document could not be linked to the daily report."
         ) from exc
     return result({"id": str(link_id)}, "Document linked.")
+
+
+EVIDENCE_BUCKET = "documents"
+EVIDENCE_URL_TTL_SECONDS = 3600
+
+
+@router.post(
+    "/daily-reports/{report_id}/evidence", status_code=status.HTTP_201_CREATED
+)
+async def attach_report_evidence(
+    report_id: UUID,
+    payload: EvidenceUploadPayload,
+    user: dict = Depends(
+        require_any_permission(
+            "site_operations.daily_report.update",
+            "site_operations.daily_report.create",
+            "documents.link",
+        )
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Registers a photo/docket the client already uploaded to the private
+    'documents' bucket and links it to this daily report, in one transaction.
+    Gated on the report permissions (not documents.create) so anyone who can
+    fill the report can attach its evidence. Safe to retry: the storage path
+    carries the client's own id for the file, and a path already registered
+    returns the existing document instead of a duplicate."""
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    expected_prefix = f"site-evidence/{report_id}/"
+    if not payload.storage_path.startswith(expected_prefix) or ".." in payload.storage_path:
+        raise HTTPException(
+            status_code=422,
+            detail="storage_path must be inside this report's site-evidence folder.",
+        )
+    try:
+        existing = (
+            await db.execute(
+                text("""
+            SELECT d.id FROM core.file_attachments fa
+            JOIN core.documents d ON d.file_attachment_id = fa.id AND d.is_deleted = false
+            WHERE fa.organization_id = :org_id AND fa.storage_path = :storage_path
+              AND fa.is_deleted = false
+            LIMIT 1
+        """),
+                {"org_id": user["org_id"], "storage_path": payload.storage_path},
+            )
+        ).scalar()
+        if existing:
+            doc_id = existing
+        else:
+            file_attachment_id = (
+                await db.execute(
+                    text("""
+                INSERT INTO core.file_attachments (
+                    organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes
+                ) VALUES (
+                    :org_id, :user_id, :file_name, :storage_path, :mime_type, :size_bytes
+                ) RETURNING id
+            """),
+                    {
+                        "org_id": user["org_id"],
+                        "user_id": user["user_id"],
+                        "file_name": payload.file_name,
+                        "storage_path": payload.storage_path,
+                        "mime_type": payload.mime_type,
+                        "size_bytes": payload.size_bytes,
+                    },
+                )
+            ).scalar()
+            doc_id = (
+                await db.execute(
+                    text("""
+                INSERT INTO core.documents (
+                    organization_id, title, category, file_name, file_size_bytes,
+                    file_attachment_id, created_by
+                ) VALUES (
+                    :org_id, :title, 'site_evidence', :file_name, :size_bytes,
+                    :file_attachment_id, :user_id
+                ) RETURNING id
+            """),
+                    {
+                        "org_id": user["org_id"],
+                        "user_id": user["user_id"],
+                        "title": payload.file_name,
+                        "file_name": payload.file_name,
+                        "size_bytes": payload.size_bytes,
+                        "file_attachment_id": file_attachment_id,
+                    },
+                )
+            ).scalar()
+        await db.execute(
+            text("""
+            INSERT INTO core.document_links (
+                organization_id, document_id, entity_type, entity_id, project_id, link_role, linked_by
+            ) VALUES (
+                :org_id, :document_id, 'daily_site_report', :report_id, :project_id, :link_role, :user_id
+            ) ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role)
+              DO UPDATE SET is_deleted=false
+        """),
+            {
+                "org_id": user["org_id"],
+                "document_id": doc_id,
+                "report_id": report_id,
+                "project_id": report["project_id"],
+                "link_role": payload.link_role,
+                "user_id": user["user_id"],
+            },
+        )
+        if not existing:
+            await emit_event(
+                db,
+                user=user,
+                event_type="document.linked.v1",
+                aggregate_type="daily_site_report",
+                aggregate_id=report_id,
+                project_id=report["project_id"],
+                event_data={"document_id": str(doc_id), "link_role": payload.link_role},
+            )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Evidence could not be attached to the daily report."
+        ) from exc
+    return result({"id": str(doc_id)}, "Evidence attached.")
+
+
+@router.get("/daily-reports/{report_id}/evidence")
+async def list_report_evidence(
+    report_id: UUID,
+    user: dict = Depends(require_permission("site_operations.daily_report.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every photo/docket on this report with a short-lived view link. The
+    bucket is private, so links are minted here after the report-read and
+    project-scope checks; all of a report's files are signed in one call."""
+    await report_or_404(db, report_id, user["org_id"], user=user)
+    rows = (
+        await db.execute(
+            text("""
+        SELECT d.id, d.title, COALESCE(fa.file_name, d.file_name) AS file_name,
+               fa.mime_type, COALESCE(fa.size_bytes, d.file_size_bytes) AS size_bytes,
+               fa.storage_path, fa.provider, dl.link_role, dl.linked_at,
+               u.full_name AS uploaded_by_name
+        FROM core.document_links dl
+        JOIN core.documents d ON d.id = dl.document_id
+             AND d.organization_id = dl.organization_id AND d.is_deleted = false
+        LEFT JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
+        LEFT JOIN core.users u ON u.id = dl.linked_by
+        WHERE dl.organization_id = :org_id AND dl.entity_type = 'daily_site_report'
+          AND dl.entity_id = :report_id AND dl.is_deleted = false
+        ORDER BY dl.linked_at DESC
+    """),
+            {"report_id": report_id, "org_id": user["org_id"]},
+        )
+    ).mappings().all()
+
+    paths = [
+        row["storage_path"]
+        for row in rows
+        if row["storage_path"] and (row["provider"] or "supabase") == "supabase"
+    ]
+    url_by_path: dict[str, str] = {}
+    if paths:
+        try:
+            signed = await run_in_threadpool(
+                supabase.storage.from_(EVIDENCE_BUCKET).create_signed_urls,
+                paths,
+                EVIDENCE_URL_TTL_SECONDS,
+            )
+            for path, item in zip(paths, signed or []):
+                url = (item or {}).get("signedURL") or (item or {}).get("signedUrl")
+                if url:
+                    url_by_path[path] = url
+        except Exception:
+            logger.exception("Failed to sign site evidence URLs", report_id=str(report_id))
+
+    items = [
+        {
+            "id": str(row["id"]),
+            "title": row["title"],
+            "file_name": row["file_name"],
+            "mime_type": row["mime_type"],
+            "size_bytes": row["size_bytes"],
+            "link_role": row["link_role"],
+            "linked_at": row["linked_at"],
+            "uploaded_by_name": row["uploaded_by_name"],
+            "has_file": bool(row["storage_path"]),
+            "url": url_by_path.get(row["storage_path"]) if row["storage_path"] else None,
+        }
+        for row in rows
+    ]
+    return result(items, "Report evidence retrieved.", total=len(items))
 
 
 @router.post("/daily-reports/{report_id}/submit")
