@@ -35,9 +35,13 @@
  *
  * Mobile: single column stack, all tiles equal height 280px
  *
- * Wired to the real project register (GET /api/v1/projects) - the same
- * endpoint and data shape used by /projects. No fabricated project data.
- * [PLACEHOLDER] All images require real SNC site/drone photography.
+ * Wired to the public portfolio (GET /api/projects -> /public/intake/projects),
+ * the same source as /projects: delivered work only, with client names and
+ * contract values withheld. The internal register (/api/v1/projects) needs a
+ * login and returns 401 to website visitors, which hid this section for them.
+ * No fabricated project data.
+ * [PLACEHOLDER] Tile images are stock by category until real SNC site/drone
+ * photography exists.
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -47,16 +51,74 @@ import { sequenceRevealVariants, hoverElevation, transitions } from "@/lib/motio
 
 interface FeaturedProject {
   id: string;
+  code: string;
   slug: string;
   title: string;
-  client: string;
   sector: string;
   status: string;
-  budget: string;
+  province: string;
   duration: string;
-  scope: string;
   image: string;
   grid: string;
+}
+
+/** Row shape of GET /api/projects (public project summary). */
+interface PublicProjectRow {
+  id: string;
+  slug: string;
+  title: string;
+  project_code?: string | null;
+  status?: string | null;
+  category?: string | null;
+  province?: string | null;
+  start_date?: string | null;
+  actual_completion_date?: string | null;
+}
+
+// Desktop column spans per tile, by how many projects there are to show, so
+// every row of the 12-column wall is full whatever the count.
+const GRID_SPANS: Record<number, string[]> = {
+  1: ["lg:col-span-12"],
+  2: ["lg:col-span-7", "lg:col-span-5"],
+  3: ["lg:col-span-4", "lg:col-span-4", "lg:col-span-4"],
+  4: ["lg:col-span-7", "lg:col-span-5", "lg:col-span-5", "lg:col-span-7"],
+  5: ["lg:col-span-7", "lg:col-span-5", "lg:col-span-4", "lg:col-span-5", "lg:col-span-3"],
+};
+
+function tileImage(category: string): string {
+  const c = category.toLowerCase();
+  if (c.includes("mining")) return "/proj-mining.jpg";
+  if (c.includes("commercial") || c.includes("build")) return "/proj-commercial.jpg";
+  if (c.includes("earthwork") || c.includes("plant")) return "/proj-earthworks.jpg";
+  if (c.includes("structur") || c.includes("bridge")) return "/proj-bridge.jpg";
+  return "/proj-highway.jpg";
+}
+
+function programmeLength(start?: string | null, end?: string | null): string {
+  if (!start || !end) return "—";
+  const months = Math.round((new Date(end).getTime() - new Date(start).getTime()) / (1000 * 60 * 60 * 24 * 30.44));
+  if (!Number.isFinite(months) || months < 0) return "—";
+  return months < 1 ? "Under 1 month" : `${months} month${months === 1 ? "" : "s"}`;
+}
+
+function toFeatured(rows: PublicProjectRow[]): FeaturedProject[] {
+  const shown = rows.slice(0, 5);
+  const spans = GRID_SPANS[shown.length] ?? [];
+  return shown.map((row, index) => {
+    const sector = row.category || "Civil Infrastructure";
+    return {
+      id: row.id,
+      code: row.project_code || "",
+      slug: row.slug,
+      title: row.title,
+      sector,
+      status: row.status || "Completed",
+      province: row.province || "",
+      duration: programmeLength(row.start_date, row.actual_completion_date),
+      image: tileImage(sector),
+      grid: spans[index] ?? "lg:col-span-4",
+    };
+  });
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -77,10 +139,10 @@ export function InfrastructureSequence() {
   useEffect(() => {
     const fetchProjects = async () => {
       try {
-        const res = await fetch("/api/v1/projects?limit=5");
+        const res = await fetch("/api/projects");
         if (res.ok) {
           const json = await res.json();
-          setFeaturedProjects(Array.isArray(json.data) ? json.data.slice(0, 5) : []);
+          setFeaturedProjects(Array.isArray(json.data) ? toFeatured(json.data) : []);
         }
       } catch {
         setFeaturedProjects([]);
@@ -276,7 +338,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
         transition={transitions.fast}
       >
         <span className="font-mono text-[10px] tracking-[0.15em] uppercase text-[color-mix(in_srgb,var(--dxl-paper)_75%,transparent)] block mb-1">
-          {project.id}
+          {project.code}
         </span>
         <h3 className="font-bold text-[16px] leading-[1.2] text-paper tracking-[-0.01em]">
           {project.title}
@@ -324,7 +386,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ ...transitions.reveal, delay: 0.1 }}
               >
-                {project.client}
+                {project.province}
               </motion.p>
 
               {/* Stats row — the proof layer */}
@@ -335,8 +397,8 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
                 transition={{ ...transitions.reveal, delay: 0.15 }}
               >
                 {[
-                  { label: "Contract Value", value: project.budget },
                   { label: "Programme", value: project.duration },
+                  { label: "Region", value: project.province || "—" },
                   { label: "Sector", value: project.sector.split(" ")[0] },
                 ].map((stat) => (
                   <div key={stat.label}>
@@ -349,16 +411,6 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
                   </div>
                 ))}
               </motion.div>
-
-              {/* Scope line */}
-              <motion.p
-                className="font-mono text-[10px] tracking-[0.08em] text-[color-mix(in_srgb,var(--dxl-paper)_60%,transparent)] mt-4"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ ...transitions.reveal, delay: 0.2 }}
-              >
-                {project.scope}
-              </motion.p>
 
               {/* Commit link */}
               <motion.div
