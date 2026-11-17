@@ -23,6 +23,7 @@ import {
   updateSystemSetting,
   updateWebsiteContent,
 } from "@/lib/api";
+import { MicrosoftProjectWorkspacesPanel } from "@/components/settings/MicrosoftProjectWorkspacesPanel";
 
 // Only the active tab's panel ships to the browser instead of all 6 (plus
 // their own sub-components - user/role cards, QR provisioning, etc.) at once.
@@ -558,6 +559,7 @@ export function SettingsTabPage({ initialTab }: { initialTab: SettingsTab }) {
     {overview.source_warnings.length > 0 && <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"><div className="mb-2 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4 shrink-0" /> Partial settings source availability</div><ul className="list-disc space-y-1 pl-5 text-xs">{overview.source_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
     {notice && <div className="flex gap-2 border border-signal/40 bg-signal/10 p-3 text-sm text-paper"><ShieldCheck className="h-4 w-4 shrink-0 text-signal" /> {notice}</div>}
     {tab === "configuration" && <ConfigurationTab overview={overview} saving={saving} saveSetting={saveSetting} />}
+    {tab === "configuration" && <div className="mt-6"><MicrosoftProjectWorkspacesPanel /></div>}
     {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} resetUserPassword={resetUserPassword} inviteUser={inviteUser} createRole={createRole} />}
     {tab === "accounts" && <ManagedAccountsTab overview={overview} saving={saving === "managed-account"} createManagedAccount={createManagedAccount} />}
     {tab === "website" && <WebsiteTab items={overview.website_content} saving={saving} saveContent={saveContent} />}

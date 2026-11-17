@@ -12,6 +12,8 @@ names, connection status) leave this API.
 from __future__ import annotations
 
 import json
+import re
+from urllib.parse import parse_qs, urlparse
 from typing import Any, Optional
 from uuid import UUID
 
@@ -22,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.logging import logger
-from core.security import require_permission
+from core.project_scope import require_project_access
+from core.security import require_any_permission, require_permission
 from app.shared.pagination import ok
 from app.services.microsoft import calendar as ms_calendar
 from app.services.microsoft import sharepoint
@@ -30,6 +33,7 @@ from app.services.microsoft.auth import invalidate_cached_token, is_configured
 from app.services.microsoft.errors import GraphError
 from app.services.microsoft.graph_client import GraphClient
 from app.services.microsoft.routing import MODULE_LIBRARY_MAP
+from app.services.microsoft import project_workspace
 
 router = APIRouter()
 
@@ -58,6 +62,30 @@ class SelectCalendarPayload(Payload):
     calendar_name: str = Field(min_length=1, max_length=255)
     is_group: bool = False
     calendar_timezone: str = Field(default="Africa/Harare", max_length=80)
+
+
+class ProjectWorkspaceSettingsPayload(Payload):
+    enabled: Optional[bool] = None
+    # The Team that gets a channel per active project: its "Get link to team"
+    # link or its group id. Empty string unlinks it.
+    team: Optional[str] = Field(default=None, max_length=2048)
+    team_name: Optional[str] = Field(default=None, max_length=255)
+
+
+_GROUP_ID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _team_id_from(value: str) -> Optional[str]:
+    value = value.strip()
+    if not value:
+        return None
+    if value.startswith("http"):
+        group = parse_qs(urlparse(value).query).get("groupId")
+        if group and _GROUP_ID_RE.fullmatch(group[0]):
+            return group[0]
+        return None
+    match = _GROUP_ID_RE.fullmatch(value)
+    return match.group(0) if match else None
 
 
 class TogglePayload(Payload):
@@ -439,3 +467,138 @@ async def disconnect(
     )
     await db.commit()
     return ok({"disconnected": True}, "Microsoft 365 integration disconnected.")
+
+
+# --------------------------------------------------------------------------
+# Project workspaces (SharePoint folders + Teams channel per active project)
+# --------------------------------------------------------------------------
+
+
+@router.get("/project-workspaces")
+async def project_workspaces_overview(
+    user: dict = Depends(require_permission("integrations.microsoft.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Settings card: on/off, the linked Team, which Graph permissions the
+    app holds (names only, read from its token) and each project's state."""
+    row = await _get_row(db, user["org_id"])
+    roles: list[str] = []
+    roles_error = None
+    if row:
+        try:
+            roles = await project_workspace.granted_app_roles(row.get("tenant_id"))
+        except GraphError as exc:
+            roles_error = str(exc)
+    projects = (
+        await db.execute(
+            text("""
+            SELECT p.id AS project_id, p.project_code, p.name, p.status,
+                   w.folder_web_url, w.folders_ready_at, w.channel_status, w.channel_web_url,
+                   w.diary_web_url, w.diary_published_at, w.last_error, w.last_attempt_at,
+                   COALESCE(f.copied, 0) AS files_copied, COALESCE(f.failed, 0) AS files_failed
+            FROM projects.projects p
+            LEFT JOIN projects.project_m365_workspaces w
+              ON w.organization_id = p.organization_id AND w.project_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) FILTER (WHERE fa.mirror_status = 'synced') AS copied,
+                       COUNT(*) FILTER (WHERE fa.mirror_status = 'failed') AS failed
+                FROM core.document_links dl
+                JOIN projects.daily_site_reports r ON r.id = dl.entity_id
+                JOIN core.documents d ON d.id = dl.document_id
+                JOIN core.file_attachments fa ON fa.id = d.file_attachment_id
+                WHERE dl.organization_id = p.organization_id AND dl.entity_type = 'daily_site_report'
+                  AND dl.is_deleted = false AND r.project_id = p.id
+            ) f ON true
+            WHERE p.organization_id = :org_id AND p.is_deleted = false
+              AND (p.status = 'active' OR w.id IS NOT NULL)
+            ORDER BY p.status <> 'active', p.name
+        """),
+            {"org_id": user["org_id"]},
+        )
+    ).mappings().all()
+    missing = [perm for perm in project_workspace.TEAMS_PERMISSIONS if perm not in roles]
+    return ok({
+        "enabled": bool(row and row.get("sync_project_workspaces")),
+        "sharepoint_ready": bool(row and row.get("drive_id") and (row.get("library_map") or {}).get("03_PROJECTS")),
+        "team_id": row.get("projects_team_id") if row else None,
+        "team_name": row.get("projects_team_name") if row else None,
+        "granted_permissions": roles,
+        "permissions_error": roles_error,
+        "teams_permissions_needed": list(project_workspace.TEAMS_PERMISSIONS),
+        "teams_permissions_missing": missing,
+        "projects": [dict(p) for p in projects],
+    }, "Project workspaces retrieved.")
+
+
+@router.patch("/project-workspaces/settings")
+async def update_project_workspace_settings(
+    payload: ProjectWorkspaceSettingsPayload,
+    user: dict = Depends(require_permission("integrations.microsoft.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _require_row(db, user["org_id"])
+    values: dict[str, Any] = {}
+    if payload.enabled is not None:
+        if payload.enabled and not (row.get("library_map") or {}).get("03_PROJECTS"):
+            raise HTTPException(status_code=400, detail="Map the 03_PROJECTS SharePoint library before switching project workspaces on.")
+        values["sync_project_workspaces"] = payload.enabled
+    if payload.team is not None:
+        team_id = _team_id_from(payload.team)
+        if payload.team.strip() and not team_id:
+            raise HTTPException(
+                status_code=422,
+                detail="That isn't a Team link. In Teams open the Team's ... menu, choose Get link to team, and paste that link.",
+            )
+        values["projects_team_id"] = team_id
+        values["projects_team_name"] = (payload.team_name or None) if team_id else None
+    if not values:
+        return ok({"updated": False}, "Nothing to change.")
+    sets = ", ".join(f"{k} = :{k}" for k in values)
+    await db.execute(
+        text(f"UPDATE core.organisation_integrations SET {sets}, updated_at = NOW() WHERE id = :id"),  # nosec B608 - keys are fixed above
+        {**values, "id": row["id"]},
+    )
+    await db.commit()
+    return ok({"updated": True, **values}, "Project workspace settings saved.")
+
+
+@router.post("/project-workspaces/{project_id}/sync")
+async def sync_project_workspace(
+    project_id: UUID,
+    user: dict = Depends(require_any_permission("integrations.microsoft.manage", "projects.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set up / repair one project's workspace now and republish its diary,
+    instead of waiting for the next background run."""
+    await require_project_access(db, user, project_id)
+    try:
+        workspace = await project_workspace.ensure_workspace(db, user["org_id"], project_id)
+        await db.commit()
+        await project_workspace.publish_diary(db, user["org_id"], project_id, force=True)
+        await db.commit()
+        if workspace.get("channel_status") == "ready":
+            # Adds the Site Diary tab now that the diary exists.
+            await project_workspace.ensure_workspace(db, user["org_id"], project_id)
+            await db.commit()
+    except project_workspace.WorkspaceNotReady as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except GraphError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"Microsoft 365 refused the request: {exc}")
+    return ok(await project_workspace.get_workspace(db, user["org_id"], project_id), "Project workspace synced.")
+
+
+@router.get("/project-workspaces/{project_id}")
+async def get_project_workspace(
+    project_id: UUID,
+    user: dict = Depends(require_any_permission("projects.read", "projects.read_all", "integrations.microsoft.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_project_access(db, user, project_id)
+    row = await _get_row(db, user["org_id"])
+    workspace = await project_workspace.get_workspace(db, user["org_id"], project_id)
+    return ok({
+        "enabled": bool(row and row.get("sync_project_workspaces")),
+        "team_linked": bool(row and row.get("projects_team_id")),
+        "workspace": workspace,
+    }, "Project workspace retrieved.")
