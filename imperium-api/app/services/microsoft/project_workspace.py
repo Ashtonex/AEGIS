@@ -50,7 +50,7 @@ from core.config import settings
 from core.database import supabase
 from core.logging import logger
 from app.services.microsoft import sharepoint
-from app.services.microsoft.auth import get_access_token
+from app.services.microsoft.auth import get_access_token, invalidate_cached_token
 from app.services.microsoft.errors import GraphError, GraphPermissionError
 from app.services.microsoft.graph_client import GraphClient
 from app.services.microsoft.routing import LIBRARY_PROJECTS, PROJECT_FOLDER_TEMPLATE
@@ -302,11 +302,15 @@ async def ensure_workspace(db: AsyncSession, org_id: str, project_id: UUID | str
             channel_name=channel_name, channel_web_url=channel_web_url, tabs_installed=installed,
             last_attempt_at=now, last_error=None,
         )
-    except GraphPermissionError:
+    except GraphPermissionError as exc:
+        # Permissions granted after the cached app token was issued only show
+        # up in a new token, so drop it and let the next attempt fetch one.
+        invalidate_cached_token(conn.tenant_id)
+        detail = f"HTTP {exc.status_code}" + (f" {exc.graph_code}" if exc.graph_code else "") + f": {exc}"
         await _save_workspace(
             db, org_id, project_id, channel_status="needs_permission", team_id=conn.team_id,
             tabs_installed=installed, last_attempt_at=now,
-            last_error="Microsoft 365 admin has not granted Channel.Create and TeamsTab.Create to the AEGIS app yet.",
+            last_error=f"Microsoft refused the Teams request ({detail})"[:2000],
         )
     except GraphError as exc:
         await _save_workspace(
