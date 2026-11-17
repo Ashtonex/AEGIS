@@ -39,6 +39,7 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import { title, text, number } from "@/lib/projects/types";
 import { getProjectProgressPack, type ProjectProgressPackData } from "@/lib/api/projects";
 import { ProgressPackModal } from "@/components/projects/ProgressPackModal";
+import { ProjectMicrosoftCard } from "@/components/projects/ProjectMicrosoftCard";
 import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 import { isActiveAllocation, isProjectHireRow, uniqueHeadcount } from "@/lib/projects/headcount";
 
@@ -364,6 +365,8 @@ export default function ProjectMissionControlPage() {
           </p>
         </div>
       </section>
+
+      {projectId && <ProjectMicrosoftCard projectId={String(projectId)} />}
 
       {/* Primary Workspaces Grid */}
       <section>

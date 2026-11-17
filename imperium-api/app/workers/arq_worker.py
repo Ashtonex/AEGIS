@@ -23,6 +23,7 @@ from app.services.documents.extraction import extract_text, ExtractionStatus
 from app.services.microsoft.document_service import get_download_url as get_sharepoint_download_url
 from app.services.microsoft import data_room_sync
 from app.services.microsoft import bank_workbook
+from app.services.microsoft import project_workspace
 from app.services.crm.automation_engine import evaluate_and_run_automations
 from app.services.finance.ccb_monitor import (
     run_budget_overrun_check,
@@ -1098,6 +1099,25 @@ async def close_attendance_day_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def project_workspaces_job(ctx):
+    """Every 3 minutes: set up the Microsoft 365 workspace (SharePoint
+    folders, Teams channel + tabs) of projects that became active, copy new
+    site photos / dockets into their day folders, and republish changed Site
+    Diaries (app/services/microsoft/project_workspace.py)."""
+    async with AsyncSessionLocal() as db:
+        org_ids = await project_workspace.organisations_enabled(db)
+    results = {}
+    for org_id in org_ids:
+        async with AsyncSessionLocal() as db:
+            try:
+                results[org_id] = await project_workspace.run_for_organisation(db, org_id)
+            except Exception as exc:  # noqa: BLE001 - one organisation never blocks another
+                await db.rollback()
+                logger.warning(f"Project workspaces run failed for {org_id}: {exc}")
+                results[org_id] = {"error": str(exc)}
+    return results
+
+
 async def on_job_failure(ctx, exp: Exception):
     job_id = ctx.get("job_id", "unknown")
     logger.error(f"Arq Job {job_id} encountered execution failure: {str(exp)}")
@@ -1148,6 +1168,7 @@ else:
 
 class WorkerSettings:
     functions = [
+        project_workspaces_job,
         dispatch_compliance_events_job,
         dispatch_workforce_events_job,
         generate_quotation_documents_job,
@@ -1249,6 +1270,7 @@ class WorkerSettings:
         # Hourly; acts from 07:00 Harare time, each warning sent once (hr.expiry_alerts).
         cron(hr_expiry_alerts_job, minute=25, run_at_startup=False),
         # 14:35 UTC = 16:35 Harare: the attendance clock stops at 16:30.
+        cron(project_workspaces_job, minute=set(range(0, 60, 3)), second=40, run_at_startup=False, timeout=600),
         cron(close_attendance_day_job, hour=15, minute=5, run_at_startup=False),
         # 22:40 UTC = 00:40 Harare. Also at startup, so a deploy fills any gap at once.
         cron(ensure_accounting_periods_job, hour=22, minute=40, run_at_startup=True),
