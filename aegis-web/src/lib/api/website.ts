@@ -7,6 +7,41 @@ import { PROJECTS_DOSSIERS, getProjectDossier } from "../projectsDossiers";
 import { fetchApi, ApiError, isPermissionDenied, describeActionError, resolveApiUrl, getApiHeaders, buildApiError, getErrorMessage, API_TIMEOUT_MS, parseJsonResponse, getSupabaseAccessToken, createIdempotencyKey, type ApiRequestOptions } from "./core";
 
 // --- PROJECTS ---
+/**
+ * The public endpoints (/public/intake/projects[/slug]) return a flat summary
+ * row (start_date, actual_completion_date, category, ...), not the `Project`
+ * shape the website pages read (`timeline.start`, `outcomes`, `gallery`, ...).
+ * Without this, the first real project to appear would crash the detail page.
+ * Rows that already have a `timeline` (the verified dossiers) pass through.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizePublicProject(raw: any): Project {
+  if (raw?.timeline?.start) return raw as Project;
+  return {
+    ...raw,
+    id: String(raw.id),
+    slug: raw.slug,
+    title: raw.title ?? "",
+    category: raw.category ?? "Civil Infrastructure",
+    industry: raw.industry ?? "Infrastructure",
+    province: raw.province ?? "",
+    status: raw.status ?? "Completed",
+    description: raw.description ?? "",
+    client: raw.client ?? "Client withheld",
+    timeline: {
+      start: raw.start_date ?? raw.actual_completion_date ?? "",
+      end: raw.actual_completion_date ?? undefined,
+    },
+    contractType: raw.contractType ?? "Not disclosed",
+    scopeSummary: raw.scopeSummary ?? "",
+    challenge: raw.challenge ?? "",
+    approach: raw.approach ?? "",
+    outcomes: Array.isArray(raw.outcomes) ? raw.outcomes : [],
+    featuredImage: raw.featuredImage ?? "",
+    gallery: Array.isArray(raw.gallery) ? raw.gallery : [],
+  };
+}
+
 export async function getProjects(params?: { featured?: boolean; limit?: number; category?: string }): Promise<PaginatedResponse<Project>> {
   const searchParams = new URLSearchParams();
   if (params?.featured) searchParams.set("featured", "true");
@@ -18,7 +53,7 @@ export async function getProjects(params?: { featured?: boolean; limit?: number;
       next: { revalidate: 3600 }
     });
     if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
-      return res;
+      return { ...res, data: res.data.map(normalizePublicProject) };
     }
   } catch {
     // Fall through to verified dossiers
@@ -44,7 +79,7 @@ export async function getProject(slug: string): Promise<ApiResponse<Project>> {
       next: { revalidate: 3600 }
     });
     if (res?.success && res.data) {
-      return res;
+      return { ...res, data: normalizePublicProject(res.data) };
     }
   } catch {
     // Fall through to verified dossiers
