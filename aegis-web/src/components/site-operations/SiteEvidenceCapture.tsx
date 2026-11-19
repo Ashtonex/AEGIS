@@ -1,15 +1,37 @@
 "use client";
 
 import React, { useRef, useState, useEffect, useCallback } from "react";
-import { Camera, Upload, CheckCircle2, Loader2, Image as ImageIcon, FileText, X } from "lucide-react";
-import { saveAttachment, getAttachmentsForOperation } from "@/lib/offline/db";
-import { useOutbox } from "@/lib/offline/useOffline";
+import { Camera, Upload, CheckCircle2, Loader2, FileText, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { fetchApi } from "@/lib/api/core";
+import { supabase } from "@/lib/supabase";
+import {
+  saveAttachment,
+  getAttachmentsForOperation,
+  deleteAttachment,
+  removeOperation,
+} from "@/lib/offline/db";
+import type { OfflineAttachment } from "@/lib/offline/types";
+import type { ApiResponse } from "@/types/api";
 
 export interface SiteEvidenceCaptureProps {
   reportId: string;
-  projectId: string;
-  documents?: { id: string; title: string; file_name?: string; created_at?: string }[];
   onDocumentAdded?: () => void;
+}
+
+type EvidenceRole = "evidence_photo" | "delivery_docket";
+
+interface ServerEvidence {
+  id: string;
+  title: string;
+  file_name: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  link_role: string | null;
+  linked_at: string | null;
+  uploaded_by_name: string | null;
+  has_file: boolean;
+  url: string | null;
 }
 
 interface LocalEvidence {
@@ -18,8 +40,13 @@ interface LocalEvidence {
   size: number;
   mimeType: string;
   previewUrl?: string;
-  status: "queued" | "uploading" | "synced" | "failed";
+  status: "waiting" | "uploading" | "failed";
 }
+
+const ROLE_LABEL: Record<string, string> = {
+  evidence_photo: "Photo",
+  delivery_docket: "Docket",
+};
 
 /**
  * Compresses camera photos before storage or network transmission to optimize
@@ -73,110 +100,206 @@ async function compressImage(file: File, maxDim = 1600, quality = 0.82): Promise
   });
 }
 
-export function SiteEvidenceCapture({
-  reportId,
-  projectId,
-  documents = [],
-  onDocumentAdded,
-}: SiteEvidenceCaptureProps) {
+function extensionFor(name: string, mimeType: string): string {
+  if (mimeType === "image/jpeg") return "jpg";
+  const fromName = name.includes(".") ? name.split(".").pop() : "";
+  const clean = (fromName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return clean || "bin";
+}
+
+function isOnlineNow(): boolean {
+  return typeof navigator === "undefined" || navigator.onLine;
+}
+
+/**
+ * Sends one locally saved file to the server: the bytes go to the private
+ * "documents" bucket, then the report's evidence endpoint registers and links
+ * it. The storage path is derived from the file's own id, so a retry after a
+ * half-finished attempt lands on the same object and the same document.
+ */
+async function uploadAttachment(reportId: string, att: OfflineAttachment): Promise<void> {
+  const mimeType = att.blob.type || att.mimeType || "application/octet-stream";
+  const storagePath = `site-evidence/${reportId}/${att.id}.${extensionFor(att.name, mimeType)}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from("documents")
+    .upload(storagePath, att.blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
+  if (uploadError && !/exist|duplicate/i.test(uploadError.message || "")) {
+    throw uploadError;
+  }
+
+  const res = await fetchApi<ApiResponse<{ id: string }>>(
+    `/api/v1/site-operations/daily-reports/${reportId}/evidence`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        storage_path: storagePath,
+        file_name: att.name,
+        mime_type: mimeType,
+        size_bytes: att.size,
+        link_role: att.linkRole === "delivery_docket" ? "delivery_docket" : "evidence_photo",
+      }),
+      allowFallback: false,
+    }
+  );
+  if (!res.success) throw new Error(res.message || "The file could not be attached to the report.");
+
+  await deleteAttachment(att.id);
+  // Earlier builds queued a link request under the same id that the server
+  // could never accept; clear it so it stops holding up the offline queue.
+  await removeOperation(att.id).catch(() => undefined);
+}
+
+export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceCaptureProps) {
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [serverItems, setServerItems] = useState<ServerEvidence[]>([]);
   const [localItems, setLocalItems] = useState<LocalEvidence[]>([]);
   const [processing, setProcessing] = useState(false);
-  const { enqueue, isOnline } = useOutbox();
-
-  // Load existing queued attachments for this report on mount
+  const flushingRef = useRef(false);
+  const onAddedRef = useRef(onDocumentAdded);
   useEffect(() => {
-    let active = true;
-    async function loadQueued() {
+    onAddedRef.current = onDocumentAdded;
+  }, [onDocumentAdded]);
+  const previewUrlsRef = useRef(new Map<string, string>());
+
+  const loadServer = useCallback(async () => {
+    if (!isOnlineNow()) return;
+    try {
+      const res = await fetchApi<ApiResponse<ServerEvidence[]>>(
+        `/api/v1/site-operations/daily-reports/${reportId}/evidence`,
+        { cache: "no-store", allowFallback: false }
+      );
+      if (res.success && Array.isArray(res.data)) setServerItems(res.data);
+    } catch (err) {
+      console.warn("Unable to load report evidence:", err);
+    }
+  }, [reportId]);
+
+  const previewFor = useCallback((att: OfflineAttachment): string | undefined => {
+    const type = att.blob.type || att.mimeType;
+    if (!type.startsWith("image/")) return undefined;
+    const cache = previewUrlsRef.current;
+    if (!cache.has(att.id)) cache.set(att.id, URL.createObjectURL(att.blob));
+    return cache.get(att.id);
+  }, []);
+
+  /** Uploads everything still held on this device for the report. */
+  const flushPending = useCallback(
+    async (announce: boolean) => {
+      if (flushingRef.current) return;
+      flushingRef.current = true;
       try {
-        const queued = await getAttachmentsForOperation(reportId);
-        if (active && queued.length > 0) {
-          const items: LocalEvidence[] = queued.map((att) => ({
+        const pending = await getAttachmentsForOperation(reportId);
+        const online = isOnlineNow();
+        setLocalItems(
+          pending.map((att) => ({
             id: att.id,
             name: att.name,
             size: att.size,
-            mimeType: att.mimeType,
-            previewUrl: att.mimeType.startsWith("image/") ? URL.createObjectURL(att.blob) : undefined,
-            status: "queued",
-          }));
-          setLocalItems(items);
+            mimeType: att.blob.type || att.mimeType,
+            previewUrl: previewFor(att),
+            status: online ? "uploading" : "waiting",
+          }))
+        );
+        if (!online || pending.length === 0) return;
+
+        let sent = 0;
+        let lastError = "";
+        for (const att of pending) {
+          try {
+            await uploadAttachment(reportId, att);
+            sent += 1;
+            setLocalItems((prev) => prev.filter((item) => item.id !== att.id));
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : "Upload failed.";
+            setLocalItems((prev) =>
+              prev.map((item) => (item.id === att.id ? { ...item, status: "failed" } : item))
+            );
+          }
+        }
+        if (sent > 0) {
+          await loadServer();
+          onAddedRef.current?.();
+          if (announce) toast.success(sent === 1 ? "File uploaded to the report." : `${sent} files uploaded to the report.`);
+        }
+        if (lastError) {
+          toast.error(`Upload failed: ${lastError}`, {
+            description: "The file is kept on this device. Use Retry when the connection is back.",
+          });
         }
       } catch (err) {
-        console.warn("Unable to load offline attachments:", err);
+        console.warn("Unable to process saved attachments:", err);
+      } finally {
+        flushingRef.current = false;
       }
-    }
-    void loadQueued();
-    return () => {
-      active = false;
+    },
+    [reportId, loadServer, previewFor]
+  );
+
+  useEffect(() => {
+    void loadServer();
+    void flushPending(false);
+    const onOnline = () => {
+      void loadServer();
+      void flushPending(true);
     };
-  }, [reportId]);
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [loadServer, flushPending]);
+
+  useEffect(() => {
+    const cache = previewUrlsRef.current;
+    return () => {
+      cache.forEach((url) => URL.revokeObjectURL(url));
+      cache.clear();
+    };
+  }, []);
 
   const handleCapture = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const files = event.target.files;
-      if (!files || files.length === 0) return;
+    async (event: React.ChangeEvent<HTMLInputElement>, role: EvidenceRole) => {
+      const input = event.target;
+      const files = input.files ? Array.from(input.files) : [];
+      if (files.length === 0) return;
 
       setProcessing(true);
       try {
         for (let i = 0; i < files.length; i += 1) {
           const file = files[i];
-          const compressedBlob = await compressImage(file);
-          const evidenceId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `att-${Date.now()}-${i}`;
-
-          // Save binary blob to IndexedDB
+          const blob = await compressImage(file);
+          const id =
+            typeof crypto !== "undefined" && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `att-${Date.now()}-${i}`;
+          // Saved on the device first so a dropped connection never loses it.
           await saveAttachment({
-            id: evidenceId,
+            id,
             operationId: reportId,
-            name: file.name,
-            mimeType: file.type || "image/jpeg",
-            size: compressedBlob.size,
-            blob: compressedBlob,
+            name: file.name || `site-photo-${Date.now()}.jpg`,
+            mimeType: blob.type || file.type || "image/jpeg",
+            size: blob.size,
+            blob,
             createdAt: Date.now(),
             uploaded: false,
+            linkRole: role,
           });
-
-          // Enqueue attachment metadata into outbox
-          await enqueue({
-            operationId: evidenceId,
-            organizationId: "snc",
-            userId: "site-engineer",
-            projectId,
-            entityType: "site_daily_report_attachment",
-            action: "create",
-            endpoint: `/api/v1/site-operations/daily-reports/${reportId}/documents`,
-            payload: {
-              document_id: evidenceId,
-              link_role: "evidence_photo",
-              file_name: file.name,
-              size_bytes: compressedBlob.size,
-            },
-          });
-
-          const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(compressedBlob) : undefined;
-          setLocalItems((prev) => [
-            ...prev,
-            {
-              id: evidenceId,
-              name: file.name,
-              size: compressedBlob.size,
-              mimeType: file.type || "image/jpeg",
-              previewUrl,
-              status: isOnline ? "uploading" : "queued",
-            },
-          ]);
         }
-
-        if (onDocumentAdded) onDocumentAdded();
+        if (!isOnlineNow()) {
+          toast.info("Saved on this device. It will upload when you are back online.");
+        }
       } catch (err) {
         console.error("Evidence capture failed:", err);
+        toast.error("The file could not be saved on this device.");
       } finally {
         setProcessing(false);
-        if (event.target) event.target.value = "";
+        input.value = "";
       }
+      await flushPending(true);
     },
-    [reportId, projectId, enqueue, isOnline, onDocumentAdded]
+    [reportId, flushPending]
   );
+
+  const hasFailed = localItems.some((item) => item.status === "failed");
 
   return (
     <div className="space-y-4">
@@ -186,7 +309,7 @@ export function SiteEvidenceCapture({
         type="file"
         accept="image/*"
         capture="environment"
-        onChange={handleCapture}
+        onChange={(event) => void handleCapture(event, "evidence_photo")}
         className="hidden"
       />
 
@@ -196,7 +319,7 @@ export function SiteEvidenceCapture({
         type="file"
         accept="image/*,.pdf,.doc,.docx"
         multiple
-        onChange={handleCapture}
+        onChange={(event) => void handleCapture(event, "delivery_docket")}
         className="hidden"
       />
 
@@ -227,39 +350,33 @@ export function SiteEvidenceCapture({
         </button>
       </div>
 
-      {/* Evidence Gallery / Attachment List */}
-      {(localItems.length > 0 || documents.length > 0) && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 pt-2">
-          {/* Server-synced documents */}
-          {documents.map((doc) => (
-            <div
-              key={doc.id}
-              className="rounded-sm border border-ink-mid bg-ink-high p-2 flex flex-col justify-between text-xs space-y-1.5"
-            >
-              <div className="flex items-center gap-1.5 text-slate-light truncate">
-                <FileText className="w-4 h-4 text-signal shrink-0" />
-                <span className="truncate">{doc.file_name || doc.title}</span>
-              </div>
-              <div className="flex items-center justify-between text-[10px] text-slate font-mono">
-                <span>Verified</span>
-                <CheckCircle2 className="w-3.5 h-3.5 text-success" />
-              </div>
-            </div>
-          ))}
+      {hasFailed && (
+        <button
+          type="button"
+          onClick={() => void flushPending(true)}
+          className="flex items-center gap-2 min-h-[44px] px-3 py-2 rounded-sm border border-warning/50 text-warning font-mono text-xs uppercase tracking-wider hover:bg-ink-light"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Retry failed uploads
+        </button>
+      )}
 
-          {/* Local pending/queued evidence items */}
+      {/* Evidence Gallery / Attachment List */}
+      {(localItems.length > 0 || serverItems.length > 0) && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 pt-2">
+          {/* Still on this device */}
           {localItems.map((item) => (
             <div
               key={item.id}
               className="rounded-sm border border-ink-mid bg-ink-high overflow-hidden flex flex-col text-xs"
             >
               {item.previewUrl ? (
-                <div className="h-24 w-full bg-void relative overflow-hidden flex items-center justify-center">
+                <div className="h-32 w-full bg-void overflow-hidden flex items-center justify-center">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={item.previewUrl} alt={item.name} className="object-cover h-full w-full" />
                 </div>
               ) : (
-                <div className="h-24 w-full bg-void flex items-center justify-center">
+                <div className="h-32 w-full bg-void flex items-center justify-center">
                   <FileText className="w-8 h-8 text-slate" />
                 </div>
               )}
@@ -268,20 +385,75 @@ export function SiteEvidenceCapture({
                 <div className="flex items-center justify-between text-[10px] font-mono">
                   <span className="text-slate">{(item.size / 1024).toFixed(0)} KB</span>
                   <span
-                    className={`px-1.5 py-0.5 rounded-xs ${
-                      item.status === "synced"
-                        ? "bg-success/20 text-success"
-                        : item.status === "uploading"
-                        ? "bg-signal/20 text-signal animate-pulse"
-                        : "bg-warning/20 text-warning"
-                    }`}
+                    className={
+                      item.status === "uploading"
+                        ? "text-signal animate-pulse"
+                        : item.status === "failed"
+                        ? "text-danger"
+                        : "text-warning"
+                    }
                   >
-                    {item.status}
+                    {item.status === "uploading"
+                      ? "Uploading"
+                      : item.status === "failed"
+                      ? "Not uploaded"
+                      : "Waiting for signal"}
                   </span>
                 </div>
               </div>
             </div>
           ))}
+
+          {/* Stored on the server */}
+          {serverItems.map((doc) => {
+            const name = doc.file_name || doc.title;
+            const isImage = !!doc.url && (doc.mime_type || "").startsWith("image/");
+            const body = (
+              <>
+                {isImage ? (
+                  <div className="h-32 w-full bg-void overflow-hidden flex items-center justify-center">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={doc.url || ""} alt={name} loading="lazy" className="object-cover h-full w-full" />
+                  </div>
+                ) : (
+                  <div className="h-32 w-full bg-void flex flex-col items-center justify-center gap-1.5">
+                    <FileText className="w-8 h-8 text-slate" />
+                    {!doc.has_file && (
+                      <span className="font-mono text-[10px] text-slate">No file stored</span>
+                    )}
+                  </div>
+                )}
+                <div className="p-2 space-y-1">
+                  <span className="truncate block font-mono text-[11px] text-paper">{name}</span>
+                  <div className="flex items-center justify-between text-[10px] font-mono text-slate">
+                    <span className="truncate">
+                      {ROLE_LABEL[doc.link_role || ""] || "File"}
+                      {doc.linked_at ? ` · ${new Date(doc.linked_at).toLocaleDateString()}` : ""}
+                    </span>
+                    {doc.has_file && <CheckCircle2 className="w-3.5 h-3.5 text-success shrink-0" />}
+                  </div>
+                </div>
+              </>
+            );
+            const className =
+              "rounded-sm border border-ink-mid bg-ink-high overflow-hidden flex flex-col text-xs";
+            return doc.url ? (
+              <a
+                key={doc.id}
+                href={doc.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Open ${name}`}
+                className={`${className} hover:border-signal/50 transition-colors`}
+              >
+                {body}
+              </a>
+            ) : (
+              <div key={doc.id} className={className}>
+                {body}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

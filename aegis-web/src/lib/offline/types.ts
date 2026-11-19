@@ -40,6 +40,8 @@ export interface OfflineAttachment {
   blob: Blob;
   createdAt: number;
   uploaded: boolean;
+  /** How the file relates to its record, e.g. "evidence_photo" or "delivery_docket". */
+  linkRole?: string;
 }
 
 export interface OutboxOperation<T = unknown> {

@@ -40,7 +40,10 @@ import {
   updateDailySiteReport,
   setDailyReportLabourHours,
   resetDailyReportLabourHours,
+  updateDailyTarget,
+  getMaterialUsagePrice,
 } from "@/lib/api";
+import { toast } from "sonner";
 import {
   Btn,
   Notice,
@@ -250,6 +253,40 @@ export function ActiveDailyReport({
     notes: "",
   });
 
+  // Price of the chosen material, looked up from procurement. "none" means
+  // procurement holds no price, and only then may one be typed in.
+  const [materialPrice, setMaterialPrice] = useState<{ unit_cost: number; source: string; label: string } | null>(null);
+  const [pricingMaterial, setPricingMaterial] = useState(false);
+  useEffect(() => {
+    const itemId = newMaterial.item_id;
+    if (!itemId) {
+      setMaterialPrice(null);
+      return;
+    }
+    let active = true;
+    setPricingMaterial(true);
+    getMaterialUsagePrice(itemId, newMaterial.store_id || null)
+      .then((res) => {
+        if (!active) return;
+        const data = res.data;
+        setMaterialPrice(
+          data ? { unit_cost: Number(data.unit_cost) || 0, source: data.source, label: data.source_label } : null
+        );
+      })
+      .catch(() => {
+        if (active) setMaterialPrice(null);
+      })
+      .finally(() => {
+        if (active) setPricingMaterial(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [newMaterial.item_id, newMaterial.store_id]);
+  const hasProcurementPrice = !!materialPrice && materialPrice.source !== "none";
+  const newMaterialUnitCost = hasProcurementPrice ? materialPrice.unit_cost : Number(newMaterial.unit_cost || 0);
+  const newMaterialValue = Number(newMaterial.quantity_used || 0) * newMaterialUnitCost;
+
   // Calculate totals
   const totals = useMemo(() => {
     const labourLines = detail?.labour ?? [];
@@ -303,6 +340,57 @@ export function ActiveDailyReport({
     } finally {
       setSyncing(false);
     }
+  };
+
+  // Today's targets for this report's date, and the quantity actually done
+  // against each. The achieved figure lives on the target itself, so what is
+  // typed here is the same number the Targets tab and weekly budget read.
+  const reportDate = String(activeReport.report_date || "").slice(0, 10);
+  const reportTargets = useMemo(
+    () => dayTargets.filter((t) => !t.target_date || String(t.target_date).slice(0, 10) === reportDate),
+    [dayTargets, reportDate]
+  );
+  const [achieved, setAchieved] = useState<Record<string, string>>({});
+  const [savingTarget, setSavingTarget] = useState<string | null>(null);
+  const achievedSeed = reportTargets.map((t) => `${t.id}:${t.achieved_qty}`).join("|");
+  useEffect(() => {
+    setAchieved(
+      Object.fromEntries(reportTargets.map((t) => [String(t.id), Number(t.achieved_qty) ? String(Number(t.achieved_qty)) : ""]))
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [achievedSeed]);
+
+  const saveAchieved = async (target: ApiRecord) => {
+    const id = String(target.id);
+    const raw = achieved[id] ?? "";
+    const value = raw === "" ? 0 : Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value === Number(target.achieved_qty || 0)) return;
+    setSavingTarget(id);
+    try {
+      await updateDailyTarget(id, { achieved_qty: value });
+      await onRefresh();
+    } catch (err) {
+      toast.error(errorText(err, "The quantity done could not be saved."));
+    } finally {
+      setSavingTarget(null);
+    }
+  };
+
+  const fillActualFromTargets = () => {
+    const lines = reportTargets
+      .filter((t) => Number(achieved[String(t.id)] || 0) > 0)
+      .map(
+        (t) =>
+          `• ${t.work_package ? `${t.work_package}: ` : ""}${t.description} - ${qty(achieved[String(t.id)])} of ${qty(t.target_qty)} ${t.unit ?? ""}`.trimEnd()
+      );
+    if (lines.length === 0) {
+      toast.info("Enter the quantity done against at least one target first.");
+      return;
+    }
+    const existing = narrative.actual_work.trim();
+    const text = lines.join("\n");
+    setNarrative({ ...narrative, actual_work: existing ? `${existing}\n${text}` : text });
+    setNarrativeDirty(true);
   };
 
   // Save narrative
@@ -1303,15 +1391,23 @@ export function ActiveDailyReport({
                 className={fieldClass}
               />
               </FieldLabel>
-              <FieldLabel label="Unit cost ($)">
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={newMaterial.unit_cost}
-                onChange={(e) => setNewMaterial({ ...newMaterial, unit_cost: e.target.value })}
-                className={fieldClass}
-              />
+              <FieldLabel label={hasProcurementPrice ? "Unit price (from procurement)" : "Unit price ($)"}>
+              {hasProcurementPrice ? (
+                <div className="flex h-10 items-center justify-between border border-ink-mid bg-ink px-3 font-mono text-sm text-paper">
+                  <span>{usd(materialPrice.unit_cost, 2)}</span>
+                  {pricingMaterial && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
+                </div>
+              ) : (
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={newMaterial.unit_cost}
+                  onChange={(e) => setNewMaterial({ ...newMaterial, unit_cost: e.target.value })}
+                  disabled={pricingMaterial}
+                  className={fieldClass}
+                />
+              )}
               </FieldLabel>
               <FieldLabel label="Work package / where used" className="md:col-span-3">
               <input
@@ -1322,6 +1418,15 @@ export function ActiveDailyReport({
               />
               </FieldLabel>
             </div>
+            {newMaterial.item_id && (
+              <p className="mt-2 text-[11px] text-slate-light">
+                {pricingMaterial
+                  ? "Getting the price from procurement…"
+                  : hasProcurementPrice
+                  ? `${materialPrice.label}. Value of this usage: ${usd(newMaterialValue, 2)}.`
+                  : "Procurement has no price for this material yet, so enter one. It will be replaced once procurement prices it."}
+              </p>
+            )}
             <div className="mt-3 flex justify-end">
               <Btn
                 tone="primary"
@@ -1350,7 +1455,7 @@ export function ActiveDailyReport({
                   <th className="px-3 py-2.5 font-mono uppercase">Where used</th>
                   <th className="px-3 py-2.5 font-mono uppercase text-right">Qty used</th>
                   <th className="px-3 py-2.5 font-mono uppercase text-right">Wasted</th>
-                  <th className="px-3 py-2.5 font-mono uppercase text-right">Unit cost</th>
+                  <th className="px-3 py-2.5 font-mono uppercase text-right">Unit price</th>
                   <th className="px-3 py-2.5 font-mono uppercase text-right">Value used</th>
                   {isDraft && <th className="px-4 py-2.5 font-mono uppercase text-right w-16">Action</th>}
                 </tr>
@@ -1382,10 +1487,10 @@ export function ActiveDailyReport({
                         {Number(m.wastage_quantity) > 0 ? `${qty(m.wastage_quantity)}` : "-"}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-slate-light">
-                        {usd(m.unit_cost)}
+                        {usd(m.unit_cost, 2)}
                       </td>
                       <td className="px-3 py-2 text-right font-mono font-medium text-emerald-300">
-                        {usd(lineTotal)}
+                        {usd(lineTotal, 2)}
                       </td>
                       {isDraft && (
                         <td className="px-4 py-2 text-right">
@@ -1403,6 +1508,17 @@ export function ActiveDailyReport({
                   );
                 })}
               </tbody>
+              <tfoot className="border-t border-ink-mid bg-ink-light/20">
+                <tr>
+                  <td colSpan={6} className="px-4 py-2.5 text-right font-mono uppercase text-slate-light">
+                    Value of materials used today
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-mono font-bold text-emerald-300">
+                    {usd(totals.materialCost, 2)}
+                  </td>
+                  {isDraft && <td />}
+                </tr>
+              </tfoot>
             </table>
           </div>
         )}
@@ -1432,15 +1548,70 @@ export function ActiveDailyReport({
           )}
         </div>
 
+        {reportTargets.length > 0 && (
+          <div className="border border-ink-mid">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-mid bg-ink-light px-3 py-2">
+              <span className="font-mono text-[11px] uppercase tracking-wider text-paper">
+                Work done against today&apos;s targets
+              </span>
+              <span className="font-mono text-[10px] text-slate-light">
+                {reportTargets.filter((t) => Number(t.achieved_qty) > 0).length} of {reportTargets.length} recorded
+              </span>
+            </div>
+            <div className="divide-y divide-ink-mid/60">
+              {reportTargets.map((t) => {
+                const id = String(t.id);
+                const target = Number(t.target_qty) || 0;
+                const done = Number(achieved[id] || 0);
+                const pct = target > 0 ? Math.min(100, (done / target) * 100) : 0;
+                return (
+                  <div key={id} className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-paper">
+                        {t.work_package ? <span className="text-slate-light">{t.work_package}: </span> : null}
+                        {t.description}
+                      </p>
+                      <div className="mt-1.5 h-1 overflow-hidden bg-ink-light">
+                        <div
+                          className={`h-full ${target > 0 && done >= target ? "bg-emerald-500" : "bg-signal"}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {savingTarget === id && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="any"
+                        aria-label={`Quantity done for ${t.description}`}
+                        value={achieved[id] ?? ""}
+                        onChange={(e) => setAchieved({ ...achieved, [id]: e.target.value })}
+                        onBlur={() => void saveAchieved(t)}
+                        placeholder="0"
+                        className="h-11 w-24 border border-ink-mid bg-ink-light px-3 text-right text-sm text-paper placeholder:text-slate outline-none transition focus:border-signal"
+                      />
+                      <span className="w-24 font-mono text-[11px] text-slate-light">
+                        of {qty(t.target_qty)} {t.unit ?? ""}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="grid gap-3 md:grid-cols-2">
           <div>
             <div className="mb-1 flex items-center justify-between">
               <span className="text-xs text-slate-light">Planned Work for Today</span>
-              {dayTargets.length > 0 && isDraft && (
+              {reportTargets.length > 0 && isDraft && (
                 <button
                   type="button"
                   onClick={() => {
-                    const text = dayTargets
+                    const text = reportTargets
                       .map((t) => `• ${t.work_package ? `${t.work_package}: ` : ""}${t.description} (${qty(t.target_qty)} ${t.unit ?? ""})`)
                       .join("\n");
                     setNarrative({ ...narrative, planned_work: text });
@@ -1465,7 +1636,18 @@ export function ActiveDailyReport({
           </div>
 
           <div>
-            <span className="mb-1 block text-xs text-slate-light">Actual Work Completed</span>
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-xs text-slate-light">Actual Work Completed</span>
+              {reportTargets.length > 0 && isDraft && (
+                <button
+                  type="button"
+                  onClick={fillActualFromTargets}
+                  className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-signal hover:underline"
+                >
+                  <Target className="h-3 w-3" /> Fill from quantities done
+                </button>
+              )}
+            </div>
             <textarea
               disabled={!isDraft}
               value={narrative.actual_work}
@@ -1534,19 +1716,12 @@ export function ActiveDailyReport({
             </h3>
           </div>
           <span className="font-mono text-[10px] text-slate-light">
-            Camera Photos &middot; In-Browser Compression &middot; Offline Queued
+            Photos upload straight away &middot; Kept on the phone if there is no signal
           </span>
         </header>
 
         <SiteEvidenceCapture
           reportId={reportId}
-          projectId={String(activeReport.project_id || "")}
-          documents={detail?.documents?.map((d) => ({
-            id: String(d.id),
-            title: String(d.title || d.name || "Site Attachment"),
-            file_name: d.file_name ? String(d.file_name) : undefined,
-            created_at: d.created_at ? String(d.created_at) : undefined,
-          }))}
           onDocumentAdded={onRefresh}
         />
       </section>

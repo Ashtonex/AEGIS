@@ -246,6 +246,19 @@ export async function getAttachmentsForOperation(operationId: string): Promise<O
   });
 }
 
+export async function deleteAttachment(id: string): Promise<void> {
+  const db = await getDb();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.ATTACHMENTS, "readwrite");
+    const store = tx.objectStore(STORES.ATTACHMENTS);
+    const request = store.delete(id);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
 // ── Reference Caching Operations ──────────────────────────────────────────────
 
 export async function saveReference<T>(key: string, data: T, ttlMs = 86400000): Promise<void> {
