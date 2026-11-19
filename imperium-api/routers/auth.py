@@ -3,13 +3,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from schemas.auth import UserRegister, UserLogin, TokenRefresh
 from core.database import supabase, get_db
 from core.security import get_current_user, get_user_permission_keys
+from slowapi.util import get_remote_address
+# Anonymous endpoints are limited per client IP: the default key trusts any
+# bearer string, so a rotating junk header would get a fresh bucket each time.
 from core.rate_limit import limiter
 
 router = APIRouter()
 
 
 @router.post("/register")
-@limiter.limit("5/minute")
+@limiter.limit("5/minute", key_func=get_remote_address)
 async def register_user(request: Request, payload: UserRegister):
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -18,7 +21,7 @@ async def register_user(request: Request, payload: UserRegister):
 
 
 @router.post("/login")
-@limiter.limit("10/minute;3/second")
+@limiter.limit("10/minute;3/second", key_func=get_remote_address)
 async def login_user(request: Request, payload: UserLogin):
     try:
         res = supabase.auth.sign_in_with_password(
@@ -82,7 +85,7 @@ async def get_permissions(
 
 
 @router.post("/refresh")
-@limiter.limit("20/minute")
+@limiter.limit("20/minute", key_func=get_remote_address)
 async def refresh_token(request: Request, payload: TokenRefresh):
     try:
         res = supabase.auth.refresh_session(payload.refresh_token)

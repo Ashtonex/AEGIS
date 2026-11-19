@@ -1096,16 +1096,23 @@ async def receive_whatsapp_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     body = await request.body()
-    if settings.WHATSAPP_APP_SECRET:
-        signature = request.headers.get("x-hub-signature-256", "")
-        expected = "sha256=" + hmac.new(
-            settings.WHATSAPP_APP_SECRET.encode("utf-8"),
-            body,
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            raise HTTPException(status_code=403, detail="Invalid WhatsApp webhook signature.")
-    payload = json.loads(body.decode("utf-8") or "{}")
+    # Fail closed, like the Twilio webhooks: this endpoint is public, so
+    # without the app secret nothing can be verified and anyone who knows the
+    # phone number id could post fake inbound messages or status updates.
+    if not settings.WHATSAPP_APP_SECRET:
+        raise HTTPException(status_code=403, detail="WhatsApp webhook signature cannot be verified.")
+    signature = request.headers.get("x-hub-signature-256", "")
+    expected = "sha256=" + hmac.new(
+        settings.WHATSAPP_APP_SECRET.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=403, detail="Invalid WhatsApp webhook signature.")
+    try:
+        payload = json.loads(body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="WhatsApp webhook body is not valid JSON.")
     processed = 0
     entries = payload.get("entry") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
