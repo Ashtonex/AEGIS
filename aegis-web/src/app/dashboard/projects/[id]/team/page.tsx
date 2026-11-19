@@ -94,17 +94,18 @@ export default function ProjectTeamPage() {
   const targetId = (project as { id?: string } | null)?.id || projectId;
   const workforceQuery = useLiveQuery<{ roles: any[]; availableUsers: any[]; hires: any[] }>(
     targetId ? `project-workforce:${targetId}` : null,
-    async () => {
+    async (prev) => {
       const [rolesRes, hiresRes] = await Promise.allSettled([
         getProjectRoles(targetId),
         getProjectTeamHires(targetId),
       ]);
       const rolesData = rolesRes.status === "fulfilled" && rolesRes.value.success ? rolesRes.value.data : undefined;
       const hiresData = hiresRes.status === "fulfilled" && hiresRes.value.success ? hiresRes.value.data : undefined;
+      // A request that fails keeps its section's last value (no blanking).
       return {
-        roles: rolesData?.assignments || [],
-        availableUsers: rolesData?.available_users || [],
-        hires: hiresData?.hires || [],
+        roles: rolesData ? rolesData.assignments || [] : prev?.roles ?? [],
+        availableUsers: rolesData ? rolesData.available_users || [] : prev?.availableUsers ?? [],
+        hires: hiresData ? hiresData.hires || [] : prev?.hires ?? [],
       };
     },
     { tables: PROJECT_TEAM_TABLES, match: (change) => isProjectChange(change, targetId) },

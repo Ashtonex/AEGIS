@@ -62,7 +62,17 @@ TENDER_READ_KEYS: tuple[str, ...] = (
 # Parent ids the trigger copies from the row (migration 302). They travel
 # with the event so an open record page can tell that a change concerns it
 # (e.g. a requirement of the tender on screen) without a fetch. Ids only.
-PARENT_KEYS: tuple[str, ...] = ("project_id", "tender_id", "opportunity_id", "entity_type", "entity_id")
+PARENT_KEYS: tuple[str, ...] = (
+    "project_id",
+    "tender_id",
+    "opportunity_id",
+    "entity_type",
+    "entity_id",
+    # Migration 304: payments in a batch, approval steps/decisions, payroll lines.
+    "batch_id",
+    "approval_instance_id",
+    "payroll_run_id",
+)
 
 # core.document_links rows for these entity types are not project-scoped
 # report evidence: they go out as a plain refresh signal to anyone who can
@@ -112,6 +122,16 @@ PROJECT_SCOPED_SIGNAL_TABLES: frozenset[str] = frozenset({
 # one event (op "BULK" when more than one row changed), so each socket gets
 # one refresh instead of hundreds of messages.
 SCOPED_SIGNAL_WINDOW_SECONDS = 0.15
+
+# Org-wide tables that are written in bulk (a payroll run computing a line
+# per employee, a payment batch adding its items). Their signals are
+# coalesced the same way, grouped by the parent the screen shows (the run or
+# batch), but go to every permitted user rather than per project.
+COALESCED_SIGNAL_GROUP_KEY: dict[str, str] = {
+    "finance.payroll_items": "payroll_run_id",
+    "finance.supplier_payment_items": "batch_id",
+    "finance.payable_events": "batch_id",
+}
 
 
 def _parent_keys(data: dict[str, Any]) -> dict[str, Any]:
@@ -167,6 +187,26 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "finance.project_money_entries": ("finance.petty_cash.read", "finance.cash.read"),
     "finance.project_forecasts": ("executive.view_dashboard",),
     "fleet.fleet_assignments": ("fleet.read",),
+    # Approvals and payment controls (migration 304; payable_events' trigger
+    # dates from 247 but was never relayed). Same keys as the endpoints:
+    # pending approvals (executive), supplier payments and payables (cash),
+    # payroll runs, vendor and client payment requests.
+    "core.approval_instances": ("executive.view_dashboard",),
+    "core.approval_steps": ("executive.view_dashboard",),
+    "core.approval_decisions": ("executive.view_dashboard",),
+    "finance.supplier_payment_batches": ("finance.cash.read", "finance.supplier_payment.post"),
+    "finance.supplier_payment_items": ("finance.cash.read", "finance.supplier_payment.post"),
+    "finance.payable_events": ("finance.cash.read", "finance.supplier_payment.post"),
+    "finance.payroll_runs": ("finance.payroll.read",),
+    "finance.payroll_items": ("finance.payroll.read",),
+    "finance.vendor_payment_requests": ("finance.vendor_payment.clear", "finance.cash.read"),
+    "finance.client_payment_requests": ("finance.cash.read",),
+    "finance.payments": ("finance.cash.read",),
+    # Queue-only sources (migration 304): gated for executive readers below.
+    "crm.subcontractors": ("executive.view_dashboard",),
+    "finance.company_budgets": ("executive.view_dashboard",),
+    "finance.management_accounts_packs": ("executive.view_dashboard",),
+    "hr.leave_requests": ("executive.view_dashboard",),
     "core.internal_messages": ("internal_messages.read",),
     "core.documents": ("documents.read",),
     # Messages page and daily-report evidence (migration 301). Both push the
@@ -224,6 +264,31 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "finance.commitments": ("finance.commitment.read",),
     "finance.ccb_monitor_findings": ("finance.ccb_findings.read",),
 }
+
+# Every source of the executive pending-approvals queue (routers/executive.py
+# _PENDING_APPROVAL_SOURCES, gated by executive.view_dashboard): executive
+# readers get these tables' signals too, so the queue refreshes when an item
+# enters or leaves its pending state even without the module's own key.
+APPROVAL_QUEUE_SOURCE_TABLES: tuple[str, ...] = (
+    "core.approval_instances",
+    "crm.subcontractors",
+    "finance.company_budgets",
+    "finance.journal_entries",
+    "finance.management_accounts_packs",
+    "finance.payroll_runs",
+    "finance.supplier_payment_batches",
+    "finance.variations",
+    "fleet.maintenance_work_orders",
+    "fleet.plant_requests",
+    "hr.leave_requests",
+    "procurement.purchase_orders",
+    "procurement.purchase_requisitions",
+    "procurement.supplier_invoices",
+)
+for _table in APPROVAL_QUEUE_SOURCE_TABLES:
+    _keys = TABLE_PERMISSION_MAP[_table]
+    if "executive.view_dashboard" not in _keys:
+        TABLE_PERMISSION_MAP[_table] = (*_keys, "executive.view_dashboard")
 
 # How long a user's visible-project set is reused before it is looked up
 # again. A new project assignment reaches live push within this window.
@@ -390,11 +455,24 @@ async def _scope_filter(
 _pending_scoped: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
-def queue_scoped_signal(table: str, org_id: str, permission_keys: tuple[str, ...], data: dict[str, Any]) -> None:
-    """Batches a project-scoped change signal; the first one in a window
-    schedules the send, later ones only update the pending event."""
-    project_id = str(data["project_id"]) if data.get("project_id") else ""
-    key = (org_id, table, project_id)
+def queue_scoped_signal(
+    table: str,
+    org_id: str,
+    permission_keys: tuple[str, ...],
+    data: dict[str, Any],
+    scoped: bool = True,
+) -> None:
+    """Batches a change signal; the first one in a window schedules the
+    send, later ones only update the pending event. Scoped signals group by
+    project and go to users who see it; unscoped ones (bulk org-wide tables)
+    group by their parent (COALESCED_SIGNAL_GROUP_KEY) and go to everyone
+    permitted."""
+    if scoped:
+        group = str(data["project_id"]) if data.get("project_id") else ""
+    else:
+        parent = COALESCED_SIGNAL_GROUP_KEY.get(table, "")
+        group = "*" + (str(data.get(parent)) if parent and data.get(parent) else "")
+    key = (org_id, table, group)
     pending = _pending_scoped.get(key)
     if pending is not None:
         pending["count"] += 1
@@ -416,9 +494,11 @@ async def _flush_scoped_signal(key: tuple[str, str, str], permission_keys: tuple
     if pending["count"] > 1:
         event["op"] = "BULK"
         event["count"] = pending["count"]
-    org_id, _table, project_id = key
+    org_id, _table, group = key
     try:
-        targets = await _scope_filter(await manager.eligible(org_id, permission_keys), project_id or None)
+        targets = await manager.eligible(org_id, permission_keys)
+        if not group.startswith("*"):  # project-scoped
+            targets = await _scope_filter(targets, group or None)
     except Exception:
         logger.exception("Live scoped signal failed", table=key[1])
         return
@@ -563,6 +643,9 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
         parents = _parent_keys(data)
         if table in PROJECT_SCOPED_SIGNAL_TABLES:
             queue_scoped_signal(table, str(org_id), permission_keys, data)
+            return
+        if table in COALESCED_SIGNAL_GROUP_KEY:
+            queue_scoped_signal(table, str(org_id), permission_keys, data, scoped=False)
             return
         if table == "core.document_links" and data.get("entity_type") == "project":
             # A project's own files: refresh signal, scoped to that project

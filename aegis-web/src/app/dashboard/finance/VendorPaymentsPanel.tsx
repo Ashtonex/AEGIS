@@ -5,6 +5,10 @@ import { Banknote, Loader2, RefreshCw } from "lucide-react";
 
 import { clearFinanceVendorPaymentRequest, createDocument, getFinanceVendorPaymentRequests } from "@/lib/api";
 import { PortalDocumentUpload, type UploadedDocumentResult } from "@/components/portal/PortalDocumentUpload";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+
+// Stable empty list while live data loads.
+const NO_ROWS: any[] = [];
 
 type RecordData = Record<string, any>;
 
@@ -20,27 +24,26 @@ function dateValue(value: unknown) {
 }
 
 export function VendorPaymentsPanel() {
-  const [requests, setRequests] = useState<RecordData[]>([]);
-  const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [clearingId, setClearingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await getFinanceVendorPaymentRequests();
-      setRequests(res.data ?? []);
-    } catch {
-      setNotice("Vendor payment requests could not be loaded.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Live: a vendor's payment request appears (and clears) as it happens.
+  const requestsQuery = useLiveQuery<any[]>(
+    "finance-vendor-payment-requests",
+    async () => (await getFinanceVendorPaymentRequests()).data ?? [],
+    { tables: ["finance.vendor_payment_requests", "finance.payments"] },
+  );
+  const requests = requestsQuery.data ?? NO_ROWS;
+  const loading = requestsQuery.isLoading && requestsQuery.data === undefined;
+  const { mutate: refreshRequests } = requestsQuery;
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (requestsQuery.error) setNotice("Vendor payment requests could not be loaded.");
+  }, [requestsQuery.error]);
+  // Kept for the existing call sites after this user's own actions.
+  const load = useCallback(async () => {
+    await refreshRequests();
+  }, [refreshRequests]);
 
   const openRequests = requests.filter((r) => r.status === "submitted" || r.status === "acknowledged");
   const clearedRequests = requests.filter((r) => r.status === "cleared");

@@ -31,6 +31,12 @@ export type LiveChange = {
   opportunity_id?: string;
   entity_type?: string;
   entity_id?: string;
+  /** Migration 304: payment batch, approval instance, payroll run. */
+  batch_id?: string;
+  approval_instance_id?: string;
+  payroll_run_id?: string;
+  /** Set when the server coalesced a burst (op "BULK"). */
+  count?: number;
 };
 
 type LiveEvent = { type: "notification"; data: Record<string, unknown> } | LiveChange;
@@ -306,11 +312,16 @@ export type LiveQueryOptions<T> = {
  */
 export function useLiveQuery<T>(
   key: string | null,
-  fetcher: () => Promise<T>,
+  /** Gets the data. `previous` is what is on screen now (undefined on the
+   * first load): a fetcher combining several requests should keep a
+   * section's previous value when only that request fails, so a background
+   * refresh never blanks part of the page. */
+  fetcher: (previous: T | undefined) => Promise<T>,
   { tables, match, config }: LiveQueryOptions<T>,
 ): SWRResponse<T> {
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
+  const dataRef = useRef<T | undefined>(undefined);
   // The SWR cache is shared by the whole tab. Scoping every key to the
   // signed-in user and organisation means a different account signing in
   // here can never be shown the previous account's cached records (nor
@@ -320,7 +331,10 @@ export function useLiveQuery<T>(
   const appMetadata = (session?.user?.app_metadata ?? {}) as { org_id?: string; organization_id?: string };
   const orgId = appMetadata.org_id ?? appMetadata.organization_id ?? "";
   const scopedKey = key && userId ? `${userId}:${orgId}:${key}` : null;
-  const response = useSWR<T>(scopedKey, () => fetcherRef.current(), { keepPreviousData: true, ...config });
+  const response = useSWR<T>(scopedKey, () => fetcherRef.current(dataRef.current), { keepPreviousData: true, ...config });
+  // keepPreviousData shows the last key's data while a new key first loads
+  // (isLoading); that must never be handed to the new key's fetcher.
+  dataRef.current = response.isLoading ? undefined : response.data;
   const { mutate } = response;
   const matchRef = useRef(match);
   matchRef.current = match;

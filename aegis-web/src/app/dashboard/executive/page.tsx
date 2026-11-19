@@ -10,7 +10,8 @@ import { TodayPanel } from "./TodayPanel";
 import { LeadershipAccountabilityModal } from "@/components/projects/LeadershipAccountabilityModal";
 import { ManpowerScenarioCalculator } from "@/components/projects/ManpowerScenarioCalculator";
 import { useAuth } from "@/lib/auth/AuthContext";
-import { useLiveTable } from "@/lib/live/LiveDataProvider";
+import { useLiveRefresh, useLiveTable } from "@/lib/live/LiveDataProvider";
+import { APPROVAL_TABLES } from "@/lib/live/liveTables";
 import {
   getExecutiveOverviewBundle,
   getActiveExecutiveProjects,
@@ -1305,6 +1306,11 @@ function PendingApprovalsPanel() {
       setLoading(false);
     }
   }, []);
+
+  // Live: an item lands in (or leaves) the queue the moment anyone submits,
+  // approves or rejects it. fetchApprovals keeps the list on screen while it
+  // refetches, so this is a quiet refresh.
+  useLiveRefresh(APPROVAL_TABLES, undefined, () => void fetchApprovals());
 
   useEffect(() => {
     fetchApprovals();

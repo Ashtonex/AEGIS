@@ -282,9 +282,9 @@ class LiveRecordRelayTest(unittest.TestCase):
         self.assertEqual(site.sent, [])
 
 
-class ProjectScopedSignalTest(unittest.TestCase):
-    """Wave 2: plain change signals on project tables go only to users who
-    may see the project, and a burst for one project becomes one event."""
+class _SignalHarness(unittest.TestCase):
+    """Fake sockets, project scopes and a short coalescing window for the
+    batched-signal tests below. Holds no tests itself."""
 
     def setUp(self):
         self.manager = realtime.ConnectionManager()
@@ -314,6 +314,11 @@ class ProjectScopedSignalTest(unittest.TestCase):
 
     def _notify(self, **data):
         realtime._on_notification(None, 0, realtime.LIVE_CHANGES_CHANNEL, json.dumps({"organization_id": ORG, **data}))
+
+
+class ProjectScopedSignalTest(_SignalHarness):
+    """Wave 2: plain change signals on project tables go only to users who
+    may see the project, and a burst for one project becomes one event."""
 
     def test_signal_goes_only_to_users_who_see_the_project(self):
         async def scenario():
@@ -374,7 +379,62 @@ class ProjectScopedSignalTest(unittest.TestCase):
         self.assertEqual(run(scenario()).sent, [])
 
 
+class BulkOrgSignalTest(_SignalHarness):
+    """Wave 3: org-wide tables written in bulk (payroll lines, payment batch
+    items) coalesce per parent run/batch and go to every permitted user."""
+
+    def test_payroll_run_lines_become_one_event_for_payroll_readers(self):
+        async def scenario():
+            payroll = await self._register("u-a", perms=("finance.payroll.read",))
+            other = await self._register("u-b", perms=("projects.read",))
+            for i in range(200):
+                self._notify(table="finance.payroll_items", op="INSERT", id=f"pi{i}", payroll_run_id="run-1")
+            await asyncio.sleep(0.1)
+            return payroll, other
+
+        payroll, other = run(scenario())
+        self.assertEqual(len(payroll.sent), 1)
+        e = payroll.sent[0]
+        self.assertEqual((e["op"], e["count"], e["payroll_run_id"]), ("BULK", 200, "run-1"))
+        self.assertEqual(other.sent, [])
+
+    def test_separate_batches_stay_separate(self):
+        async def scenario():
+            cash = await self._register("u-a", perms=("finance.cash.read",))
+            for batch in ("b1", "b2"):
+                self._notify(table="finance.supplier_payment_items", op="INSERT", id=f"x-{batch}", batch_id=batch)
+            await asyncio.sleep(0.1)
+            return cash
+
+        self.assertEqual(sorted(e["batch_id"] for e in run(scenario()).sent), ["b1", "b2"])
+
+    def test_approval_step_carries_its_instance(self):
+        async def scenario():
+            exec_user = await self._register("u-office", perms=("executive.view_dashboard",))
+            self._notify(table="core.approval_steps", op="UPDATE", id="s1", approval_instance_id="ai-1")
+            for _ in range(5):
+                await asyncio.sleep(0)
+            return exec_user
+
+        sent = run(scenario()).sent
+        self.assertEqual([(e["table"], e["approval_instance_id"]) for e in sent], [("core.approval_steps", "ai-1")])
+
+
 class LiveRecordContractTest(unittest.TestCase):
+    def test_approval_queue_sources_reach_executive_readers(self):
+        # The pending-approvals queue is gated by executive.view_dashboard, so
+        # every table feeding it must signal executive readers too.
+        for table in realtime.APPROVAL_QUEUE_SOURCE_TABLES:
+            self.assertIn("executive.view_dashboard", realtime.TABLE_PERMISSION_MAP[table], table)
+
+    def test_approval_queue_sources_match_the_endpoint(self):
+        # Every table _PENDING_APPROVAL_SOURCES reads is a queue source here.
+        src = (Path(__file__).resolve().parents[1] / "routers" / "executive.py").read_text(encoding="utf-8")
+        start = src.index("_PENDING_APPROVAL_SOURCES")
+        end = src.index("def _pending_approval_item", start)
+        read = set(re.findall(r"FROM ([a-z_]+\.[a-z_]+)", src[start:end]))
+        self.assertEqual(sorted(read - set(realtime.APPROVAL_QUEUE_SOURCE_TABLES)), [])
+
     def test_every_loader_table_is_relayed(self):
         for table in live_records.LOADERS:
             self.assertIn(table, realtime.TABLE_PERMISSION_MAP, table)

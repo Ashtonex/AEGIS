@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { getFinanceOpsDashboard } from "@/lib/api";
 import { FinanceActionInbox, type FinanceActionItem } from "./FinanceActionInbox";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { FINANCE_OVERVIEW_TABLES } from "@/lib/live/liveTables";
 
 type RecordData = Record<string, any>;
 
@@ -122,19 +124,20 @@ export function FinanceOverviewDashboard({
   unassignedBankOut: number;
   cashWithoutUse?: number;
 }) {
-  const [data, setData] = useState<RecordData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    getFinanceOpsDashboard({ department_id: departmentId || undefined, months: 12 })
-      .then((res) => { if (!cancelled) { setData(res.data || null); setError(null); } })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Could not load the finance dashboard."); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [departmentId]);
+  // Live: the overview and its action inbox refresh when anything they
+  // count changes - a payment held or released, an invoice recorded, a
+  // claim certified, a payroll run approved - batched into one refetch.
+  const dashboardQuery = useLiveQuery<RecordData | null>(
+    `finance-ops-dashboard:${departmentId || "all"}`,
+    async () => (await getFinanceOpsDashboard({ department_id: departmentId || undefined, months: 12 })).data || null,
+    { tables: FINANCE_OVERVIEW_TABLES },
+  );
+  const data = dashboardQuery.data ?? null;
+  const loading = dashboardQuery.isLoading && dashboardQuery.data === undefined;
+  const error = dashboardQuery.error && dashboardQuery.data === undefined
+    ? (dashboardQuery.error instanceof Error ? dashboardQuery.error.message : "Could not load the finance dashboard.")
+    : null;
+  const { mutate: refreshDashboard } = dashboardQuery;
 
   const position = useMemo(() => {
     const sum = (pick: (p: RecordData) => unknown) => projectSummaries.reduce((s, p) => s + Number(pick(p) || 0), 0);
@@ -312,11 +315,7 @@ export function FinanceOverviewDashboard({
   }, [unassignedBankOut, cashWithoutUse, overduePayables, position, draftBudgets, claims, data]);
 
   const fetchDashboard = () => {
-    setLoading(true);
-    getFinanceOpsDashboard({ department_id: departmentId || undefined, months: 12 })
-      .then((res) => { setData(res.data || null); setError(null); })
-      .catch((err) => { setError(err instanceof Error ? err.message : "Could not load the finance dashboard."); })
-      .finally(() => { setLoading(false); });
+    void refreshDashboard();
   };
 
   return (
