@@ -1,11 +1,11 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   AlertTriangle,
-  CheckCircle2,
   ExternalLink,
   FileText,
   Inbox,
@@ -26,6 +26,44 @@ import {
   getPortalInbox,
   getUsers,
 } from "@/lib/api";
+import { useLiveReconnect, useLiveRecord } from "@/lib/live/LiveDataProvider";
+
+const MESSAGE_LIMIT = 200;
+
+type CommunicationDraft = Parameters<typeof createCrmCommunication>[0];
+
+// A message this tab has sent that the server hasn't confirmed yet. It shows
+// at once, and `localStatus` drives the "Sending" / "Not sent" label.
+type LedgerMessage = PortalCommunicationMessage & {
+  localStatus?: "sending" | "failed";
+  localDraft?: CommunicationDraft;
+};
+
+function messageTime(message: PortalCommunicationMessage): number {
+  const value = message.started_at || message.created_at;
+  return value ? new Date(value).getTime() : 0;
+}
+
+/** The local id this tab gave a send, echoed back in the stored row's
+ * metadata, so a pushed or refetched row can be matched to its optimistic copy. */
+function clientRefOf(message: PortalCommunicationMessage): string | undefined {
+  const ref = (message as { metadata?: { client_ref?: unknown } }).metadata?.client_ref;
+  return typeof ref === "string" ? ref : undefined;
+}
+
+/** Puts a row into the ledger, replacing any copy with the same id (or the
+ * optimistic copy it confirms), and keeps unconfirmed sends first, then
+ * newest first. */
+function upsertMessage(current: LedgerMessage[], incoming: LedgerMessage): LedgerMessage[] {
+  const ref = incoming.localStatus ? undefined : clientRefOf(incoming);
+  const next = [incoming, ...current.filter((item) => item.id !== incoming.id && (!ref || item.id !== ref))];
+  next.sort((a, b) => {
+    if (a.localStatus && !b.localStatus) return -1;
+    if (b.localStatus && !a.localStatus) return 1;
+    return messageTime(b) - messageTime(a);
+  });
+  return next.slice(0, MESSAGE_LIMIT);
+}
 
 type UserOption = {
   id: string;
@@ -58,13 +96,11 @@ function statusTone(status?: string) {
 }
 
 export default function DashboardMessagesPage() {
-  const [messages, setMessages] = useState<PortalCommunicationMessage[]>([]);
+  const [messages, setMessages] = useState<LedgerMessage[]>([]);
   const [portalItems, setPortalItems] = useState<PortalInboxItem[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "internal" | "client">("all");
   const [portalFilter, setPortalFilter] = useState<"all" | "client" | "supplier" | "payments" | "variations">("all");
   const [search, setSearch] = useState("");
@@ -75,18 +111,25 @@ export default function DashboardMessagesPage() {
     priority: "normal",
   });
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const [communicationResult, userResult, portalResult] = await Promise.allSettled([
-        getCrmCommunications({ limit: 200 }),
+        getCrmCommunications({ limit: MESSAGE_LIMIT }),
         getUsers(),
         getPortalInbox(150),
       ]);
 
       if (communicationResult.status === "fulfilled" && Array.isArray(communicationResult.value.data)) {
-        setMessages(communicationResult.value.data);
+        const fetched = communicationResult.value.data as LedgerMessage[];
+        // Keep this tab's unconfirmed sends, except any the fetch shows were
+        // stored after all (matched by the client_ref sent with them).
+        const storedRefs = new Set(fetched.map(clientRefOf).filter((ref): ref is string => !!ref));
+        storedRefs.forEach((ref) => confirmedRefsRef.current.add(ref));
+        setMessages((current) =>
+          [...current.filter((item) => item.localStatus && !storedRefs.has(item.id)), ...fetched].slice(0, MESSAGE_LIMIT),
+        );
       } else {
         setMessages([]);
         setError("Communications could not be loaded.");
@@ -119,6 +162,40 @@ export default function DashboardMessagesPage() {
     void load();
   }, [load]);
 
+  // Someone else's message (or a portal message) arrives as the full row,
+  // so it shows straight away without a refetch through the API proxy.
+  const portalRefreshRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (portalRefreshRef.current) window.clearTimeout(portalRefreshRef.current);
+  }, []);
+  useLiveRecord<PortalCommunicationMessage>("crm.communication_events", (op, id, row) => {
+    if (op === "DELETE") {
+      setMessages((current) => current.filter((item) => item.id !== id));
+      return;
+    }
+    if (!row) {
+      // The server couldn't attach the row (or it was soft-deleted): refetch.
+      void load(true);
+      return;
+    }
+    const ref = clientRefOf(row);
+    if (ref) confirmedRefsRef.current.add(ref);
+    setMessages((current) => upsertMessage(current, row));
+    if (row.channel === "portal_message") {
+      // The portal inbox is a separate read model; refresh it once a burst settles.
+      if (portalRefreshRef.current) window.clearTimeout(portalRefreshRef.current);
+      portalRefreshRef.current = window.setTimeout(() => {
+        void getPortalInbox(150)
+          .then((res) => {
+            if (Array.isArray(res.data)) setPortalItems(res.data);
+          })
+          .catch(() => undefined);
+      }, 400);
+    }
+  });
+  // Catch up on anything sent while this tab's connection was down.
+  useLiveReconnect(() => void load(true));
+
   const filteredMessages = useMemo(() => {
     const term = search.trim().toLowerCase();
     return messages.filter((message) => {
@@ -147,38 +224,85 @@ export default function DashboardMessagesPage() {
     });
   }, [portalFilter, portalItems]);
 
-  async function submitInternalMessage(event: FormEvent<HTMLFormElement>) {
+  // client_refs whose stored row has been seen (pushed or fetched): a send
+  // that errors afterwards was in fact stored, so it must not show "Not sent".
+  const confirmedRefsRef = useRef(new Set<string>());
+
+  const sendDraft = useCallback(async (tempId: string, draft: CommunicationDraft) => {
+    try {
+      const res = await createCrmCommunication(draft);
+      const realId = (res?.data as { id?: string } | undefined)?.id;
+      setMessages((current) => {
+        const temp = current.find((item) => item.id === tempId);
+        const withoutTemp = current.filter((item) => item.id !== tempId);
+        // The live push often lands before this response does.
+        if (!temp || !realId || withoutTemp.some((item) => item.id === realId)) return withoutTemp;
+        return upsertMessage(withoutTemp, { ...temp, id: realId, localStatus: undefined, localDraft: undefined });
+      });
+    } catch (saveError) {
+      // The server may have stored it and only the response was lost: if the
+      // stored row has already arrived (live push or refetch), it was sent.
+      if (confirmedRefsRef.current.has(tempId)) return;
+      const message = saveError instanceof ApiError ? saveError.message : "The message could not be sent.";
+      setMessages((current) =>
+        current.map((item) => (item.id === tempId ? { ...item, localStatus: "failed" } : item)),
+      );
+      toast.error("Message not sent", { description: message });
+    }
+  }, []);
+
+  function submitInternalMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const body = form.body.trim();
     if (!body) {
-      setError("Message body is required.");
+      toast.error("Write a message first.");
       return;
     }
 
-    setSaving(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await createCrmCommunication({
+    const recipient = users.find((item) => item.id === form.recipient_user_id);
+    const subject = form.subject.trim() || "Internal message";
+    const tempId = `local-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
+    const draft = {
+      channel: "manual_note",
+      direction: "internal",
+      recipient_user_id: form.recipient_user_id || null,
+      subject,
+      body,
+      status: "sent",
+      // client_ref comes back on the stored row, which is how a pushed or
+      // refetched row replaces this optimistic copy.
+      metadata: { source: "dashboard_messages", priority: form.priority, client_ref: tempId },
+    } as CommunicationDraft;
+    const now = new Date().toISOString();
+    // Shown before the server answers, so sending feels instant even
+    // through the ~0.7 s API proxy.
+    setMessages((current) =>
+      upsertMessage(current, {
+        id: tempId,
         channel: "manual_note",
         direction: "internal",
-        recipient_user_id: form.recipient_user_id || null,
-        subject: form.subject.trim() || "Internal message",
+        subject,
         body,
         status: "sent",
-        metadata: { source: "dashboard_messages", priority: form.priority },
-      });
-      setForm({ recipient_user_id: "", subject: "", body: "", priority: "normal" });
-      setNotice("Internal message recorded.");
-      await load();
-    } catch (saveError) {
-      const message = saveError instanceof ApiError
-        ? saveError.message
-        : "Internal message could not be recorded.";
-      setError(message);
-    } finally {
-      setSaving(false);
-    }
+        started_at: now,
+        created_at: now,
+        actor_name: "You",
+        recipient_name: recipient?.full_name || recipient?.email,
+        localStatus: "sending",
+        localDraft: draft,
+      }),
+    );
+    setForm((current) => ({ ...current, subject: "", body: "" }));
+    void sendDraft(tempId, draft);
+  }
+
+  function retrySend(message: LedgerMessage) {
+    const draft = message.localDraft;
+    if (!draft) return;
+    setMessages((current) =>
+      current.map((item) => (item.id === message.id ? { ...item, localStatus: "sending" } : item)),
+    );
+    void sendDraft(message.id, draft);
   }
 
   return (
@@ -214,12 +338,6 @@ export default function DashboardMessagesPage() {
         <div className="mb-5 border border-red-500/30 bg-red-950/30 p-4 text-sm text-red-200 flex gap-3">
           <AlertTriangle className="w-5 h-5 shrink-0" />
           <span>{error}</span>
-        </div>
-      )}
-      {notice && (
-        <div className="mb-5 border border-green-500/30 bg-green-950/20 p-4 text-sm text-green-200 flex gap-3">
-          <CheckCircle2 className="w-5 h-5 shrink-0" />
-          <span>{notice}</span>
         </div>
       )}
 
@@ -347,12 +465,30 @@ export default function DashboardMessagesPage() {
           ) : (
             <div className="divide-y divide-ink-mid">
               {filteredMessages.map((message) => (
-                <article key={message.id} className="p-5">
+                <article
+                  key={message.id}
+                  data-message-id={message.id}
+                  className={message.localStatus === "sending" ? "p-5 opacity-70" : "p-5"}
+                >
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-[10px] uppercase text-signal">{channelLabel(message.channel)}</span>
                         <span className="font-mono text-[10px] uppercase text-slate-light">{message.direction}</span>
+                        {message.localStatus === "sending" && (
+                          <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase text-slate-light">
+                            <Loader2 className="h-3 w-3 animate-spin" /> Sending
+                          </span>
+                        )}
+                        {message.localStatus === "failed" && (
+                          <button
+                            type="button"
+                            onClick={() => retrySend(message)}
+                            className="inline-flex items-center gap-1 border border-red-500/40 px-2 py-0.5 font-mono text-[10px] uppercase text-red-300 hover:border-red-400"
+                          >
+                            <RefreshCw className="h-3 w-3" /> Not sent, retry
+                          </button>
+                        )}
                       </div>
                       <h3 className="text-base font-semibold mt-2">{message.subject || "Communication"}</h3>
                       <p className="text-sm text-slate-light mt-2 leading-relaxed">{message.body || "No body recorded."}</p>
@@ -427,10 +563,9 @@ export default function DashboardMessagesPage() {
           />
           <button
             type="submit"
-            disabled={saving}
-            className="mt-4 w-full bg-signal text-ink py-3 font-mono text-xs tracking-widest uppercase disabled:opacity-50 flex items-center justify-center"
+            className="mt-4 w-full bg-signal text-ink py-3 font-mono text-xs tracking-widest uppercase flex items-center justify-center"
           >
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : "Record message"}
+            Send message
           </button>
         </form>
       </section>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText, Folder, Loader2, Plus, RefreshCw, Search,
   X, Grid, List, Download, Share2, Upload, History,
@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
-import { useLiveTable } from "@/lib/live/LiveDataProvider";
+import { useLiveReconnect, useLiveRecord } from "@/lib/live/LiveDataProvider";
 import { supabase } from "@/lib/supabase";
 import {
   getDocuments,
@@ -130,8 +130,8 @@ function DocumentsWorkspace() {
   const [uploading, setUploading] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const [docsRes, projRes] = await Promise.allSettled([
@@ -164,7 +164,33 @@ function DocumentsWorkspace() {
     void loadData();
   }, [loadData]);
 
-  useLiveTable("core.documents", () => void loadData());
+  // A document someone else adds arrives as the full row. With no filter
+  // applied it goes straight into the list. With a filter, the server decides
+  // whether it matches, so refetch quietly (no spinner).
+  const unfiltered =
+    activeCategory === "all" && statusFilter === "all" && classFilter === "all" && !searchQuery && projectFilter === "all";
+  const quietRefreshRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (quietRefreshRef.current) window.clearTimeout(quietRefreshRef.current);
+  }, []);
+  const quietRefresh = useCallback(() => {
+    if (quietRefreshRef.current) window.clearTimeout(quietRefreshRef.current);
+    quietRefreshRef.current = window.setTimeout(() => void loadData(true), 400);
+  }, [loadData]);
+  useLiveRecord<RecordData>("core.documents", (op, id, row) => {
+    if (op === "DELETE" || (row === undefined && op === "UPDATE")) {
+      // A soft delete is an UPDATE whose row no longer loads.
+      setDocuments((current) => current.filter((doc) => String(doc.id) !== id));
+      if (op !== "DELETE") quietRefresh();
+      return;
+    }
+    if (!row || !unfiltered) {
+      quietRefresh();
+      return;
+    }
+    setDocuments((current) => [row, ...current.filter((doc) => String(doc.id) !== id)]);
+  });
+  useLiveReconnect(() => void loadData(true));
 
   const loadDocDetail = async (id: string) => {
     setSelectedDocId(id);

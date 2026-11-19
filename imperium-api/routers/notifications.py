@@ -216,7 +216,9 @@ async def notifications_ws(websocket: WebSocket, token: str = Query(...)):
 
     user_id = user["user_id"]
     await websocket.accept()
-    await realtime_manager.register(websocket, user_id, user["org_id"], permission_keys)
+    # The user dict travels with the socket so live records can apply the
+    # same project-scope rule as REST (core/realtime.py visible_projects).
+    await realtime_manager.register(websocket, user_id, user["org_id"], permission_keys, user=user)
     try:
         while True:
             # This channel is push-only from the server; the receive loop

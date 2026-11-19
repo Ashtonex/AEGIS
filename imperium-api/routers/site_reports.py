@@ -348,6 +348,9 @@ class EvidenceUploadPayload(Payload):
     mime_type: Optional[str] = Field(default=None, max_length=100)
     size_bytes: int = Field(default=0, ge=0)
     link_role: Literal["evidence_photo", "delivery_docket", "evidence"] = "evidence_photo"
+    # Small JPEG preview the browser made before uploading, so other viewers
+    # see a picture straight away without fetching the full-size original.
+    thumbnail_path: Optional[str] = Field(default=None, max_length=520)
 
 
 class DecisionPayload(Payload):
@@ -3796,6 +3799,13 @@ async def attach_report_evidence(
             status_code=422,
             detail="storage_path must be inside this report's site-evidence folder.",
         )
+    if payload.thumbnail_path is not None and (
+        not payload.thumbnail_path.startswith(expected_prefix) or ".." in payload.thumbnail_path
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="thumbnail_path must be inside this report's site-evidence folder.",
+        )
     try:
         existing = (
             await db.execute(
@@ -3816,9 +3826,11 @@ async def attach_report_evidence(
                 await db.execute(
                     text("""
                 INSERT INTO core.file_attachments (
-                    organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes
+                    organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes,
+                    thumbnail_path
                 ) VALUES (
-                    :org_id, :user_id, :file_name, :storage_path, :mime_type, :size_bytes
+                    :org_id, :user_id, :file_name, :storage_path, :mime_type, :size_bytes,
+                    :thumbnail_path
                 ) RETURNING id
             """),
                     {
@@ -3828,6 +3840,7 @@ async def attach_report_evidence(
                         "storage_path": payload.storage_path,
                         "mime_type": payload.mime_type,
                         "size_bytes": payload.size_bytes,
+                        "thumbnail_path": payload.thumbnail_path,
                     },
                 )
             ).scalar()
@@ -3889,22 +3902,28 @@ async def attach_report_evidence(
     return result({"id": str(doc_id)}, "Evidence attached.")
 
 
-@router.get("/daily-reports/{report_id}/evidence")
-async def list_report_evidence(
-    report_id: UUID,
-    user: dict = Depends(require_permission("site_operations.daily_report.read")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Every photo/docket on this report with a short-lived view link. The
-    bucket is private, so links are minted here after the report-read and
-    project-scope checks; all of a report's files are signed in one call."""
-    await report_or_404(db, report_id, user["org_id"], user=user)
+async def load_report_evidence(
+    db: AsyncSession,
+    org_id: str,
+    *,
+    report_id: Any = None,
+    link_id: Any = None,
+) -> list[dict[str, Any]]:
+    """Evidence items for one report (or one document link), each with
+    short-lived view links for the file and its thumbnail. The bucket is
+    private, so all of the links are signed in one storage call. Callers must
+    already have checked report access. Shared by the evidence list and the
+    live push (core/live_records.py), so both send the same shape."""
+    if report_id is None and link_id is None:
+        return []
+    where = "dl.entity_id = :report_id" if report_id is not None else "dl.id = :link_id"
     rows = (
         await db.execute(
-            text("""
+            text(f"""
         SELECT d.id, d.title, COALESCE(fa.file_name, d.file_name) AS file_name,
                fa.mime_type, COALESCE(fa.size_bytes, d.file_size_bytes) AS size_bytes,
-               fa.storage_path, fa.provider, dl.link_role, dl.linked_at,
+               fa.storage_path, fa.thumbnail_path, fa.provider, dl.link_role, dl.linked_at,
+               dl.entity_id AS report_id, dl.project_id,
                u.full_name AS uploaded_by_name
         FROM core.document_links dl
         JOIN core.documents d ON d.id = dl.document_id
@@ -3912,18 +3931,20 @@ async def list_report_evidence(
         LEFT JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
         LEFT JOIN core.users u ON u.id = dl.linked_by
         WHERE dl.organization_id = :org_id AND dl.entity_type = 'daily_site_report'
-          AND dl.entity_id = :report_id AND dl.is_deleted = false
+          AND {where} AND dl.is_deleted = false
         ORDER BY dl.linked_at DESC
-    """),
-            {"report_id": report_id, "org_id": user["org_id"]},
+    """),  # nosec B608 - where is one of two fixed fragments above.
+            {"org_id": org_id, "report_id": report_id, "link_id": link_id},
         )
     ).mappings().all()
 
-    paths = [
-        row["storage_path"]
-        for row in rows
-        if row["storage_path"] and (row["provider"] or "supabase") == "supabase"
-    ]
+    paths: list[str] = []
+    for row in rows:
+        if (row["provider"] or "supabase") != "supabase":
+            continue
+        for key in ("storage_path", "thumbnail_path"):
+            if row[key]:
+                paths.append(row[key])
     url_by_path: dict[str, str] = {}
     if paths:
         try:
@@ -3937,11 +3958,17 @@ async def list_report_evidence(
                 if url:
                     url_by_path[path] = url
         except Exception:
-            logger.exception("Failed to sign site evidence URLs", report_id=str(report_id))
+            logger.exception(
+                "Failed to sign site evidence URLs",
+                report_id=str(report_id) if report_id else None,
+                link_id=str(link_id) if link_id else None,
+            )
 
-    items = [
+    return [
         {
             "id": str(row["id"]),
+            "report_id": str(row["report_id"]),
+            "project_id": str(row["project_id"]) if row["project_id"] else None,
             "title": row["title"],
             "file_name": row["file_name"],
             "mime_type": row["mime_type"],
@@ -3951,9 +3978,22 @@ async def list_report_evidence(
             "uploaded_by_name": row["uploaded_by_name"],
             "has_file": bool(row["storage_path"]),
             "url": url_by_path.get(row["storage_path"]) if row["storage_path"] else None,
+            "thumb_url": url_by_path.get(row["thumbnail_path"]) if row["thumbnail_path"] else None,
         }
         for row in rows
     ]
+
+
+@router.get("/daily-reports/{report_id}/evidence")
+async def list_report_evidence(
+    report_id: UUID,
+    user: dict = Depends(require_permission("site_operations.daily_report.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every photo/docket on this report with a short-lived view link, after
+    the report-read and project-scope checks."""
+    await report_or_404(db, report_id, user["org_id"], user=user)
+    items = await load_report_evidence(db, user["org_id"], report_id=report_id)
     return result(items, "Report evidence retrieved.", total=len(items))
 
 

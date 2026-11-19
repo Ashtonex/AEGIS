@@ -4,7 +4,8 @@ import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Camera, Upload, CheckCircle2, Loader2, FileText, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { fetchApi } from "@/lib/api/core";
-import { supabase } from "@/lib/supabase";
+import { getCachedAccessToken } from "@/lib/supabase";
+import { useLiveReconnect, useLiveRecord } from "@/lib/live/LiveDataProvider";
 import {
   saveAttachment,
   getAttachmentsForOperation,
@@ -23,6 +24,7 @@ type EvidenceRole = "evidence_photo" | "delivery_docket";
 
 interface ServerEvidence {
   id: string;
+  report_id?: string;
   title: string;
   file_name: string | null;
   mime_type: string | null;
@@ -32,6 +34,8 @@ interface ServerEvidence {
   uploaded_by_name: string | null;
   has_file: boolean;
   url: string | null;
+  /** Small preview the uploader's browser made; null for older files and non-images. */
+  thumb_url?: string | null;
 }
 
 interface LocalEvidence {
@@ -41,6 +45,8 @@ interface LocalEvidence {
   mimeType: string;
   previewUrl?: string;
   status: "waiting" | "uploading" | "failed";
+  /** 0-100 while the original is uploading. */
+  progress?: number;
 }
 
 const ROLE_LABEL: Record<string, string> = {
@@ -100,6 +106,84 @@ async function compressImage(file: File, maxDim = 1600, quality = 0.82): Promise
   });
 }
 
+/** A ~320 px JPEG preview, so other people's screens show the photo straight
+ * away instead of pulling the 1600 px original into a small tile. */
+async function makeThumbnail(blob: Blob, maxDim = 320, quality = 0.7): Promise<Blob | null> {
+  if (!blob.type.startsWith("image/")) return null;
+  return new Promise((resolve) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((out) => resolve(out), "image/jpeg", quality);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(null);
+    };
+    img.src = objectUrl;
+  });
+}
+
+/**
+ * Uploads one object to the private "documents" bucket the same way
+ * supabase-js `upload()` does (multipart POST with the user's token), but over
+ * XHR so the progress can be shown. A path that already exists counts as done:
+ * the path is derived from the file's own id, so it is this same file from an
+ * earlier, half-finished attempt.
+ */
+function putObject(path: string, blob: Blob, contentType: string, onProgress?: (percent: number) => void): Promise<void> {
+  const baseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  const token = getCachedAccessToken() || anonKey;
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${baseUrl}/storage/v1/object/documents/${encodedPath}`);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader("apikey", anonKey);
+    xhr.setRequestHeader("x-upsert", "false");
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+        return;
+      }
+      if (/exist|duplicate/i.test(xhr.responseText || "")) {
+        resolve();
+        return;
+      }
+      let message = `Storage upload failed (${xhr.status}).`;
+      try {
+        const parsed = JSON.parse(xhr.responseText || "{}");
+        message = parsed.message || parsed.error || message;
+      } catch {
+        // keep the status message
+      }
+      reject(new Error(message));
+    };
+    xhr.onerror = () => reject(new Error("The connection dropped during the upload."));
+    const body = new FormData();
+    body.append("cacheControl", "3600");
+    body.append("", new File([blob], path.split("/").pop() || "file", { type: contentType }));
+    xhr.send(body);
+  });
+}
+
 function extensionFor(name: string, mimeType: string): string {
   if (mimeType === "image/jpeg") return "jpg";
   const fromName = name.includes(".") ? name.split(".").pop() : "";
@@ -117,16 +201,29 @@ function isOnlineNow(): boolean {
  * it. The storage path is derived from the file's own id, so a retry after a
  * half-finished attempt lands on the same object and the same document.
  */
-async function uploadAttachment(reportId: string, att: OfflineAttachment): Promise<void> {
+async function uploadAttachment(
+  reportId: string,
+  att: OfflineAttachment,
+  onProgress?: (percent: number) => void,
+): Promise<void> {
   const mimeType = att.blob.type || att.mimeType || "application/octet-stream";
   const storagePath = `site-evidence/${reportId}/${att.id}.${extensionFor(att.name, mimeType)}`;
 
-  const { error: uploadError } = await supabase.storage
-    .from("documents")
-    .upload(storagePath, att.blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
-  if (uploadError && !/exist|duplicate/i.test(uploadError.message || "")) {
-    throw uploadError;
+  // The thumbnail goes first: it is a few KB, and a failure here only costs
+  // the preview, never the upload.
+  let thumbnailPath: string | null = null;
+  const thumb = await makeThumbnail(att.blob).catch(() => null);
+  if (thumb) {
+    const candidate = `site-evidence/${reportId}/${att.id}.thumb.jpg`;
+    try {
+      await putObject(candidate, thumb, "image/jpeg");
+      thumbnailPath = candidate;
+    } catch (err) {
+      console.warn("Thumbnail upload failed; continuing without it:", err);
+    }
   }
+
+  await putObject(storagePath, att.blob, mimeType, onProgress);
 
   const res = await fetchApi<ApiResponse<{ id: string }>>(
     `/api/v1/site-operations/daily-reports/${reportId}/evidence`,
@@ -138,6 +235,7 @@ async function uploadAttachment(reportId: string, att: OfflineAttachment): Promi
         mime_type: mimeType,
         size_bytes: att.size,
         link_role: att.linkRole === "delivery_docket" ? "delivery_docket" : "evidence_photo",
+        thumbnail_path: thumbnailPath,
       }),
       allowFallback: false,
     }
@@ -148,6 +246,12 @@ async function uploadAttachment(reportId: string, att: OfflineAttachment): Promi
   // Earlier builds queued a link request under the same id that the server
   // could never accept; clear it so it stops holding up the offline queue.
   await removeOperation(att.id).catch(() => undefined);
+}
+
+function upsertEvidence(current: ServerEvidence[], incoming: ServerEvidence): ServerEvidence[] {
+  const next = [incoming, ...current.filter((item) => item.id !== incoming.id)];
+  next.sort((a, b) => (b.linked_at ? Date.parse(b.linked_at) : 0) - (a.linked_at ? Date.parse(a.linked_at) : 0));
+  return next;
 }
 
 export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceCaptureProps) {
@@ -176,6 +280,21 @@ export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceC
     }
   }, [reportId]);
 
+  // A photo or docket added by anyone else (or by this user on another
+  // device) arrives as the finished item, signed links included, already
+  // filtered by report access and project scope on the server.
+  useLiveRecord<ServerEvidence & { deleted?: boolean }>("core.document_links", (_op, _id, item) => {
+    if (!item || item.report_id !== reportId) return;
+    if (item.deleted) {
+      // Tombstone: the file was removed from the report (or deleted).
+      setServerItems((current) => current.filter((doc) => doc.id !== item.id));
+      return;
+    }
+    setServerItems((current) => upsertEvidence(current, item));
+  });
+  // Catch up on anything added while this device's connection was down.
+  useLiveReconnect(() => void loadServer());
+
   const previewFor = useCallback((att: OfflineAttachment): string | undefined => {
     const type = att.blob.type || att.mimeType;
     if (!type.startsWith("image/")) return undefined;
@@ -200,6 +319,7 @@ export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceC
             mimeType: att.blob.type || att.mimeType,
             previewUrl: previewFor(att),
             status: online ? "uploading" : "waiting",
+            progress: 0,
           }))
         );
         if (!online || pending.length === 0) return;
@@ -208,7 +328,11 @@ export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceC
         let lastError = "";
         for (const att of pending) {
           try {
-            await uploadAttachment(reportId, att);
+            await uploadAttachment(reportId, att, (percent) =>
+              setLocalItems((prev) =>
+                prev.map((item) => (item.id === att.id ? { ...item, progress: percent } : item))
+              )
+            );
             sent += 1;
             setLocalItems((prev) => prev.filter((item) => item.id !== att.id));
           } catch (err) {
@@ -382,6 +506,18 @@ export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceC
               )}
               <div className="p-2 space-y-1">
                 <span className="truncate block font-mono text-[11px] text-paper">{item.name}</span>
+                {item.status === "uploading" && (
+                  <div
+                    className="h-1 w-full overflow-hidden rounded-full bg-ink-mid"
+                    role="progressbar"
+                    aria-valuenow={item.progress ?? 0}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label={`Uploading ${item.name}`}
+                  >
+                    <div className="h-full bg-signal transition-[width] duration-150" style={{ width: `${item.progress ?? 0}%` }} />
+                  </div>
+                )}
                 <div className="flex items-center justify-between text-[10px] font-mono">
                   <span className="text-slate">{(item.size / 1024).toFixed(0)} KB</span>
                   <span
@@ -394,7 +530,7 @@ export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceC
                     }
                   >
                     {item.status === "uploading"
-                      ? "Uploading"
+                      ? `Uploading ${item.progress ?? 0}%`
                       : item.status === "failed"
                       ? "Not uploaded"
                       : "Waiting for signal"}
@@ -407,13 +543,13 @@ export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceC
           {/* Stored on the server */}
           {serverItems.map((doc) => {
             const name = doc.file_name || doc.title;
-            const isImage = !!doc.url && (doc.mime_type || "").startsWith("image/");
+            const isImage = !!(doc.thumb_url || doc.url) && (doc.mime_type || "").startsWith("image/");
             const body = (
               <>
                 {isImage ? (
                   <div className="h-32 w-full bg-void overflow-hidden flex items-center justify-center">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={doc.url || ""} alt={name} loading="lazy" className="object-cover h-full w-full" />
+                    <img src={doc.thumb_url || doc.url || ""} alt={name} loading="lazy" className="object-cover h-full w-full" />
                   </div>
                 ) : (
                   <div className="h-32 w-full bg-void flex flex-col items-center justify-center gap-1.5">
