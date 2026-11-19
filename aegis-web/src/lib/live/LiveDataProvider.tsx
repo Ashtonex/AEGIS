@@ -11,12 +11,21 @@ import { resolveBackendOrigin } from "@/lib/backend-url";
 // system-wide table-change signals (see imperium-api/core/realtime.py).
 // A table-change event only ever carries {table, op, id} - never the row
 // itself - so a subscriber's job is to treat it as "go refetch", not to
-// read the new data out of the event.
+// read the new data out of the event. The exception is the tables in
+// imperium-api/core/live_records.py: their events also carry the row as
+// `data`, already filtered to what this user may see, so useLiveRecord can
+// show it at once without a round trip through the API proxy.
 
-type LiveEvent = { type: "notification"; data: Record<string, unknown> } | { type: "table_change"; table: string; op: string; id: string };
+type LiveEvent =
+  | { type: "notification"; data: Record<string, unknown> }
+  | { type: "table_change"; table: string; op: string; id: string; data?: Record<string, unknown> };
 type Listener = (event: LiveEvent) => void;
 
-const LiveDataContext = createContext<{ subscribe: (key: string, listener: Listener) => () => void; connected: boolean } | null>(null);
+const LiveDataContext = createContext<{
+  subscribe: (key: string, listener: Listener) => () => void;
+  onReconnect: (listener: () => void) => () => void;
+  connected: boolean;
+} | null>(null);
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -55,6 +64,10 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const connectionSeqRef = useRef(0);
+  // Events sent while the socket was down are lost, so after a reconnect
+  // every subscriber is told to catch up (useLiveTable refetches).
+  const reconnectListenersRef = useRef<Set<() => void>>(new Set());
+  const hasConnectedRef = useRef(false);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
@@ -96,6 +109,10 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
         if (!isCurrentConnection(socket)) return;
         reconnectAttemptRef.current = 0;
         setConnected(true);
+        if (hasConnectedRef.current) {
+          reconnectListenersRef.current.forEach((listener) => listener());
+        }
+        hasConnectedRef.current = true;
       };
 
       socket.onmessage = (raw) => {
@@ -148,7 +165,14 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const value = useMemo(() => ({ subscribe, connected }), [subscribe, connected]);
+  const onReconnect = useCallback((listener: () => void) => {
+    reconnectListenersRef.current.add(listener);
+    return () => {
+      reconnectListenersRef.current.delete(listener);
+    };
+  }, []);
+
+  const value = useMemo(() => ({ subscribe, onReconnect, connected }), [subscribe, onReconnect, connected]);
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
 }
 
@@ -161,6 +185,20 @@ function useLiveSubscription(key: string, listener: Listener) {
     if (!ctx) return;
     return ctx.subscribe(key, (event) => listenerRef.current(event));
   }, [ctx, key]);
+}
+
+/** Runs `callback` each time the shared socket comes back after a drop, so a
+ * page can fetch whatever it missed while offline. Not called on the first
+ * connect. */
+export function useLiveReconnect(callback: () => void) {
+  const ctx = useContext(LiveDataContext);
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
+
+  useEffect(() => {
+    if (!ctx) return;
+    return ctx.onReconnect(() => callbackRef.current());
+  }, [ctx]);
 }
 
 // The DB trigger fires once per row, so a bulk write (a statement import,
@@ -179,6 +217,8 @@ export function useLiveTable(table: string, onChange: (op: string, id: string) =
   onChangeRef.current = onChange;
   const timerRef = useRef<number | null>(null);
 
+  useLiveReconnect(() => onChangeRef.current("RECONNECT", ""));
+
   useEffect(() => () => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
   }, []);
@@ -190,6 +230,23 @@ export function useLiveTable(table: string, onChange: (op: string, id: string) =
       timerRef.current = null;
       onChangeRef.current(event.op, event.id);
     }, LIVE_TABLE_DEBOUNCE_MS);
+  });
+}
+
+/** A change to one of the row-carrying tables (core/live_records.py):
+ * `data` is the row as the list endpoint returns it, or undefined when the
+ * server couldn't send it (refetch then). Delivered immediately, with no
+ * debounce, since there is nothing to fetch. The table must be in LOADERS
+ * as well as TABLE_PERMISSION_MAP. */
+export function useLiveRecord<T = Record<string, unknown>>(
+  table: string,
+  onRecord: (op: string, id: string, data: T | undefined) => void,
+) {
+  const onRecordRef = useRef(onRecord);
+  onRecordRef.current = onRecord;
+  useLiveSubscription(`table_change:${table}`, (event) => {
+    if (event.type !== "table_change") return;
+    onRecordRef.current(event.op, event.id, event.data as T | undefined);
   });
 }
 

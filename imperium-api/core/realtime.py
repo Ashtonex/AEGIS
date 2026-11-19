@@ -15,17 +15,26 @@ Two independent signal types share this module:
   refetches the affected resource itself over the normal REST path it
   already uses - this is an invalidation signal, not a data stream.
 
-This is process-local: each server instance tracks only the WebSocket
-connections it's holding and only relays events landing on its own listener
-connection. If the app is ever scaled to multiple instances, cross-instance
-fanout is handled at the outbound layer to a message bus, not here.
+For the tables in core/live_records.py the event also carries the row
+itself (``data``): the worker loads it once and sends it only to sockets that
+pass the permission check and, where the row belongs to a project, the same
+project-scope rule REST applies. Pages can then show it without a refetch.
+
+Fan-out across workers needs no message bus. Every uvicorn worker holds its
+own LISTEN connection, and Postgres delivers each NOTIFY to all of them, so
+each worker relays to the sockets it holds. A worker with no eligible socket
+for an event skips the row load entirely.
 """
 
 import asyncio
 import json
+import time
 from collections import defaultdict
-from typing import Any
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
 
 import asyncpg
 from fastapi import WebSocket
@@ -51,6 +60,10 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "crm.organizations": ("crm_organizations.read",),
     "core.internal_messages": ("internal_messages.read",),
     "core.documents": ("documents.read",),
+    # Messages page and daily-report evidence (migration 301). Both push the
+    # row itself; see core/live_records.py.
+    "crm.communication_events": ("crm_communications.read",),
+    "core.document_links": ("site_operations.daily_report.read",),
     "core.compliance_items": ("compliance_items.read",),
     "projects.projects": ("projects.read",),
     "projects.hse_incidents": ("hse_incidents.read",),
@@ -103,6 +116,10 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "finance.ccb_monitor_findings": ("finance.ccb_findings.read",),
 }
 
+# How long a user's visible-project set is reused before it is looked up
+# again. A new project assignment reaches live push within this window.
+SCOPE_TTL_SECONDS = 60
+
 
 class ConnectionManager:
     """Tracks live WebSocket connections. Each connection is registered
@@ -113,14 +130,25 @@ class ConnectionManager:
         self._by_user: dict[str, set[WebSocket]] = defaultdict(set)
         self._meta: dict[WebSocket, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        # user_id -> (loaded_at, visible project ids, or None for all). Kept
+        # per user rather than per socket, so several tabs share one lookup.
+        self._scope_cache: dict[str, tuple[float, Optional[set[str]]]] = {}
 
-    async def register(self, websocket: WebSocket, user_id: str, org_id: str, read_permissions: set[str]) -> None:
+    async def register(
+        self,
+        websocket: WebSocket,
+        user_id: str,
+        org_id: str,
+        read_permissions: set[str],
+        user: Optional[dict[str, Any]] = None,
+    ) -> None:
         async with self._lock:
             self._by_user[user_id].add(websocket)
             self._meta[websocket] = {
                 "user_id": user_id,
                 "org_id": org_id,
                 "permissions": read_permissions,
+                "user": user or {"user_id": user_id, "org_id": org_id},
             }
 
     async def unregister(self, websocket: WebSocket) -> None:
@@ -133,6 +161,7 @@ class ConnectionManager:
                 sockets.discard(websocket)
                 if not sockets:
                     self._by_user.pop(meta["user_id"], None)
+                    self._scope_cache.pop(meta["user_id"], None)
 
     async def send_to_user(self, user_id: str, payload: dict[str, Any]) -> None:
         async with self._lock:
@@ -140,21 +169,51 @@ class ConnectionManager:
         await _send_all(sockets, payload)
 
     async def broadcast_table_change(self, org_id: str, permission_keys: tuple[str, ...], payload: dict[str, Any]) -> None:
+        targets = [ws for ws, _ in await self.eligible(org_id, permission_keys)]
+        await _send_all(targets, payload)
+
+    async def eligible(self, org_id: str, permission_keys: tuple[str, ...]) -> list[tuple[WebSocket, dict[str, Any]]]:
+        """Sockets in this org whose user holds any of the given keys."""
         async with self._lock:
-            targets = [
-                ws for ws, meta in self._meta.items()
+            return [
+                (ws, meta) for ws, meta in self._meta.items()
                 if meta["org_id"] == org_id and not meta["permissions"].isdisjoint(permission_keys)
             ]
-        await _send_all(targets, payload)
+
+    async def visible_projects(self, db, meta: dict[str, Any]) -> Optional[set[str]]:
+        """The projects this socket's user may see (None means all), using
+        core.project_scope. Cached for SCOPE_TTL_SECONDS, so a report taking
+        a burst of photos doesn't repeat the lookup for each one."""
+        user_id = meta["user_id"]
+        now = time.monotonic()
+        cached = self._scope_cache.get(user_id)
+        if cached and now - cached[0] < SCOPE_TTL_SECONDS:
+            return cached[1]
+        from core.project_scope import visible_project_ids
+
+        ids = await visible_project_ids(db, meta["user"])
+        scope = None if ids is None else {str(i) for i in ids}
+        self._scope_cache[user_id] = (now, scope)
+        return scope
 
     def connection_count(self) -> int:
         return len(self._meta)
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (UUID, Decimal)):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return None
+    return str(value)
+
+
 async def _send_all(sockets: list[WebSocket], payload: dict[str, Any]) -> None:
     if not sockets:
         return
-    message = json.dumps(payload)
+    message = json.dumps(payload, default=_json_default)
     for ws in sockets:
         try:
             await ws.send_text(message)
@@ -166,6 +225,60 @@ async def _send_all(sockets: list[WebSocket], payload: dict[str, Any]) -> None:
 
 
 manager = ConnectionManager()
+
+# Each row load borrows a pooled DB connection. A burst, such as a statement
+# import writing hundreds of communication rows, must not drain the pool that
+# ordinary requests use, so each worker runs only a few loads at a time.
+RELAY_CONCURRENCY = 4
+_relay_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _semaphore() -> asyncio.Semaphore:
+    global _relay_semaphore
+    if _relay_semaphore is None:
+        _relay_semaphore = asyncio.Semaphore(RELAY_CONCURRENCY)
+    return _relay_semaphore
+
+
+# Tables whose rows belong to a project. Without the row there is no way to
+# check scope, so a failed load sends nothing rather than a bare signal.
+_PROJECT_SCOPED_TABLES = {"core.document_links"}
+
+
+async def relay_live_record(table: str, op: str, org_id: str, row_id: str, permission_keys: tuple[str, ...]) -> None:
+    """Loads the changed row once and pushes it, row included, to every
+    socket on this worker allowed to see it. Nothing is loaded when no
+    socket here qualifies. If the row can't be loaded (deleted, or the load
+    failed), the permission-eligible sockets get the bare signal and
+    refetch, except on project-scoped tables, where nothing is sent."""
+    from core.database import AsyncSessionLocal
+    from core.live_records import LOADERS
+
+    targets = await manager.eligible(org_id, permission_keys)
+    if not targets:
+        return
+    record = None
+    async with _semaphore():
+        try:
+            async with AsyncSessionLocal() as db:
+                record = await LOADERS[table](db, org_id, row_id)
+                if record is not None and record.project_id is not None:
+                    allowed = []
+                    for ws, meta in targets:
+                        scope = await manager.visible_projects(db, meta)
+                        if scope is None or record.project_id in scope:
+                            allowed.append((ws, meta))
+                    targets = allowed
+        except Exception:
+            logger.exception("Live record load failed", table=table, id=row_id)
+            record = None
+    if record is None and table in _PROJECT_SCOPED_TABLES:
+        return
+    payload: dict[str, Any] = {"type": "table_change", "table": table, "op": op, "id": row_id}
+    if record is not None:
+        payload["data"] = record.data
+    await _send_all([ws for ws, _ in targets], payload)
+
 
 _listener_connection: asyncpg.Connection | None = None
 _listener_lock = asyncio.Lock()
@@ -226,6 +339,19 @@ def get_listener_status() -> dict[str, Any]:
     }
 
 
+# The event loop holds only weak references to tasks, so a fire-and-forget
+# task can in principle be garbage-collected mid-flight (asyncio docs,
+# create_task). The row relay spends real time awaiting the DB, so each task
+# is held here until it finishes.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.ensure_future(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 def _on_notification(connection, pid, channel, payload: str) -> None:
     try:
         data = json.loads(payload)
@@ -236,7 +362,7 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
     if channel == NOTIFICATIONS_CHANNEL:
         user_id = data.get("user_id")
         if user_id:
-            asyncio.ensure_future(manager.send_to_user(str(user_id), {"type": "notification", "data": data}))
+            _spawn(manager.send_to_user(str(user_id), {"type": "notification", "data": data}))
         return
 
     if channel == LIVE_CHANGES_CHANNEL:
@@ -245,7 +371,12 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
         permission_keys = TABLE_PERMISSION_MAP.get(table)
         if not (table and org_id and permission_keys):
             return
-        asyncio.ensure_future(
+        from core.live_records import LOADERS
+
+        if table in LOADERS and data.get("id"):
+            _spawn(relay_live_record(table, str(data.get("op")), str(org_id), str(data["id"]), permission_keys))
+            return
+        _spawn(
             manager.broadcast_table_change(
                 str(org_id),
                 permission_keys,
