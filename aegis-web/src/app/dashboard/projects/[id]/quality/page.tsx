@@ -38,6 +38,12 @@ import {
   SiteSnag,
 } from "@/lib/api/projects";
 import { formatDate } from "@/lib/utils";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PROJECT_QUALITY_TABLES, isProjectChange } from "@/lib/live/liveTables";
+
+// Stable empty lists while live data loads.
+const NO_POUR_CARDS: never[] = [];
+const NO_SNAGS: never[] = [];
 
 export default function ProjectQualityPage() {
   const params = useParams();
@@ -45,10 +51,6 @@ export default function ProjectQualityPage() {
   const { project } = useProject();
 
   const [activeTab, setActiveTab] = useState<"pour_cards" | "snags">("pour_cards");
-  const [pourCards, setPourCards] = useState<ConcretePourCard[]>([]);
-  const [snags, setSnags] = useState<SiteSnag[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   // Pour Card Modal State
   const [isPourModalOpen, setIsPourModalOpen] = useState(false);
@@ -81,29 +83,39 @@ export default function ProjectQualityPage() {
   const [pourFilter, setPourFilter] = useState("all");
   const [snagFilter, setSnagFilter] = useState("all");
 
+  // Pour cards and snags, live: refreshes when anyone raises, approves,
+  // tests or closes one on THIS project.
+  const projectUuid = (project as { id?: string } | null)?.id ?? projectId;
+  const qaQuery = useLiveQuery<{ pourCards: ConcretePourCard[]; snags: SiteSnag[] }>(
+    projectId ? `project-quality:${projectId}` : null,
+    async () => {
+      const [pcRes, sngRes] = await Promise.all([listProjectPourCards(projectId), listProjectSnags(projectId)]);
+      return { pourCards: (pcRes?.data as ConcretePourCard[]) ?? [], snags: (sngRes?.data as SiteSnag[]) ?? [] };
+    },
+    { tables: PROJECT_QUALITY_TABLES, match: (change) => isProjectChange(change, projectUuid) },
+  );
+  const pourCards = qaQuery.data?.pourCards ?? NO_POUR_CARDS;
+  const snags = qaQuery.data?.snags ?? NO_SNAGS;
+  const loading = qaQuery.isLoading && qaQuery.data === undefined;
+  const refreshing = qaQuery.isValidating && qaQuery.data !== undefined;
+  const { mutate: mutateQa } = qaQuery;
+  // Optimistic local edits write into the cache; the live refresh confirms.
+  const setPourCards = useCallback(
+    (next: ConcretePourCard[] | ((prev: ConcretePourCard[]) => ConcretePourCard[])) =>
+      void mutateQa(
+        (prev) => ({
+          pourCards: typeof next === "function" ? next(prev?.pourCards ?? []) : next,
+          snags: prev?.snags ?? [],
+        }),
+        { revalidate: false },
+      ),
+    [mutateQa],
+  );
   const loadData = useCallback(async () => {
-    if (!projectId) return;
-    try {
-      const [pcRes, sngRes] = await Promise.all([
-        listProjectPourCards(projectId),
-        listProjectSnags(projectId),
-      ]);
-      if (pcRes?.data) setPourCards(pcRes.data);
-      if (sngRes?.data) setSnags(sngRes.data);
-    } catch (err) {
-      console.error("Failed to load QA data:", err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    await mutateQa();
+  }, [mutateQa]);
 
   const handleRefresh = async () => {
-    setRefreshing(true);
     await loadData();
   };
 

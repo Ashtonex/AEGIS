@@ -26,13 +26,34 @@ import {
   type ProjectPlantAsset,
 } from "@/lib/api/projects";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { useProject } from "@/context/ProjectWorkspaceContext";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PROJECT_PLANT_TABLES, isProjectChange } from "@/lib/live/liveTables";
 
 export default function ProjectPlantPage() {
   const params = useParams();
   const projectId = typeof params?.id === "string" ? params.id : "";
 
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<ProjectPlantAnalytics | null>(null);
+  // Plant on site, live: refreshes when a plant request, fleet assignment,
+  // shift log or fuel issue on THIS project changes.
+  const { project } = useProject();
+  const projectUuid = (project as { id?: string } | null)?.id ?? projectId;
+  const plantQuery = useLiveQuery<ProjectPlantAnalytics | null>(
+    projectId ? `project-plant:${projectId}` : null,
+    async () => {
+      try {
+        const res = await getProjectPlantAnalytics(projectId);
+        return res.data ?? null;
+      } catch (err) {
+        console.error("Failed to load project plant analytics", err);
+        return null;
+      }
+    },
+    { tables: PROJECT_PLANT_TABLES, match: (change) => isProjectChange(change, projectUuid) },
+  );
+  const data = plantQuery.data ?? null;
+  const loading = plantQuery.isLoading && plantQuery.data === undefined;
+  const { mutate: refreshPlant } = plantQuery;
   const [filterOwnership, setFilterOwnership] = useState<"all" | "owned" | "hired">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -50,24 +71,10 @@ export default function ProjectPlantPage() {
   const [submittingLog, setSubmittingLog] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
+  // Kept for the existing call sites after this user's own edits.
   const loadData = async () => {
-    try {
-      const res = await getProjectPlantAnalytics(projectId);
-      if (res.data) {
-        setData(res.data);
-      }
-    } catch (err) {
-      console.error("Failed to load project plant analytics", err);
-    } finally {
-      setLoading(false);
-    }
+    await refreshPlant();
   };
-
-  useEffect(() => {
-    if (projectId) {
-      void loadData();
-    }
-  }, [projectId]);
 
   const filteredAssets = useMemo(() => {
     if (!data?.plant_inventory) return [];

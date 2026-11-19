@@ -10,6 +10,7 @@ import {
   getDocumentSignedUrl,
   deleteDocument,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
 
 export type DocumentEntityType = "lead" | "opportunity" | "tender" | "project" | "fleet" | "machinery" | "money_entry";
 
@@ -68,8 +69,8 @@ export function EntityDocumentsPanel({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ doc: DocRecord; url: string } | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const res = await getDocumentsForEntity(entityType, entityId);
@@ -83,6 +84,15 @@ export function EntityDocumentsPanel({
   }, [entityType, entityId]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
+
+  // Live for projects, tenders and opportunities (the link types the
+  // server relays): a file linked or removed by anyone shows up here.
+  useLiveRefresh(
+    ["core.document_links"],
+    (change) => change.entity_type === entityType && change.entity_id === entityId,
+    () => void load(true),
+    !!entityId,
+  );
 
   const handleUploaded = async (result: UploadedDocumentResult) => {
     setNotice(null);

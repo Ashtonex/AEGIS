@@ -350,6 +350,41 @@ export function useLiveQuery<T>(
   return response;
 }
 
+/**
+ * For screens that keep their own loader instead of useLiveQuery: calls
+ * `refresh` (batched over 250 ms) when a matching row changes and after the
+ * live connection comes back. Pass a quiet refresh - one that keeps the
+ * current data on screen rather than showing a spinner.
+ */
+export function useLiveRefresh(
+  tables: readonly string[],
+  match: ((change: LiveChange) => boolean) | undefined,
+  refresh: () => void,
+  enabled = true,
+) {
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const matchRef = useRef(match);
+  matchRef.current = match;
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+  }, []);
+
+  useLiveChanges(enabled ? tables : [], (change) => {
+    if (matchRef.current && !matchRef.current(change)) return;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      refreshRef.current();
+    }, LIVE_QUERY_DEBOUNCE_MS);
+  });
+  useLiveReconnect(() => {
+    if (enabled) refreshRef.current();
+  });
+}
+
 export function useLiveNotification(onNotification: (data: Record<string, unknown>) => void) {
   useLiveSubscription("notification", (event) => {
     if (event.type === "notification") onNotification(event.data);

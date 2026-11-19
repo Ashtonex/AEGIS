@@ -37,6 +37,9 @@ import {
   type EligibleQuotationSummary,
 } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { PROJECT_FINANCIAL_TABLES, isProjectChange } from "@/lib/live/liveTables";
+import { useProjectUuid } from "@/context/ProjectWorkspaceContext";
 
 export type BulkCategoryItem = {
   category: string;
@@ -152,9 +155,11 @@ export function ProjectBudgetSpreadsheet({
   const [linkingOnly, setLinkingOnly] = useState(false);
 
   // Load category summary and linked quote
-  const loadCategoryData = useCallback(async () => {
-    setLoading(true);
-    setFeedback(null);
+  const loadCategoryData = useCallback(async (quiet = false) => {
+    if (!quiet) {
+      setLoading(true);
+      setFeedback(null);
+    }
     try {
       const res = await getProjectBudgetCategorySummary(projectId);
       if (res.success && res.data) {
@@ -168,7 +173,8 @@ export function ProjectBudgetSpreadsheet({
         cats.forEach((c) => {
           drafts[c.category] = c.budget > 0 ? c.budget : (c.estimated_cost > 0 ? c.estimated_cost : 0);
         });
-        setDraftBudgets(drafts);
+        // A live refresh leaves figures the user is typing alone.
+        if (!quiet) setDraftBudgets(drafts);
       }
     } catch (err: any) {
       console.warn("Could not load category summary, using fallback baseline", err);
@@ -189,6 +195,16 @@ export function ProjectBudgetSpreadsheet({
       setLoading(false);
     }
   }, [projectId]);
+
+  // Live: budget lines, costs and commitments on THIS project changed by
+  // anyone refresh the sheet quietly (drafts being typed are kept).
+  const liveProjectId = useProjectUuid(projectId);
+  useLiveRefresh(
+    PROJECT_FINANCIAL_TABLES,
+    (change) => isProjectChange(change, liveProjectId),
+    () => void loadCategoryData(true),
+    !!projectId,
+  );
 
   useEffect(() => {
     void loadCategoryData();

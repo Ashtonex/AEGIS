@@ -47,6 +47,8 @@ import {
 } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { ProjectMilestone, SiteScheduleSync } from "@/lib/projects/types";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PROJECT_SCHEDULE_TABLES, isProjectChange } from "@/lib/live/liveTables";
 
 export default function ProjectSchedulePage() {
   const params = useParams();
@@ -60,8 +62,6 @@ export default function ProjectSchedulePage() {
   const [editingMilestone, setEditingMilestone] = useState<ProjectMilestone | null>(null);
 
   // Site Operations Sync State
-  const [siteSync, setSiteSync] = useState<SiteScheduleSync | null>(null);
-  const [loadingSync, setLoadingSync] = useState(false);
   const [syncingWithSite, setSyncingWithSite] = useState(false);
   const [updatingMilestoneId, setUpdatingMilestoneId] = useState<string | null>(null);
 
@@ -83,25 +83,30 @@ export default function ProjectSchedulePage() {
   const [rollingOut, setRollingOut] = useState(false);
   const [cpmFeedback, setCpmFeedback] = useState<string | null>(null);
 
-  // Load site sync data
-  const loadSiteSync = useCallback(async () => {
-    if (!projectId) return;
-    setLoadingSync(true);
-    try {
-      const res = await getProjectScheduleSiteSync(projectId);
-      if (res?.data) {
-        setSiteSync(res.data as SiteScheduleSync);
+  // Site schedule sync, live: refreshes when a milestone, dependency, daily
+  // target or site report on this project changes. Milestones themselves
+  // come from the live project workspace (useProject).
+  const projectUuid = (project as { id?: string } | null)?.id ?? projectId;
+  const siteSyncQuery = useLiveQuery<SiteScheduleSync | null>(
+    projectId ? `project-schedule-sync:${projectId}` : null,
+    async () => {
+      try {
+        const res = await getProjectScheduleSiteSync(projectId);
+        return (res?.data as SiteScheduleSync) ?? null;
+      } catch (err) {
+        console.warn("Non-fatal: could not load site schedule sync", err);
+        return null;
       }
-    } catch (err) {
-      console.warn("Non-fatal: could not load site schedule sync", err);
-    } finally {
-      setLoadingSync(false);
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    void loadSiteSync();
-  }, [loadSiteSync]);
+    },
+    { tables: PROJECT_SCHEDULE_TABLES, match: (change) => isProjectChange(change, projectUuid) },
+  );
+  const siteSync = siteSyncQuery.data ?? null;
+  const loadingSync = siteSyncQuery.isLoading;
+  const { mutate: refreshSiteSync } = siteSyncQuery;
+  // Kept for the existing call sites after this user's own edits.
+  const loadSiteSync = useCallback(async () => {
+    await refreshSiteSync();
+  }, [refreshSiteSync]);
 
   // Filtered milestones
   const filtered = useMemo(() => {

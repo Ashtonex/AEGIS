@@ -39,6 +39,11 @@ import {
   removeProjectAllocation,
 } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PROJECT_TEAM_TABLES, isProjectChange } from "@/lib/live/liveTables";
+
+// Stable empty list while live data loads.
+const NO_ROWS: any[] = [];
 
 const ROLE_OPTIONS = [
   "Project Manager",
@@ -60,10 +65,6 @@ export default function ProjectTeamPage() {
   const { project, detail, team: hrAllocations, loading: projectLoading, refetch: refetchProject } = useProject();
 
   // State
-  const [roles, setRoles] = useState<any[]>([]);
-  const [availableUsers, setAvailableUsers] = useState<any[]>([]);
-  const [projectHires, setProjectHires] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
@@ -88,38 +89,39 @@ export default function ProjectTeamPage() {
   const [hirePhone, setHirePhone] = useState("");
   const [hireNationalId, setHireNationalId] = useState("");
 
-  // Load project roles & project hires (from project endpoint, no payroll permission block!)
-  const loadWorkforceData = useCallback(async () => {
-    setLoading(true);
-    setFeedback(null);
-    const targetId = project?.id || projectId;
-    try {
+  // Project roles and project hires, live: refreshes when anyone assigns a
+  // role, allocates staff or hires onto THIS project.
+  const targetId = (project as { id?: string } | null)?.id || projectId;
+  const workforceQuery = useLiveQuery<{ roles: any[]; availableUsers: any[]; hires: any[] }>(
+    targetId ? `project-workforce:${targetId}` : null,
+    async () => {
       const [rolesRes, hiresRes] = await Promise.allSettled([
         getProjectRoles(targetId),
         getProjectTeamHires(targetId),
       ]);
-
-      if (rolesRes.status === "fulfilled" && rolesRes.value.success && rolesRes.value.data) {
-        setRoles(rolesRes.value.data.assignments || []);
-        setAvailableUsers(rolesRes.value.data.available_users || []);
-        if (rolesRes.value.data.available_users?.length > 0 && !selectedUserId) {
-          setSelectedUserId(rolesRes.value.data.available_users[0].id);
-        }
-      }
-
-      if (hiresRes.status === "fulfilled" && hiresRes.value.success && hiresRes.value.data) {
-        setProjectHires(hiresRes.value.data.hires || []);
-      }
-    } catch (err: any) {
-      console.warn("Error loading workforce data", err);
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId, project?.id, selectedUserId]);
-
+      const rolesData = rolesRes.status === "fulfilled" && rolesRes.value.success ? rolesRes.value.data : undefined;
+      const hiresData = hiresRes.status === "fulfilled" && hiresRes.value.success ? hiresRes.value.data : undefined;
+      return {
+        roles: rolesData?.assignments || [],
+        availableUsers: rolesData?.available_users || [],
+        hires: hiresData?.hires || [],
+      };
+    },
+    { tables: PROJECT_TEAM_TABLES, match: (change) => isProjectChange(change, targetId) },
+  );
+  const roles = workforceQuery.data?.roles ?? NO_ROWS;
+  const availableUsers = workforceQuery.data?.availableUsers ?? NO_ROWS;
+  const projectHires = workforceQuery.data?.hires ?? NO_ROWS;
+  const loading = workforceQuery.isLoading && workforceQuery.data === undefined;
+  const { mutate: refreshWorkforce } = workforceQuery;
   useEffect(() => {
-    void loadWorkforceData();
-  }, [loadWorkforceData]);
+    if (availableUsers.length > 0 && !selectedUserId) setSelectedUserId(availableUsers[0].id);
+  }, [availableUsers, selectedUserId]);
+  // Kept for the existing call sites after this user's own edits.
+  const loadWorkforceData = useCallback(async () => {
+    setFeedback(null);
+    await refreshWorkforce();
+  }, [refreshWorkforce]);
 
   // Handle Role Assignment / Delegation
   const handleAssignRoleSubmit = async (e: React.FormEvent) => {

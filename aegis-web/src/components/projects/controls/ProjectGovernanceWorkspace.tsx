@@ -27,6 +27,9 @@ import {
 } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import type { PreMobilisationCheck, CommercialReadiness } from "@/lib/projects/types";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { PROJECT_OVERVIEW_TABLES, isProjectChange } from "@/lib/live/liveTables";
+import { useProjectUuid } from "@/context/ProjectWorkspaceContext";
 
 export function ProjectGovernanceWorkspace({
   projectId,
@@ -58,8 +61,8 @@ export function ProjectGovernanceWorkspace({
   const [submittingDeposit, setSubmittingDeposit] = useState(false);
   const [signingAll, setSigningAll] = useState(false);
 
-  const loadGovernanceData = useCallback(async () => {
-    setLoading(true);
+  const loadGovernanceData = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const res = await getProjectLifecycle(projectId);
@@ -76,6 +79,15 @@ export function ProjectGovernanceWorkspace({
       setLoading(false);
     }
   }, [projectId]);
+
+  // Live: checks signed off or readiness changed by anyone on THIS project.
+  const liveProjectId = useProjectUuid(projectId);
+  useLiveRefresh(
+    PROJECT_OVERVIEW_TABLES,
+    (change) => isProjectChange(change, liveProjectId),
+    () => void loadGovernanceData(true),
+    !!projectId,
+  );
 
   useEffect(() => {
     void loadGovernanceData();

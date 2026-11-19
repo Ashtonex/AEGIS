@@ -17,6 +17,9 @@ import {
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { getProjectEvmAnalytics, type ProjectEvmData } from "@/lib/api/projects";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { PROJECT_FINANCIAL_TABLES, isProjectChange } from "@/lib/live/liveTables";
+import { useProjectUuid } from "@/context/ProjectWorkspaceContext";
 
 interface ProjectEvmStudioProps {
   projectId: string;
@@ -27,9 +30,9 @@ export function ProjectEvmStudio({ projectId }: ProjectEvmStudioProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadEvm = async () => {
+  const loadEvm = async (quiet = false) => {
     if (!projectId) return;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const res = await getProjectEvmAnalytics(projectId);
@@ -44,6 +47,15 @@ export function ProjectEvmStudio({ projectId }: ProjectEvmStudioProps) {
       setLoading(false);
     }
   };
+
+  // Live: costs, budgets, milestones or claims on THIS project changed.
+  const liveProjectId = useProjectUuid(projectId);
+  useLiveRefresh(
+    [...PROJECT_FINANCIAL_TABLES, "projects.project_milestones"],
+    (change) => isProjectChange(change, liveProjectId),
+    () => void loadEvm(true),
+    !!projectId,
+  );
 
   useEffect(() => {
     void loadEvm();
