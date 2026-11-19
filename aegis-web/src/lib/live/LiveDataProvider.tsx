@@ -2,6 +2,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import useSWR, { type SWRConfiguration, type SWRResponse } from "swr";
+
 import { useAuth } from "@/lib/auth/AuthContext";
 import { resolveBackendOrigin } from "@/lib/backend-url";
 
@@ -16,9 +18,22 @@ import { resolveBackendOrigin } from "@/lib/backend-url";
 // `data`, already filtered to what this user may see, so useLiveRecord can
 // show it at once without a round trip through the API proxy.
 
-type LiveEvent =
-  | { type: "notification"; data: Record<string, unknown> }
-  | { type: "table_change"; table: string; op: string; id: string; data?: Record<string, unknown> };
+/** One changed row. Parent ids (migration 302) say which record it belongs
+ * to, so a record page can ignore changes to other tenders/opportunities. */
+export type LiveChange = {
+  type: "table_change";
+  table: string;
+  op: string;
+  id: string;
+  data?: Record<string, unknown>;
+  project_id?: string;
+  tender_id?: string;
+  opportunity_id?: string;
+  entity_type?: string;
+  entity_id?: string;
+};
+
+type LiveEvent = { type: "notification"; data: Record<string, unknown> } | LiveChange;
 type Listener = (event: LiveEvent) => void;
 
 const LiveDataContext = createContext<{
@@ -248,6 +263,91 @@ export function useLiveRecord<T = Record<string, unknown>>(
     if (event.type !== "table_change") return;
     onRecordRef.current(event.op, event.id, event.data as T | undefined);
   });
+}
+
+/** Calls `listener` for every change to any of `tables`, undebounced. */
+export function useLiveChanges(tables: readonly string[], listener: (change: LiveChange) => void) {
+  const ctx = useContext(LiveDataContext);
+  const listenerRef = useRef(listener);
+  listenerRef.current = listener;
+  const tableKey = tables.join(",");
+
+  useEffect(() => {
+    if (!ctx || !tableKey) return;
+    const unsubscribers = tableKey.split(",").map((table) =>
+      ctx.subscribe(`table_change:${table}`, (event) => {
+        if (event.type === "table_change") listenerRef.current(event);
+      }),
+    );
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }, [ctx, tableKey]);
+}
+
+// Revalidations triggered by live changes are batched: a burst of row
+// changes (a tender import, a bulk requirement seed) costs one refetch.
+const LIVE_QUERY_DEBOUNCE_MS = 250;
+
+export type LiveQueryOptions<T> = {
+  /** schema.table names whose changes should refresh this data. Each must be
+   * in TABLE_PERMISSION_MAP (imperium-api/core/realtime.py). */
+  tables: readonly string[];
+  /** Narrow to the changes that concern this data, e.g. one tender's rows.
+   * Leave out to refresh on any change to the tables. */
+  match?: (change: LiveChange) => boolean;
+  config?: SWRConfiguration<T>;
+};
+
+/**
+ * SWR data that stays live: it refetches when a matching row changes
+ * anywhere (another user, a job, a webhook), after the live connection comes
+ * back from a drop, and on tab focus. The previous data stays on screen while
+ * it refetches, so pages don't flash a spinner. `key` null pauses it.
+ * Call `mutate()` after your own writes for an immediate refresh.
+ */
+export function useLiveQuery<T>(
+  key: string | null,
+  fetcher: () => Promise<T>,
+  { tables, match, config }: LiveQueryOptions<T>,
+): SWRResponse<T> {
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
+  // The SWR cache is shared by the whole tab. Scoping every key to the
+  // signed-in user and organisation means a different account signing in
+  // here can never be shown the previous account's cached records (nor
+  // have keepPreviousData carry them over). Signed out pauses the query.
+  const { session } = useAuth();
+  const userId = session?.user?.id;
+  const appMetadata = (session?.user?.app_metadata ?? {}) as { org_id?: string; organization_id?: string };
+  const orgId = appMetadata.org_id ?? appMetadata.organization_id ?? "";
+  const scopedKey = key && userId ? `${userId}:${orgId}:${key}` : null;
+  const response = useSWR<T>(scopedKey, () => fetcherRef.current(), { keepPreviousData: true, ...config });
+  const { mutate } = response;
+  const matchRef = useRef(match);
+  matchRef.current = match;
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+  }, []);
+
+  const scheduleRefresh = useCallback(() => {
+    if (!scopedKey) return;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      void mutate();
+    }, LIVE_QUERY_DEBOUNCE_MS);
+  }, [scopedKey, mutate]);
+
+  useLiveChanges(scopedKey ? tables : [], (change) => {
+    if (matchRef.current && !matchRef.current(change)) return;
+    scheduleRefresh();
+  });
+  useLiveReconnect(() => {
+    if (scopedKey) void mutate();
+  });
+
+  return response;
 }
 
 export function useLiveNotification(onNotification: (data: Record<string, unknown>) => void) {

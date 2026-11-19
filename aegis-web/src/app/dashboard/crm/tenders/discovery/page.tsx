@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLiveChanges, useLiveConnected, useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { TENDER_DISCOVERY_TABLES } from "@/lib/live/liveTables";
 import { AlertTriangle, Info, Loader2 } from "lucide-react";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { getAssignableUsers } from "@/lib/api";
@@ -15,56 +17,88 @@ import { errorMessage } from "@/components/crm/tender-discovery/shared";
 type Tab = "queue" | "changes" | "imported" | "rejected" | "runs" | "profile";
 
 export default function TenderDiscoveryPage() {
-  const [overview, setOverview] = useState<DiscoveryOverview | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<{ message: string; denied: boolean } | null>(null);
   const [tab, setTab] = useState<Tab>("queue");
   const [openId, setOpenId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [liveRun, setLiveRun] = useState<DiscoveryRun | null>(null);
   const [users, setUsers] = useState<{ id: string; full_name: string }[]>([]);
 
-  const load = useCallback(async () => {
-    try {
+  // Live: the overview (counts, runs, pending changes) refreshes when any
+  // candidate or run changes - another reviewer's decision, an import, a run
+  // finishing - instead of on a timer.
+  const overviewQuery = useLiveQuery<DiscoveryOverview>(
+    "tender-discovery:overview",
+    async () => {
       const res = await getDiscoveryOverview();
       if (!res.data) throw new Error(res.message || "Empty response from the server.");
-      setOverview(res.data);
-      setLiveRun(res.data.active_run);
-      setError(null);
-    } catch (err) {
-      setError({ message: errorMessage(err, "Could not load tender discovery."), denied: (err as any)?.status === 403 });
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+      return res.data;
+    },
+    { tables: TENDER_DISCOVERY_TABLES },
+  );
+  const overview = overviewQuery.data ?? null;
+  const loading = overviewQuery.isLoading && overviewQuery.data === undefined;
+  const error = overviewQuery.error && !overviewQuery.data
+    ? {
+        message: errorMessage(overviewQuery.error, "Could not load tender discovery."),
+        denied: (overviewQuery.error as { status?: number })?.status === 403,
+      }
+    : null;
+  const { mutate: mutateOverview } = overviewQuery;
+  const load = useCallback(async () => {
+    await mutateOverview();
+  }, [mutateOverview]);
+  useEffect(() => {
+    if (overview) setLiveRun(overview.active_run);
+  }, [overview]);
 
   useEffect(() => {
-    void load();
     getAssignableUsers().then((r) => setUsers(r.data || [])).catch(() => setUsers([]));
     // Deep link from a change notification: ?candidate=<id>&tab=changes
     const params = new URLSearchParams(window.location.search);
     if (params.get("candidate")) setOpenId(params.get("candidate"));
     if (params.get("tab") === "changes") setTab("changes");
-  }, [load]);
+  }, []);
 
-  // Progress comes from the run row in the database - polled while active.
-  useEffect(() => {
-    if (!liveRun || !["queued", "running"].includes(liveRun.status)) return;
-    const timer = setInterval(async () => {
-      try {
-        const res = await getDiscoveryRun(liveRun.id);
-        if (!res.data) return;
-        setLiveRun(res.data);
-        if (!["queued", "running"].includes(res.data.status)) {
-          await load();
-          setRefreshKey((k) => k + 1);
-        }
-      } catch {
-        // keep the last known state; the next tick retries
+  // The queue, history and drawer below fetch for themselves; bumping
+  // refreshKey tells them to refetch. Debounced so a run importing hundreds
+  // of candidates costs one refresh.
+  const bumpTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (bumpTimerRef.current) window.clearTimeout(bumpTimerRef.current);
+  }, []);
+  useLiveChanges(["crm.tender_candidates"], () => {
+    if (bumpTimerRef.current) window.clearTimeout(bumpTimerRef.current);
+    bumpTimerRef.current = window.setTimeout(() => {
+      bumpTimerRef.current = null;
+      setRefreshKey((k) => k + 1);
+    }, 500);
+  });
+
+  // Run progress: pushed when the run row updates. The 4 s poll only runs
+  // while the live connection is down.
+  const liveConnected = useLiveConnected();
+  const runId = liveRun && ["queued", "running"].includes(liveRun.status) ? liveRun.id : null;
+  const refreshRun = useCallback(async (id: string) => {
+    try {
+      const res = await getDiscoveryRun(id);
+      if (!res.data) return;
+      setLiveRun(res.data);
+      if (!["queued", "running"].includes(res.data.status)) {
+        await load();
+        setRefreshKey((k) => k + 1);
       }
-    }, 4000);
+    } catch {
+      // keep the last known state; the next update retries
+    }
+  }, [load]);
+  useLiveChanges(["crm.tender_discovery_runs"], (change) => {
+    if (runId && change.id === runId) void refreshRun(runId);
+  });
+  useEffect(() => {
+    if (!runId || liveConnected) return;
+    const timer = setInterval(() => void refreshRun(runId), 4000);
     return () => clearInterval(timer);
-  }, [liveRun, load]);
+  }, [runId, liveConnected, refreshRun]);
 
   const refresh = useCallback(() => { void load(); setRefreshKey((k) => k + 1); }, [load]);
 
@@ -107,7 +141,7 @@ export default function TenderDiscoveryPage() {
         <div className="mx-auto mt-8 max-w-lg rounded-sm border border-rose-400/20 bg-rose-950/10 p-6 text-center">
           <AlertTriangle className="mx-auto mb-2 h-6 w-6 text-rose-300" />
           <p className="text-sm text-rose-200">{error?.denied ? "You don't have access to e-GP tender discovery." : error?.message}</p>
-          {!error?.denied && <button onClick={() => { setLoading(true); void load(); }} className="mt-3 text-xs text-[#D4AF37] underline">Retry</button>}
+          {!error?.denied && <button onClick={() => void load()} className="mt-3 text-xs text-[#D4AF37] underline">Retry</button>}
         </div>
       ) : (
         <div className="mt-4 grid gap-4 lg:grid-cols-[360px,1fr]">

@@ -51,6 +51,30 @@ LIVE_CHANGES_CHANNEL = "live_changes"
 # tables listed here are relayed; every entry needs a live_change_notify
 # trigger (migrations 075 and later), and a table with a trigger but no
 # entry here has its events silently dropped.
+TENDER_READ_KEYS: tuple[str, ...] = (
+    "crm.view_tenders",
+    "tender_bids.read",
+    "tender_workflow.review",
+    "tender_workflow.qs",
+    "tender_workflow.admin",
+)
+
+# Parent ids the trigger copies from the row (migration 302). They travel
+# with the event so an open record page can tell that a change concerns it
+# (e.g. a requirement of the tender on screen) without a fetch. Ids only.
+PARENT_KEYS: tuple[str, ...] = ("project_id", "tender_id", "opportunity_id", "entity_type", "entity_id")
+
+# core.document_links rows for these entity types are not project-scoped
+# report evidence: they go out as a plain refresh signal to anyone who can
+# read documents, so tender and opportunity pages refetch their file list.
+DOCUMENT_LINK_SIGNAL_TYPES = {"tender", "opportunity"}
+DOCUMENT_LINK_SIGNAL_KEYS: tuple[str, ...] = ("documents.read",)
+
+
+def _parent_keys(data: dict[str, Any]) -> dict[str, Any]:
+    return {k: str(data[k]) for k in PARENT_KEYS if data.get(k)}
+
+
 TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "finance.quotations": ("quotations.read",),
     "crm.opportunities": ("crm.opportunities.read",),
@@ -58,6 +82,14 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "crm.contacts": ("crm_contacts.read",),
     "crm.activities": ("crm_activities.read",),
     "crm.organizations": ("crm_organizations.read",),
+    # Tenders, discovery and tasks (migration 302). Same keys the tender,
+    # tender-workflow, tender-bids, discovery and task endpoints check.
+    "crm.tenders": TENDER_READ_KEYS,
+    "crm.tender_requirements": ("tender_bids.read", "crm.view_tenders"),
+    "crm.tender_review_items": TENDER_READ_KEYS,
+    "crm.tender_candidates": ("tender_discovery.read",),
+    "crm.tender_discovery_runs": ("tender_discovery.read",),
+    "crm.tasks": ("crm_tasks.read", "crm_tasks.read_all"),
     "core.internal_messages": ("internal_messages.read",),
     "core.documents": ("documents.read",),
     # Messages page and daily-report evidence (migration 301). Both push the
@@ -245,7 +277,14 @@ def _semaphore() -> asyncio.Semaphore:
 _PROJECT_SCOPED_TABLES = {"core.document_links"}
 
 
-async def relay_live_record(table: str, op: str, org_id: str, row_id: str, permission_keys: tuple[str, ...]) -> None:
+async def relay_live_record(
+    table: str,
+    op: str,
+    org_id: str,
+    row_id: str,
+    permission_keys: tuple[str, ...],
+    parents: Optional[dict[str, Any]] = None,
+) -> None:
     """Loads the changed row once and pushes it, row included, to every
     socket on this worker allowed to see it. Nothing is loaded when no
     socket here qualifies. If the row can't be loaded (deleted, or the load
@@ -274,7 +313,7 @@ async def relay_live_record(table: str, op: str, org_id: str, row_id: str, permi
             record = None
     if record is None and table in _PROJECT_SCOPED_TABLES:
         return
-    payload: dict[str, Any] = {"type": "table_change", "table": table, "op": op, "id": row_id}
+    payload: dict[str, Any] = {"type": "table_change", "table": table, "op": op, "id": row_id, **(parents or {})}
     if record is not None:
         payload["data"] = record.data
     await _send_all([ws for ws, _ in targets], payload)
@@ -373,14 +412,26 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
             return
         from core.live_records import LOADERS
 
+        parents = _parent_keys(data)
+        if table == "core.document_links" and data.get("entity_type") in DOCUMENT_LINK_SIGNAL_TYPES:
+            _spawn(
+                manager.broadcast_table_change(
+                    str(org_id),
+                    DOCUMENT_LINK_SIGNAL_KEYS,
+                    {"type": "table_change", "table": table, "op": data.get("op"), "id": data.get("id"), **parents},
+                )
+            )
+            return
         if table in LOADERS and data.get("id"):
-            _spawn(relay_live_record(table, str(data.get("op")), str(org_id), str(data["id"]), permission_keys))
+            _spawn(
+                relay_live_record(table, str(data.get("op")), str(org_id), str(data["id"]), permission_keys, parents)
+            )
             return
         _spawn(
             manager.broadcast_table_change(
                 str(org_id),
                 permission_keys,
-                {"type": "table_change", "table": table, "op": data.get("op"), "id": data.get("id")},
+                {"type": "table_change", "table": table, "op": data.get("op"), "id": data.get("id"), **parents},
             )
         )
 

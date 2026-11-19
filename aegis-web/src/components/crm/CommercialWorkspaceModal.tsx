@@ -2,6 +2,7 @@
 import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
 import Link from "next/link";
 import {
   X,
@@ -82,6 +83,10 @@ import {
   describeActionError,
   ApiError,
 } from "@/lib/api";
+
+// Stable empty list while live data loads, so memos and effects keyed on
+// it don't rerun every render.
+const NO_ROWS: any[] = [];
 
 export type CommercialEntityKind = "opportunity" | "tender";
 
@@ -242,8 +247,6 @@ export function CommercialWorkspaceModal({
   const [touchpointType, setTouchpointType] = useState<"call" | "whatsapp" | "email" | "meeting" | "site_visit">("call");
   const [touchpointNotes, setTouchpointNotes] = useState<string>("");
   const [touchpointLogging, setTouchpointLogging] = useState<boolean>(false);
-  const [activityTimeline, setActivityTimeline] = useState<any[]>([]);
-  const [loadingActivities, setLoadingActivities] = useState<boolean>(false);
   const [timelineFilter, setTimelineFilter] = useState<"all" | "touchpoints" | "system">("all");
 
   // Win / Loss modal controls
@@ -266,17 +269,12 @@ export function CommercialWorkspaceModal({
   const [duplicateOpps, setDuplicateOpps] = useState<any[]>([]);
 
   // Tender Compliance Requirements & Checklist
-  const [requirements, setRequirements] = useState<TenderRequirementItem[]>([]);
-  const [loadingRequirements, setLoadingRequirements] = useState(false);
-  const [complianceSummary, setComplianceSummary] = useState<TenderComplianceSummary | null>(null);
   const [matchingRequirementId, setMatchingRequirementId] = useState<string | null>(null);
   const [uploadingRequirementId, setUploadingRequirementId] = useState<string | null>(null);
   const [newRequirementLabel, setNewRequirementLabel] = useState("");
   const [isSeedingLibrary, setIsSeedingLibrary] = useState(false);
 
   // Attached Documents State
-  const [entityDocs, setEntityDocs] = useState<any[]>([]);
-  const [loadingDocs, setLoadingDocs] = useState(false);
   const [uploadingDoc, setUploadingDoc] = useState(false);
   const [previewDocUrl, setPreviewDocUrl] = useState<string | null>(null);
   const [previewDocName, setPreviewDocName] = useState<string | null>(null);
@@ -328,71 +326,85 @@ export function CommercialWorkspaceModal({
     setActiveTab(isTender ? "review" : "overview");
   }, [entity?.id, isTender]);
 
-  // Load activities
-  const loadActivities = useCallback(async () => {
-    if (!entity?.id) return;
-    setLoadingActivities(true);
-    try {
+  // Activity, documents and requirements for the record on screen, live:
+  // each refreshes when anyone logs activity, links or removes a file, or
+  // changes a requirement on THIS tender/opportunity. Keyed by record id, so
+  // switching records never shows the previous one's rows.
+  const recordId = isOpen ? entity?.id : undefined;
+  const recordType = isTender ? "tender" : "opportunity";
+  const activitiesQuery = useLiveQuery<any[]>(
+    recordId ? `crm-workspace-activities:${recordType}:${recordId}` : null,
+    async () => {
       const res = await getCrmActivities();
-      if (res.success && Array.isArray(res.data)) {
-        const relevant = res.data.filter(
-          (a: any) =>
-            (!isTender && a.opportunity_id === entity.id) ||
-            (isTender && (a.tender_id === entity.id || a.opportunity_id === entity.id))
-        );
-        setActivityTimeline(relevant);
-      }
-    } catch (e) {
-      console.warn("Failed to load activity timeline", e);
-    } finally {
-      setLoadingActivities(false);
-    }
-  }, [entity, isTender]);
-
-  // Load Documents (strictly entity-scoped to prevent leaking global organization documents)
-  const loadEntityDocuments = useCallback(async () => {
-    if (!entity?.id) {
-      setEntityDocs([]);
-      return;
-    }
-    setLoadingDocs(true);
-    try {
-      const entityType = isTender ? "tender" : "opportunity";
-      const res = await getDocumentsForEntity(entityType, entity.id);
-      if (res.success && Array.isArray(res.data)) {
-        setEntityDocs(res.data);
-      } else {
-        setEntityDocs([]);
-      }
-    } catch (e) {
-      console.warn("Failed to load entity-scoped documents", e);
-      setEntityDocs([]);
-    } finally {
-      setLoadingDocs(false);
-    }
-  }, [entity, isTender]);
-
-  // Load Tender Requirements
-  const loadTenderRequirementsList = useCallback(async () => {
-    if (!isTender || !entity?.id) return;
-    setLoadingRequirements(true);
-    try {
+      if (!res.success || !Array.isArray(res.data)) return [];
+      return res.data.filter(
+        (a: any) =>
+          (!isTender && a.opportunity_id === recordId) ||
+          (isTender && (a.tender_id === recordId || a.opportunity_id === recordId))
+      );
+    },
+    {
+      tables: ["crm.activities"],
+      match: (change) => change.tender_id === recordId || change.opportunity_id === recordId,
+      config: { keepPreviousData: false },
+    },
+  );
+  const documentsQuery = useLiveQuery<any[]>(
+    recordId ? `crm-workspace-documents:${recordType}:${recordId}` : null,
+    async () => {
+      // Strictly entity-scoped, so organisation-wide documents never leak in.
+      const res = await getDocumentsForEntity(recordType, recordId as string);
+      return res.success && Array.isArray(res.data) ? res.data : [];
+    },
+    {
+      tables: ["core.document_links"],
+      match: (change) => change.entity_type === recordType && change.entity_id === recordId,
+      config: { keepPreviousData: false },
+    },
+  );
+  const requirementsQuery = useLiveQuery<{
+    requirements: TenderRequirementItem[] | null;
+    summary: TenderComplianceSummary | null;
+  }>(
+    recordId && isTender ? `crm-workspace-requirements:${recordId}` : null,
+    async () => {
       const [reqRes, sumRes] = await Promise.allSettled([
-        getTenderRequirements(entity.id),
-        getTenderComplianceSummary(entity.id),
+        getTenderRequirements(recordId as string),
+        getTenderComplianceSummary(recordId as string),
       ]);
-      if (reqRes.status === "fulfilled" && reqRes.value.success && Array.isArray(reqRes.value.data)) {
-        setRequirements(reqRes.value.data as TenderRequirementItem[]);
-      }
-      if (sumRes.status === "fulfilled" && sumRes.value.success) {
-        setComplianceSummary(sumRes.value.data as TenderComplianceSummary);
-      }
-    } catch (e) {
-      console.warn("Failed to load tender requirements", e);
-    } finally {
-      setLoadingRequirements(false);
-    }
-  }, [entity, isTender]);
+      return {
+        requirements:
+          reqRes.status === "fulfilled" && reqRes.value.success && Array.isArray(reqRes.value.data)
+            ? (reqRes.value.data as TenderRequirementItem[])
+            : null,
+        summary: sumRes.status === "fulfilled" && sumRes.value.success ? (sumRes.value.data as TenderComplianceSummary) : null,
+      };
+    },
+    {
+      // A converted requirement becomes a task, and a satisfied one points at
+      // a document, so task and link changes on this tender count too.
+      tables: ["crm.tender_requirements", "crm.tasks", "core.document_links"],
+      match: (change) =>
+        change.tender_id === recordId || (change.entity_type === "tender" && change.entity_id === recordId),
+      config: { keepPreviousData: false },
+    },
+  );
+  const activityTimeline = activitiesQuery.data ?? NO_ROWS;
+  const loadingActivities = activitiesQuery.isLoading;
+  const entityDocs = documentsQuery.data ?? NO_ROWS;
+  const loadingDocs = documentsQuery.isLoading;
+  const requirements = requirementsQuery.data?.requirements ?? NO_ROWS;
+  const complianceSummary = requirementsQuery.data?.summary ?? null;
+  const loadingRequirements = requirementsQuery.isLoading;
+  const { mutate: refreshActivities } = activitiesQuery;
+  const { mutate: refreshDocuments } = documentsQuery;
+  const { mutate: refreshRequirements } = requirementsQuery;
+  // Kept for the existing call sites after this user's own writes.
+  const loadActivities = useCallback(async () => { await refreshActivities(); }, [refreshActivities]);
+  const loadEntityDocuments = useCallback(async () => { await refreshDocuments(); }, [refreshDocuments]);
+  const loadTenderRequirementsList = useCallback(async () => {
+    if (isTender) await refreshRequirements();
+  }, [isTender, refreshRequirements]);
 
   // Load Win/Loss reasons
   useEffect(() => {
@@ -405,15 +417,6 @@ export function CommercialWorkspaceModal({
     }).catch(() => {});
   }, [isOpen]);
 
-  useEffect(() => {
-    if (isOpen && entity?.id) {
-      void loadActivities();
-      void loadEntityDocuments();
-      if (isTender) {
-        void loadTenderRequirementsList();
-      }
-    }
-  }, [isOpen, entity?.id, isTender, loadActivities, loadEntityDocuments, loadTenderRequirementsList]);
 
   // ESC key listener & body scroll lock
   useEffect(() => {

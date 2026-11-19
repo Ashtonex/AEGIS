@@ -32,6 +32,7 @@ import {
   FileSpreadsheet,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
 import {
   updateCrmOpportunity,
   markCrmOpportunityWon,
@@ -50,6 +51,10 @@ import {
 } from "@/lib/api";
 import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 import { supabase } from "@/lib/supabase";
+
+// Stable empty list while live data loads, so memos and effects keyed on
+// it don't rerun every render.
+const NO_ROWS: any[] = [];
 
 export interface OpportunityDetailDrawerProps {
   isOpen: boolean;
@@ -147,13 +152,9 @@ export function OpportunityDetailDrawer({
   const [editOriginatingDeptId, setEditOriginatingDeptId] = useState("");
 
   // Scoped Documents State (strictly deal-scoped via /api/v1/documents/for-entity)
-  const [documents, setDocuments] = useState<any[]>([]);
-  const [loadingDocs, setLoadingDocs] = useState(false);
   const [uploadingDoc, setUploadingDoc] = useState(false);
 
   // Activity & Notes State
-  const [activities, setActivities] = useState<any[]>([]);
-  const [loadingActivities, setLoadingActivities] = useState(false);
   const [newNote, setNewNote] = useState("");
   const [newNoteType, setNewNoteType] = useState<"note" | "call" | "meeting" | "email">("note");
   const [loggingNote, setLoggingNote] = useState(false);
@@ -194,68 +195,50 @@ export function OpportunityDetailDrawer({
     setFeedback(null);
   }, [opportunity]);
 
-  const currentOppIdRef = useRef<string | undefined>(undefined);
-  currentOppIdRef.current = opportunity?.id;
   const [unlinkingDocId, setUnlinkingDocId] = useState<string | null>(null);
 
-  // Load strictly deal-scoped documents with stale-response protection
-  const loadDealDocuments = useCallback(async (targetId: string) => {
-    setLoadingDocs(true);
-    try {
-      const res = await getDocumentsForEntity("opportunity", targetId);
-      if (currentOppIdRef.current === targetId) {
-        if (res.success && Array.isArray(res.data)) {
-          setDocuments(res.data);
-        } else {
-          setDocuments([]);
-        }
-      }
-    } catch {
-      if (currentOppIdRef.current === targetId) {
-        setDocuments([]);
-      }
-    } finally {
-      if (currentOppIdRef.current === targetId) {
-        setLoadingDocs(false);
-      }
-    }
-  }, []);
-
-  // Load activities for this deal with stale-response protection
-  const loadDealActivities = useCallback(async (targetId: string) => {
-    setLoadingActivities(true);
-    try {
-      const res = await getCrmActivities({ opportunity_id: targetId, limit: 50 });
-      if (currentOppIdRef.current === targetId) {
-        if (res.success && Array.isArray(res.data)) {
-          setActivities(res.data);
-        } else {
-          setActivities([]);
-        }
-      }
-    } catch {
-      if (currentOppIdRef.current === targetId) {
-        setActivities([]);
-      }
-    } finally {
-      if (currentOppIdRef.current === targetId) {
-        setLoadingActivities(false);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isOpen && opportunity?.id) {
-      // Clear previous deal documents and activities immediately to prevent displaying stale data
-      setDocuments([]);
-      setActivities([]);
-      void loadDealDocuments(opportunity.id);
-      void loadDealActivities(opportunity.id);
-    } else {
-      setDocuments([]);
-      setActivities([]);
-    }
-  }, [isOpen, opportunity?.id, loadDealDocuments, loadDealActivities]);
+  // Deal-scoped documents and activity, live: they refresh when a file is
+  // linked to or removed from this deal, or activity is logged on it, by
+  // anyone. Keyed by deal id, so switching deals never shows the last
+  // deal's rows (no keepPreviousData here).
+  const dealId = isOpen ? opportunity?.id : undefined;
+  const documentsQuery = useLiveQuery<any[]>(
+    dealId ? `crm-opportunity-documents:${dealId}` : null,
+    async () => {
+      const res = await getDocumentsForEntity("opportunity", dealId as string);
+      return res.success && Array.isArray(res.data) ? res.data : [];
+    },
+    {
+      tables: ["core.document_links"],
+      match: (change) => change.entity_type === "opportunity" && change.entity_id === dealId,
+      config: { keepPreviousData: false },
+    },
+  );
+  const activitiesQuery = useLiveQuery<any[]>(
+    dealId ? `crm-opportunity-activities:${dealId}` : null,
+    async () => {
+      const res = await getCrmActivities({ opportunity_id: dealId as string, limit: 50 });
+      return res.success && Array.isArray(res.data) ? res.data : [];
+    },
+    {
+      tables: ["crm.activities"],
+      match: (change) => change.opportunity_id === dealId,
+      config: { keepPreviousData: false },
+    },
+  );
+  const documents = documentsQuery.data ?? NO_ROWS;
+  const activities = activitiesQuery.data ?? NO_ROWS;
+  const loadingDocs = documentsQuery.isLoading;
+  const loadingActivities = activitiesQuery.isLoading;
+  const { mutate: refreshDocuments } = documentsQuery;
+  const { mutate: refreshActivities } = activitiesQuery;
+  // Kept for the existing call sites after this user's own writes.
+  const loadDealDocuments = useCallback(async (_targetId: string) => {
+    await refreshDocuments();
+  }, [refreshDocuments]);
+  const loadDealActivities = useCallback(async (_targetId: string) => {
+    await refreshActivities();
+  }, [refreshActivities]);
 
   const handleUnlinkDoc = async (documentId: string) => {
     if (!opportunity?.id) return;

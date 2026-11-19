@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useLiveQuery } from '@/lib/live/LiveDataProvider';
 import Link from 'next/link';
 import {
   FileText, Plus, X, ChevronLeft, ChevronRight,
@@ -38,6 +39,10 @@ import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader'
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 import { TenderStageMoveModal, TenderActivityLog } from '@/components/crm/TenderStageMove';
 import { CommercialWorkspaceModal } from '@/components/crm/CommercialWorkspaceModal';
+
+// Stable empty list while live data loads, so memos and effects keyed on
+// it don't rerun every render.
+const NO_ROWS: any[] = [];
 
 // Intake workflow position (crm.tenders.review_workflow_status) shown on board cards.
 const WORKFLOW_CHIP: Record<string, { label: string; tone: string }> = {
@@ -137,15 +142,11 @@ interface TenderEngineInsights {
 }
 
 export default function TendersCommand() {
-  const [tenders, setTenders] = useState<Tender[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedTenderId, setSelectedTenderId] = useState<string | null>(null);
   const [isDeleteTenderModalOpen, setIsDeleteTenderModalOpen] = useState(false);
   const [isDeletingTender, setIsDeletingTender] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [engineInsights, setEngineInsights] = useState<TenderEngineInsights | null>(null);
 
   // Award modal state - moving a tender into 'Awarded' creates/links a real
   // project, so it's gated behind this modal instead of a plain stage move.
@@ -164,17 +165,82 @@ export default function TendersCommand() {
   const [isClosingOut, setIsClosingOut] = useState(false);
 
   // Requirements / compliance matrix state
-  const [requirements, setRequirements] = useState<TenderRequirement[]>([]);
-  const [isLoadingRequirements, setIsLoadingRequirements] = useState(false);
+  // Live for the tender open in the side panel: requirements, the
+  // compliance summary and its documents refresh when anyone changes them.
+  const requirementsQuery = useLiveQuery<TenderRequirement[]>(
+    selectedTenderId ? `crm-tender-requirements:${selectedTenderId}` : null,
+    async () => {
+      try {
+        const res = await getTenderRequirements(selectedTenderId as string);
+        return res.success ? (res.data as TenderRequirement[]) : [];
+      } catch {
+        return [];
+      }
+    },
+    {
+      tables: ["crm.tender_requirements", "crm.tasks", "core.document_links"],
+      match: (change) =>
+        change.tender_id === selectedTenderId || (change.entity_type === "tender" && change.entity_id === selectedTenderId),
+      config: { keepPreviousData: false },
+    },
+  );
+  const requirements = requirementsQuery.data ?? NO_ROWS;
+  const isLoadingRequirements = requirementsQuery.isLoading;
+  const { mutate: mutateRequirements } = requirementsQuery;
+  const setRequirements = useCallback(
+    (next: TenderRequirement[] | ((prev: TenderRequirement[]) => TenderRequirement[])) =>
+      void mutateRequirements(
+        (prev) => (typeof next === "function" ? next(prev ?? []) : next),
+        { revalidate: false },
+      ),
+    [mutateRequirements],
+  );
   const [newRequirementLabel, setNewRequirementLabel] = useState('');
-  const [complianceSummary, setComplianceSummary] = useState<TenderComplianceSummary | null>(null);
+  const complianceQuery = useLiveQuery<TenderComplianceSummary | null>(
+    selectedTenderId ? `crm-tender-compliance:${selectedTenderId}` : null,
+    async () => {
+      try {
+        const res = await getTenderComplianceSummary(selectedTenderId as string);
+        return res.success ? (res.data as TenderComplianceSummary) : null;
+      } catch (err) {
+        console.error('Failed to load compliance summary:', err);
+        return null;
+      }
+    },
+    {
+      tables: ["crm.tender_requirements", "core.document_links"],
+      match: (change) =>
+        change.tender_id === selectedTenderId || (change.entity_type === "tender" && change.entity_id === selectedTenderId),
+      config: { keepPreviousData: false },
+    },
+  );
+  const complianceSummary = complianceQuery.data ?? null;
+  const { mutate: mutateCompliance } = complianceQuery;
   const [isSeedingLibrary, setIsSeedingLibrary] = useState(false);
   const [matchingRequirementId, setMatchingRequirementId] = useState<string | null>(null);
   const [uploadingRequirementId, setUploadingRequirementId] = useState<string | null>(null);
 
   // Tender documents state
-  const [tenderDocuments, setTenderDocuments] = useState<any[]>([]);
-  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
+  const documentsQuery = useLiveQuery<any[]>(
+    selectedTenderId ? `crm-tender-documents:${selectedTenderId}` : null,
+    async () => {
+      try {
+        const res = await getDocuments({ tender_id: selectedTenderId as string });
+        return res.success ? (res.data as any[]) : [];
+      } catch (err) {
+        console.error('Failed to load tender documents:', err);
+        return [];
+      }
+    },
+    {
+      tables: ["core.document_links"],
+      match: (change) => change.entity_type === "tender" && change.entity_id === selectedTenderId,
+      config: { keepPreviousData: false },
+    },
+  );
+  const tenderDocuments = documentsQuery.data ?? NO_ROWS;
+  const isLoadingDocuments = documentsQuery.isLoading;
+  const { mutate: mutateTenderDocuments } = documentsQuery;
   const [previewDoc, setPreviewDoc] = useState<{ title: string; url: string; isImage: boolean } | null>(null);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
 
@@ -215,34 +281,54 @@ export default function TendersCommand() {
   const [stageMove, setStageMove] = useState<{ tenderId: string; tenderName: string; from: string; to: string } | null>(null);
   const [activityLogRefresh, setActivityLogRefresh] = useState(0);
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
-    setLoadError(null);
-    try {
+  // Live: the bid deck refreshes in place when anyone adds, moves, awards or
+  // deletes a tender (or a discovery import creates one). The previous list
+  // stays on screen while it refetches.
+  const tendersQuery = useLiveQuery<Tender[]>(
+    "crm-tenders:list",
+    async () => {
       const res = await getCrmTenders();
-      if (res.success && Array.isArray(res.data)) {
-        setTenders(res.data);
+      return res.success && Array.isArray(res.data) ? (res.data as Tender[]) : [];
+    },
+    { tables: ["crm.tenders"] },
+  );
+  const insightsQuery = useLiveQuery<TenderEngineInsights | null>(
+    "crm-tenders:insights",
+    async () => {
+      try {
+        const engineRes = await getTenderEngineInsights();
+        return engineRes.success && engineRes.data ? (engineRes.data as TenderEngineInsights) : null;
+      } catch {
+        return null;
       }
-      getTenderEngineInsights()
-        .then(engineRes => {
-          if (engineRes.success && engineRes.data) setEngineInsights(engineRes.data as TenderEngineInsights);
-        })
-        .catch(() => setEngineInsights(null));
-    } catch (error) {
-      console.error('Error loading CRM tenders data:', error);
-      setLoadError(describeActionError(
-        error,
+    },
+    { tables: ["crm.tenders", "crm.tender_requirements"] },
+  );
+  const tenders = tendersQuery.data ?? NO_ROWS;
+  const engineInsights = insightsQuery.data ?? null;
+  const isLoading = tendersQuery.isLoading && tendersQuery.data === undefined;
+  const loadError = tendersQuery.error
+    ? describeActionError(
+        tendersQuery.error,
         "You don't have permission to view Tenders & Bids.",
         "Tenders could not be loaded. Check the CRM service connection and retry."
-      ));
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
+      )
+    : null;
+  const { mutate: mutateTenders } = tendersQuery;
+  const { mutate: mutateInsights } = insightsQuery;
+  // Optimistic local edits (drag to a stage, delete, checklist ticks) write
+  // straight into the cache; the live refresh then confirms them.
+  const setTenders = useCallback(
+    (next: Tender[] | ((prev: Tender[]) => Tender[])) =>
+      void mutateTenders(
+        (prev) => (typeof next === "function" ? next(prev ?? []) : next),
+        { revalidate: false },
+      ),
+    [mutateTenders],
+  );
+  const loadData = useCallback(async () => {
+    await Promise.all([mutateTenders(), mutateInsights()]);
+  }, [mutateTenders, mutateInsights]);
 
   const getStageBidSum = (stage: string) => {
     return filteredTenders
@@ -679,29 +765,11 @@ export default function TendersCommand() {
     }
   };
 
-  const refreshComplianceSummary = useCallback(async (tenderId: string) => {
-    try {
-      const res = await getTenderComplianceSummary(tenderId);
-      setComplianceSummary(res.success ? (res.data as TenderComplianceSummary) : null);
-    } catch (err) {
-      console.error('Failed to load compliance summary:', err);
-      setComplianceSummary(null);
-    }
-  }, []);
+  // Kept for the existing call sites after this user's own writes.
+  const refreshComplianceSummary = useCallback(async (_tenderId: string) => {
+    await mutateCompliance();
+  }, [mutateCompliance]);
 
-  useEffect(() => {
-    if (!selectedTenderId) {
-      setRequirements([]);
-      setComplianceSummary(null);
-      return;
-    }
-    setIsLoadingRequirements(true);
-    getTenderRequirements(selectedTenderId)
-      .then(res => setRequirements(res.success ? (res.data as TenderRequirement[]) : []))
-      .catch(() => setRequirements([]))
-      .finally(() => setIsLoadingRequirements(false));
-    void refreshComplianceSummary(selectedTenderId);
-  }, [selectedTenderId, refreshComplianceSummary]);
 
   const handleAddRequirement = async () => {
     const label = newRequirementLabel.trim();
@@ -853,26 +921,10 @@ export default function TendersCommand() {
     }
   };
 
-  const loadTenderDocuments = async (tenderId: string) => {
-    setIsLoadingDocuments(true);
-    try {
-      const res = await getDocuments({ tender_id: tenderId });
-      setTenderDocuments(res.success ? (res.data as any[]) : []);
-    } catch (err) {
-      console.error('Failed to load tender documents:', err);
-      setTenderDocuments([]);
-    } finally {
-      setIsLoadingDocuments(false);
-    }
+  const loadTenderDocuments = async (_tenderId: string) => {
+    await mutateTenderDocuments();
   };
 
-  useEffect(() => {
-    if (!selectedTenderId) {
-      setTenderDocuments([]);
-      return;
-    }
-    loadTenderDocuments(selectedTenderId);
-  }, [selectedTenderId]);
 
   const handleUploadTenderDocument = async (file: File) => {
     if (!selectedTenderId) return;

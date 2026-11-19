@@ -1,6 +1,7 @@
 "use client";
 
-import React, { use, useEffect, useState } from "react";
+import React, { use } from "react";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
 import { Briefcase, FileText, MessageSquare, Ticket, Users } from "lucide-react";
 import { getCrmCustomer360 } from "@/lib/api";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -21,26 +22,34 @@ const customer360Tabs = [
 
 export default function CRMCustomer360Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [data, setData] = useState<RecordData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const response = await getCrmCustomer360(id);
-        if (!response.success) throw new Error("Customer 360 response was not successful.");
-        setData(response.data || null);
-      } catch {
-        setError("Customer 360 could not be loaded from the CRM lifecycle service.");
-      } finally {
-        setLoading(false);
-      }
-    };
-    void load();
-  }, [id]);
+  // Live: refreshes when this organisation, or any contact, deal, tender,
+  // activity, message or document in the org changes. Child rows don't carry
+  // the organisation id, so those refetch on any change (batched).
+  const query = useLiveQuery<RecordData | null>(
+    `crm-customer360:${id}`,
+    async () => {
+      const response = await getCrmCustomer360(id);
+      if (!response.success) throw new Error("Customer 360 response was not successful.");
+      return response.data || null;
+    },
+    {
+      tables: [
+        "crm.organizations",
+        "crm.contacts",
+        "crm.opportunities",
+        "crm.tenders",
+        "crm.activities",
+        "crm.communication_events",
+        "core.documents",
+      ],
+      match: (change) => change.table !== "crm.organizations" || change.id === id,
+    },
+  );
+  const data = query.data ?? null;
+  const loading = query.isLoading && query.data === undefined;
+  const error = query.error && query.data === undefined
+    ? "Customer 360 could not be loaded from the CRM lifecycle service."
+    : null;
 
   const organization = data?.organization || {};
 

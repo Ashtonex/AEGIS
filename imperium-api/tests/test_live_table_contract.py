@@ -16,11 +16,24 @@ SUBSCRIBE_RE = re.compile(r'useLiveTable\(\s*"([a-z_]+\.[a-z_]+)"')
 TRIGGER_TARGET_RE = re.compile(r"'([a-z_]+\.[a-z_]+)'")
 
 
+# Shared table lists for useLiveQuery / useLiveChanges live in one module;
+# pages may also pass an inline `tables: [...]` or `useLiveChanges([...])`.
+LIVE_TABLES_FILE = WEB_ROOT / "lib" / "live" / "liveTables.ts"
+QUOTED_TABLE_RE = re.compile(r'"([a-z_]+\.[a-z_]+)"')
+INLINE_LIST_RE = re.compile(r'(?:tables:\s*|useLiveChanges\(\s*)\[([^\]]*)\]')
+
+
 def _subscribed_tables() -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     for path in WEB_ROOT.rglob("*.ts*"):
         for table in SUBSCRIBE_RE.findall(path.read_text(encoding="utf-8")):
             found.setdefault(table, set()).add(str(path.relative_to(WEB_ROOT)))
+    for table in QUOTED_TABLE_RE.findall(LIVE_TABLES_FILE.read_text(encoding="utf-8")):
+        found.setdefault(table, set()).add(str(LIVE_TABLES_FILE.relative_to(WEB_ROOT)))
+    for path in WEB_ROOT.rglob("*.ts*"):
+        for body in INLINE_LIST_RE.findall(path.read_text(encoding="utf-8")):
+            for table in QUOTED_TABLE_RE.findall(body):
+                found.setdefault(table, set()).add(str(path.relative_to(WEB_ROOT)))
     return found
 
 

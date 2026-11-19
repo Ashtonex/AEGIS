@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
 import {
   AlertTriangle, CheckCircle2, CircleDashed, Clock, ExternalLink, FileText, Loader2, MinusCircle, RefreshCw, RotateCcw, Send, ShieldCheck,
 } from "lucide-react";
@@ -48,8 +49,6 @@ function VerifiedChip({ status }: { status?: ItemStatus }) {
 }
 
 export function TenderReviewPanel({ tenderId, onChanged }: { tenderId: string; onChanged?: () => void }) {
-  const [view, setView] = useState<TenderWorkflowView | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -63,19 +62,37 @@ export function TenderReviewPanel({ tenderId, onChanged }: { tenderId: string; o
   const [qsNotes, setQsNotes] = useState("");
   const [reopen, setReopen] = useState<string[]>([]);
 
+  // Live: when a colleague ticks an item, adds a note or moves the review
+  // on, this panel refreshes in place. Drafts being typed are separate state
+  // and are not touched by a refresh.
+  const workflowQuery = useLiveQuery<TenderWorkflowView | null>(
+    `crm-tender-workflow:${tenderId}`,
+    async () => (await getTenderWorkflow(tenderId)).data ?? null,
+    {
+      tables: ["crm.tender_review_items", "crm.tenders"],
+      match: (change) => change.tender_id === tenderId || (change.table === "crm.tenders" && change.id === tenderId),
+    },
+  );
+  const view = workflowQuery.data ?? null;
+  const loading = workflowQuery.isLoading && workflowQuery.data === undefined;
+  const { mutate: mutateWorkflow } = workflowQuery;
+  const setView = useCallback(
+    (next: TenderWorkflowView | null) => void mutateWorkflow(next, { revalidate: false }),
+    [mutateWorkflow],
+  );
   const load = useCallback(async () => {
     try {
-      const res = await getTenderWorkflow(tenderId);
-      setView(res.data ?? null);
+      await mutateWorkflow();
       setError(null);
     } catch (e) {
       setError(errorMessage(e, "Could not load the review workflow."));
-    } finally {
-      setLoading(false);
     }
-  }, [tenderId]);
-
-  useEffect(() => { void load(); }, [load]);
+  }, [mutateWorkflow]);
+  useEffect(() => {
+    if (workflowQuery.error && workflowQuery.data === undefined) {
+      setError(errorMessage(workflowQuery.error, "Could not load the review workflow."));
+    }
+  }, [workflowQuery.error, workflowQuery.data]);
 
   const run = async (key: string, action: () => Promise<{ data?: TenderWorkflowView | unknown; message?: string }>, after?: () => void) => {
     setBusy(key);
