@@ -1,0 +1,9 @@
+export SECRET_KEY=sbx-test-secret-key-not-for-production
+export DATABASE_URL=postgresql://test:test@127.0.0.1:55499/test
+export SUPABASE_URL=http://127.0.0.1:9
+export SUPABASE_ANON_KEY=sbx-anon SUPABASE_SERVICE_KEY=sbx-service
+export REDIS_URL=redis://127.0.0.1:6399/0
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=
+export OPENAI_API_KEY= PERPLEXITY_API_KEY= RESEND_API_KEY= TWILIO_ACCOUNT_SID= TWILIO_AUTH_TOKEN= MICROSOFT_GRAPH_CLIENT_SECRET= MICROSOFT_GRAPH_CLIENT_ID= MICROSOFT_GRAPH_TENANT_ID=
+export PYTHONPATH="C:/Users/ashjx/AppData/Local/Temp/claude/d942bbc1ba0e9a89/bf933ae3-2b69-41f2-afb8-656db5c5d5d8/scratchpad/guard"
+export PYTHONDONTWRITEBYTECODE=1

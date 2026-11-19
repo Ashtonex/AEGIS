@@ -1,0 +1,47 @@
+{
+ "tested": 1155,
+ "bad": [
+  {
+   "variant": "alg_none",
+   "method": "POST",
+   "path": "/api/v1/auth/logout",
+   "status": 503,
+   "body": "{\"detail\":\"Authentication service temporarily unavailable. Please retry.\"}"
+  },
+  {
+   "variant": "alg_none",
+   "method": "GET",
+   "path": "/api/v1/auth/me",
+   "status": 503,
+   "body": "{\"detail\":\"Authentication service temporarily unavailable. Please retry.\"}"
+  },
+  {
+   "variant": "alg_none",
+   "method": "GET",
+   "path": "/api/v1/auth/permissions",
+   "status": 503,
+   "body": "{\"detail\":\"Authentication service temporarily unavailable. Please retry.\"}"
+  },
+  {
+   "variant": "alg_none",
+   "method": "GET",
+   "path": "/api/v1/users/",
+   "status": 503,
+   "body": "{\"detail\":\"Authentication service temporarily unavailable. Please retry.\"}"
+  },
+  {
+   "variant": "alg_none",
+   "method": "GET",
+   "path": "/api/v1/users/assignable",
+   "status": 503,
+   "body": "{\"detail\":\"Authentication service temporarily unavailable. Please retry.\"}"
+  }
+ ],
+ "codes": {
+  "anon:401": 1155,
+  "garbage:401": 1155,
+  "alg_none:503": 1155
+ },
+ "seconds": 156.4,
+ "note": "bad list truncated: all 1155 entries are alg_none->503 (Supabase fallback unreachable in sandbox)"
+}

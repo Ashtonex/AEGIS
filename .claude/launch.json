@@ -2,6 +2,36 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "payroll-api-uitest-8010",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:ENVIRONMENT='development'; $env:DATABASE_URL='postgresql+asyncpg://postgres@127.0.0.1:55433/payroll_test'; $env:REDIS_URL='redis://127.0.0.1:6399/0'; $env:RATE_LIMIT_ENABLED='false'; $env:SECRET_KEY='ui-test-only'; $env:JWT_SECRET_KEY='ui-test-only-not-a-real-secret-0123456789abcdef'; $env:JWT_ISSUER='aegis-ui-test'; $env:SUPABASE_URL='http://127.0.0.1:9'; $env:SUPABASE_ANON_KEY='disabled'; $env:SUPABASE_SERVICE_KEY='disabled'; $env:TWILIO_ACCOUNT_SID=''; $env:TWILIO_AUTH_TOKEN=''; $env:TWILIO_WHATSAPP_FROM=''; $env:MICROSOFT_GRAPH_TENANT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_SECRET=''; $env:OPENAI_API_KEY=''; $env:RESEND_API_KEY=''; $env:ALLOWED_ORIGINS='http://localhost:3018,http://127.0.0.1:3018'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS-payroll/imperium-api; G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8010"
+      ],
+      "port": 8010
+    },
+    {
+      "name": "payroll-web-standalone-3018",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:PORT='3018'; $env:HOSTNAME='127.0.0.1'; $env:INTERNAL_API_URL='http://127.0.0.1:8010'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS-payroll/aegis-web/.next/standalone; node server.js"
+      ],
+      "port": 3018
+    },
+    {
+      "name": "aegis-frontend-start-3016",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:AEGIS_WORKFORCE_LOCAL_TEST='1'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web; npx next start -p 3016"
+      ],
+      "port": 3016
+    },
+    {
       "name": "aegis-backend",
       "runtimeExecutable": "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/.venv/Scripts/python.exe",
       "runtimeArgs": [
@@ -28,6 +58,26 @@
       ],
       "port": 3010,
       "autoPort": true
+    },
+    {
+      "name": "aegis-backend-uitest-8000",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:ENVIRONMENT='development'; $env:DATABASE_URL='postgresql+asyncpg://postgres@127.0.0.1:55434/aegis_ui_test'; $env:REDIS_URL='redis://127.0.0.1:6399/0'; $env:RATE_LIMIT_ENABLED='false'; $env:JWT_SECRET_KEY='ui-test-only-not-a-real-secret-0123456789abcdef'; $env:JWT_ISSUER='aegis-ui-test'; $env:SUPABASE_URL='http://127.0.0.1:9'; $env:SUPABASE_SERVICE_KEY='disabled'; $env:TWILIO_ACCOUNT_SID=''; $env:TWILIO_AUTH_TOKEN=''; $env:TWILIO_WHATSAPP_FROM=''; $env:MICROSOFT_GRAPH_TENANT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_SECRET=''; $env:OPENAI_API_KEY=''; $env:RESEND_API_KEY=''; $env:ALLOWED_ORIGINS='http://localhost:3017,http://127.0.0.1:3017'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; .venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "aegis-frontend-standalone-3017",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:PORT='3017'; $env:HOSTNAME='127.0.0.1'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/.next/standalone; node server.js"
+      ],
+      "port": 3017
     },
     {
       "name": "aegis-backend-8001",
@@ -85,6 +135,110 @@
         "$env:RATE_LIMIT_ENABLED='false'; $env:DB_POOL_SIZE='5'; $env:DB_MAX_OVERFLOW='5'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; .venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8004 --workers 4"
       ],
       "port": 8004
+    },
+    {
+      "name": "aegis-backend-egp-isolated",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "C:/Users/ashjx/AppData/Local/Temp/claude/G--work-ATMCAPPROJECTS-Mudekwa-AEGIS/677c0f49-9199-4593-9060-a125ccfc7d37/scratchpad/run_api_isolated.ps1"
+      ],
+      "port": 8011
+    },
+    {
+      "name": "aegis-backend-quotation-ws-isolated",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "C:/Users/ashjx/AppData/Local/Temp/claude/G--work-ATMCAPPROJECTS-Mudekwa-AEGIS/2aa01d33-4364-4d21-a8b9-6d701750a69e/scratchpad/run_api_ui.ps1"
+      ],
+      "port": 8011
+    },
+    {
+      "name": "aegis-frontend-quotation-ws-isolated",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:NEXT_PUBLIC_API_URL='http://localhost:8011'; $env:INTERNAL_API_URL='http://localhost:8011'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web; npx next start -p 3014"
+      ],
+      "port": 3014
+    },
+    {
+      "name": "aegis-frontend-egp-isolated",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:NEXT_PUBLIC_API_URL='http://localhost:8011'; $env:INTERNAL_API_URL='http://localhost:8011'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web; npx next start -p 3013"
+      ],
+      "port": 3013
+    },
+    {
+      "name": "office-api-uitest-8020",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:ENVIRONMENT='development'; $env:DATABASE_URL='postgresql+asyncpg://postgres@127.0.0.1:55435/office_test'; $env:REDIS_URL='redis://127.0.0.1:6399/0'; $env:RATE_LIMIT_ENABLED='false'; $env:JWT_SECRET_KEY='ui-test-only-not-a-real-secret-0123456789abcdef'; $env:JWT_ISSUER='aegis-ui-test'; $env:SUPABASE_URL='http://127.0.0.1:9'; $env:SUPABASE_SERVICE_KEY='disabled'; $env:TWILIO_ACCOUNT_SID=''; $env:TWILIO_AUTH_TOKEN=''; $env:TWILIO_WHATSAPP_FROM=''; $env:MICROSOFT_GRAPH_TENANT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_SECRET=''; $env:OPENAI_API_KEY=''; $env:RESEND_API_KEY=''; $env:ALLOWED_ORIGINS='http://localhost:3019,http://127.0.0.1:3019'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; .venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8020"
+      ],
+      "port": 8020
+    },
+    {
+      "name": "paidfrom-api-uitest-8030",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:ENVIRONMENT='development'; $env:DATABASE_URL='postgresql+asyncpg://postgres@127.0.0.1:55436/paidfrom_test'; $env:REDIS_URL='redis://127.0.0.1:6399/0'; $env:RATE_LIMIT_ENABLED='false'; $env:JWT_SECRET_KEY='ui-test-only-not-a-real-secret-0123456789abcdef'; $env:JWT_ISSUER='aegis-ui-test'; $env:SUPABASE_URL='http://127.0.0.1:9'; $env:SUPABASE_SERVICE_KEY='disabled'; $env:TWILIO_ACCOUNT_SID=''; $env:TWILIO_AUTH_TOKEN=''; $env:TWILIO_WHATSAPP_FROM=''; $env:MICROSOFT_GRAPH_TENANT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_SECRET=''; $env:OPENAI_API_KEY=''; $env:RESEND_API_KEY=''; $env:ALLOWED_ORIGINS='http://localhost:3021,http://127.0.0.1:3021'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; .venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8030"
+      ],
+      "port": 8030
+    },
+    {
+      "name": "paidfrom-web-standalone-3021",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:PORT='3021'; $env:HOSTNAME='127.0.0.1'; $env:INTERNAL_API_URL='http://127.0.0.1:8030'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/.next/standalone; node server.js"
+      ],
+      "port": 3021
+    },
+    {
+      "name": "office-web-standalone-3019",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:PORT='3019'; $env:HOSTNAME='127.0.0.1'; $env:INTERNAL_API_URL='http://127.0.0.1:8020'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/.next/standalone; node server.js"
+      ],
+      "port": 3019
+    },
+    {
+      "name": "siteops-api-uitest-8020",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:ENVIRONMENT='development'; $env:DATABASE_URL='postgresql+asyncpg://postgres@127.0.0.1:55433/siteops_test'; $env:REDIS_URL='redis://127.0.0.1:6399/0'; $env:RATE_LIMIT_ENABLED='false'; $env:SECRET_KEY='ui-test-only'; $env:JWT_SECRET_KEY='ui-test-only-not-a-real-secret-0123456789abcdef'; $env:JWT_ISSUER='aegis-ui-test'; $env:SUPABASE_URL='http://127.0.0.1:9'; $env:SUPABASE_ANON_KEY='disabled'; $env:SUPABASE_SERVICE_KEY='disabled'; $env:TWILIO_ACCOUNT_SID=''; $env:TWILIO_AUTH_TOKEN=''; $env:TWILIO_WHATSAPP_FROM=''; $env:MICROSOFT_GRAPH_TENANT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_ID=''; $env:MICROSOFT_GRAPH_CLIENT_SECRET=''; $env:OPENAI_API_KEY=''; $env:RESEND_API_KEY=''; $env:ALLOWED_ORIGINS='http://localhost:3019,http://127.0.0.1:3019'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8020"
+      ],
+      "port": 8020
+    },
+    {
+      "name": "siteops-web-standalone-3019",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:PORT='3019'; $env:HOSTNAME='127.0.0.1'; $env:INTERNAL_API_URL='http://127.0.0.1:8020'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/.next/standalone; node server.js"
+      ],
+      "port": 3019
     }
   ]
 }
