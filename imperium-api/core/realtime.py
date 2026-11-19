@@ -202,6 +202,11 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "finance.vendor_payment_requests": ("finance.vendor_payment.clear", "finance.cash.read"),
     "finance.client_payment_requests": ("finance.cash.read",),
     "finance.payments": ("finance.cash.read",),
+    # Queue-only sources (migration 304): gated for executive readers below.
+    "crm.subcontractors": ("executive.view_dashboard",),
+    "finance.company_budgets": ("executive.view_dashboard",),
+    "finance.management_accounts_packs": ("executive.view_dashboard",),
+    "hr.leave_requests": ("executive.view_dashboard",),
     "core.internal_messages": ("internal_messages.read",),
     "core.documents": ("documents.read",),
     # Messages page and daily-report evidence (migration 301). Both push the
@@ -259,6 +264,31 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "finance.commitments": ("finance.commitment.read",),
     "finance.ccb_monitor_findings": ("finance.ccb_findings.read",),
 }
+
+# Every source of the executive pending-approvals queue (routers/executive.py
+# _PENDING_APPROVAL_SOURCES, gated by executive.view_dashboard): executive
+# readers get these tables' signals too, so the queue refreshes when an item
+# enters or leaves its pending state even without the module's own key.
+APPROVAL_QUEUE_SOURCE_TABLES: tuple[str, ...] = (
+    "core.approval_instances",
+    "crm.subcontractors",
+    "finance.company_budgets",
+    "finance.journal_entries",
+    "finance.management_accounts_packs",
+    "finance.payroll_runs",
+    "finance.supplier_payment_batches",
+    "finance.variations",
+    "fleet.maintenance_work_orders",
+    "fleet.plant_requests",
+    "hr.leave_requests",
+    "procurement.purchase_orders",
+    "procurement.purchase_requisitions",
+    "procurement.supplier_invoices",
+)
+for _table in APPROVAL_QUEUE_SOURCE_TABLES:
+    _keys = TABLE_PERMISSION_MAP[_table]
+    if "executive.view_dashboard" not in _keys:
+        TABLE_PERMISSION_MAP[_table] = (*_keys, "executive.view_dashboard")
 
 # How long a user's visible-project set is reused before it is looked up
 # again. A new project assignment reaches live push within this window.

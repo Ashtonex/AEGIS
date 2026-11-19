@@ -39,8 +39,10 @@ export function useApiQueries<T extends QueryMap>(
   const [error, setError] = useState<Error | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(enabled);
 
-  const execute = useCallback(async () => {
-    setIsLoading(true);
+  // quiet: a background refresh (live update) - no loading state, and a
+  // source that fails keeps its previous value instead of disappearing.
+  const execute = useCallback(async (quiet: boolean = false) => {
+    if (!quiet) setIsLoading(true);
     setError(null);
 
     const keys = Object.keys(sources) as (keyof T)[];
@@ -67,7 +69,14 @@ export function useApiQueries<T extends QueryMap>(
       nextWarnings.push(`${label} could not be loaded.`);
     });
 
-    setData(nextData);
+    setData((previous) => {
+      if (!quiet) return nextData;
+      const merged: QueryData<T> = { ...nextData };
+      keys.forEach((key) => {
+        if (!(key in merged) && key in previous) merged[key] = previous[key];
+      });
+      return merged;
+    });
     setWarnings(nextWarnings);
     setError(criticalError);
     setIsLoading(false);
@@ -80,5 +89,9 @@ export function useApiQueries<T extends QueryMap>(
     }
   }, [execute, enabled]);
 
-  return { data, warnings, error, isLoading, refetch: execute };
+  // Stable identities: callers put these in hook dependency lists.
+  const refetch = useCallback(() => execute(false), [execute]);
+  const refreshQuietly = useCallback(() => execute(true), [execute]);
+
+  return { data, warnings, error, isLoading, refetch, refreshQuietly };
 }

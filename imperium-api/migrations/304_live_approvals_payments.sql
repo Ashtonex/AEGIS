@@ -45,7 +45,13 @@ DECLARE
     'finance.payroll_items',
     'finance.vendor_payment_requests',
     'finance.client_payment_requests',
-    'finance.payments'
+    'finance.payments',
+    -- Remaining sources of the executive pending-approvals queue
+    -- (routers/executive.py _PENDING_APPROVAL_SOURCES) that had no trigger.
+    'crm.subcontractors',
+    'finance.company_budgets',
+    'finance.management_accounts_packs',
+    'hr.leave_requests'
   ];
 BEGIN
   FOREACH target IN ARRAY targets LOOP

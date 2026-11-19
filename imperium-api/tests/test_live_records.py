@@ -421,6 +421,20 @@ class BulkOrgSignalTest(_SignalHarness):
 
 
 class LiveRecordContractTest(unittest.TestCase):
+    def test_approval_queue_sources_reach_executive_readers(self):
+        # The pending-approvals queue is gated by executive.view_dashboard, so
+        # every table feeding it must signal executive readers too.
+        for table in realtime.APPROVAL_QUEUE_SOURCE_TABLES:
+            self.assertIn("executive.view_dashboard", realtime.TABLE_PERMISSION_MAP[table], table)
+
+    def test_approval_queue_sources_match_the_endpoint(self):
+        # Every table _PENDING_APPROVAL_SOURCES reads is a queue source here.
+        src = (Path(__file__).resolve().parents[1] / "routers" / "executive.py").read_text(encoding="utf-8")
+        start = src.index("_PENDING_APPROVAL_SOURCES")
+        end = src.index("def _pending_approval_item", start)
+        read = set(re.findall(r"FROM ([a-z_]+\.[a-z_]+)", src[start:end]))
+        self.assertEqual(sorted(read - set(realtime.APPROVAL_QUEUE_SOURCE_TABLES)), [])
+
     def test_every_loader_table_is_relayed(self):
         for table in live_records.LOADERS:
             self.assertIn(table, realtime.TABLE_PERMISSION_MAP, table)

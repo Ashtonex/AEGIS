@@ -92,21 +92,28 @@ export function isProjectChange(change: LiveChange, projectId: string): boolean 
   return change.project_id === projectId;
 }
 
-/** Everything that puts an item into (or takes one out of) someone's
- * pending-approvals queue: the approval engine plus the records that are
- * approved directly on their own row. */
+/** Everything that puts an item into (or takes one out of) the executive
+ * pending-approvals queue: every source in routers/executive.py
+ * _PENDING_APPROVAL_SOURCES, plus the approval engine's steps/decisions. */
 export const APPROVAL_TABLES = [
   "core.approval_instances",
   "core.approval_steps",
   "core.approval_decisions",
-  "procurement.purchase_requisitions",
-  "procurement.purchase_orders",
-  "finance.supplier_payment_batches",
+  "crm.subcontractors",
+  "finance.company_budgets",
+  "finance.journal_entries",
+  "finance.management_accounts_packs",
   "finance.payroll_runs",
-  "finance.vendor_payment_requests",
+  "finance.supplier_payment_batches",
   "finance.variations",
+  "finance.vendor_payment_requests",
   "finance.progress_claims",
+  "fleet.maintenance_work_orders",
   "fleet.plant_requests",
+  "hr.leave_requests",
+  "procurement.purchase_orders",
+  "procurement.purchase_requisitions",
+  "procurement.supplier_invoices",
 ] as const;
 
 /** Supplier payments: payables, batches (held payments needing a second

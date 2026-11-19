@@ -13,7 +13,8 @@ import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader"
 import { Skeleton, SkeletonTableRows } from "@/components/ui/Skeleton";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
-import { useLiveTable } from "@/lib/live/LiveDataProvider";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { FINANCE_OVERVIEW_TABLES } from "@/lib/live/liveTables";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
 import {
@@ -345,6 +346,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
     error: loadError,
     isLoading: loading,
     refetch: loadData,
+    refreshQuietly,
   } = useApiQueries(
     {
       projects: () => getInternalProjects(),
@@ -385,7 +387,10 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const unassignedBankOut = Number(financeData.bankAllocation?.data?.open_items?.unassigned_out || 0);
   const cashWithoutUse = Number(financeData.bankAllocation?.data?.open_items?.cash_without_use || 0);
 
-  useLiveTable("finance.budgets", () => void loadData());
+  // Live: the project summaries, claims, variations and budgets behind the
+  // overview cards refresh quietly when any of them changes (Codex on #54:
+  // the overview's own query refreshed while these stayed stale).
+  useLiveRefresh(FINANCE_OVERVIEW_TABLES, undefined, () => void refreshQuietly());
   const error = loadError ? loadFailureMessage(loadError) : null;
 
   const handleCreateCostCode = async (e: React.FormEvent) => {
