@@ -311,7 +311,16 @@ export function useLiveQuery<T>(
 ): SWRResponse<T> {
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
-  const response = useSWR<T>(key, () => fetcherRef.current(), { keepPreviousData: true, ...config });
+  // The SWR cache is shared by the whole tab. Scoping every key to the
+  // signed-in user and organisation means a different account signing in
+  // here can never be shown the previous account's cached records (nor
+  // have keepPreviousData carry them over). Signed out pauses the query.
+  const { session } = useAuth();
+  const userId = session?.user?.id;
+  const appMetadata = (session?.user?.app_metadata ?? {}) as { org_id?: string; organization_id?: string };
+  const orgId = appMetadata.org_id ?? appMetadata.organization_id ?? "";
+  const scopedKey = key && userId ? `${userId}:${orgId}:${key}` : null;
+  const response = useSWR<T>(scopedKey, () => fetcherRef.current(), { keepPreviousData: true, ...config });
   const { mutate } = response;
   const matchRef = useRef(match);
   matchRef.current = match;
@@ -322,20 +331,20 @@ export function useLiveQuery<T>(
   }, []);
 
   const scheduleRefresh = useCallback(() => {
-    if (!key) return;
+    if (!scopedKey) return;
     if (timerRef.current) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
       void mutate();
     }, LIVE_QUERY_DEBOUNCE_MS);
-  }, [key, mutate]);
+  }, [scopedKey, mutate]);
 
-  useLiveChanges(key ? tables : [], (change) => {
+  useLiveChanges(scopedKey ? tables : [], (change) => {
     if (matchRef.current && !matchRef.current(change)) return;
     scheduleRefresh();
   });
   useLiveReconnect(() => {
-    if (key) void mutate();
+    if (scopedKey) void mutate();
   });
 
   return response;
