@@ -356,7 +356,7 @@ async def get_public_tender(
 
 
 @router.post("/enquiry")
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=get_remote_address)
 async def submit_enquiry(
     request: Request,
     payload: EnquiryPayload,
@@ -446,7 +446,7 @@ async def submit_enquiry(
 
 
 @router.post("/supplier")
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=get_remote_address)
 async def submit_supplier(
     request: Request,
     payload: SupplierPayload,
@@ -502,7 +502,7 @@ async def submit_supplier(
 
 
 @router.post("/application")
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=get_remote_address)
 async def submit_application(
     request: Request,
     payload: ApplicationPayload,
@@ -546,7 +546,7 @@ async def submit_application(
 
 
 @router.post("/tender-interest/{tender_id}")
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=get_remote_address)
 async def submit_tender_interest(
     request: Request,
     tender_id: str,
@@ -647,7 +647,7 @@ async def get_public_metrics_summary(request: Request, db: AsyncSession = Depend
 
 
 @router.post("/newsletter")
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=get_remote_address)
 async def submit_newsletter_signup(
     request: Request,
     payload: NewsletterPayload,

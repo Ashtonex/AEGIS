@@ -14,7 +14,12 @@ def sent_to(address: str) -> list[str]:
     with patch.object(settings, "RESEND_API_KEY", "re_test"), \
          patch.object(settings, "EMAIL_FROM_ADDRESS", "AEGIS <noreply@sixnineconstruction.com>"), \
          patch.object(settings, "EMAIL_REDIRECTS", "Ashton@Admin.com = admin@sixnineconstruction.com"), \
-         patch("core.email.httpx.AsyncClient", return_value=client):
+         patch("core.email.httpx.AsyncClient", return_value=client), \
+         patch("core.database.AsyncSessionLocal", side_effect=RuntimeError("no database in unit tests")):
+        # _delivery_addresses looks the recipient up in core.users; with a
+        # developer .env that is the production database. Refuse it here so
+        # the test exercises the documented "lookup failed -> original
+        # address" path instead of reading (or hanging on) a real database.
         assert asyncio.run(email.send_email(address, "Subject", "<p>Hi</p>"))
     return client.post.await_args.kwargs["json"]["to"]
 
