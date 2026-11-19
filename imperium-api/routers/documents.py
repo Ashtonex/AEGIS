@@ -170,9 +170,10 @@ async def list_documents(
     if status_filter:
         query_str += " AND d.status = :status"
         params["status"] = status_filter
-    if classification:
-        query_str += " AND d.classification = :classification"
-        params["classification"] = classification
+    # core.documents has no classification column (every document renders as
+    # "internal"), so a classification filter other than that matches nothing.
+    if classification and classification != "internal":
+        query_str += " AND false"
     if project_id:
         query_str += """ AND EXISTS (
             SELECT 1 FROM core.document_links dl
@@ -207,7 +208,7 @@ async def list_documents(
         )"""
         params["opportunity_id"] = opportunity_id
     if search:
-        query_str += " AND (d.title ILIKE :search OR d.file_name ILIKE :search OR d.doc_number ILIKE :search)"
+        query_str += " AND (d.title ILIKE :search OR d.file_name ILIKE :search)"
         params["search"] = f"%{search}%"
 
     # The Documents page computes category counts, total size and search
