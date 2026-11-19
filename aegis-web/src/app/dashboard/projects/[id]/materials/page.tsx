@@ -33,17 +33,35 @@ import {
   requestSiteMaterial,
   type ProjectSupplyChainResponse,
 } from "@/lib/api";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PROJECT_MATERIALS_TABLES, isProjectChange } from "@/lib/live/liveTables";
 
 type TabKey = "inventory" | "wastage" | "requisitions" | "rfqs" | "orders" | "deliveries" | "consumption";
 
 export default function ProjectMaterialsPage() {
   const params = useParams();
   const projectId = typeof params?.id === "string" ? params.id : "";
-  const { detail, loading: projectLoading } = useProject();
+  const { detail, loading: projectLoading, project } = useProject();
 
-  const [supplyChain, setSupplyChain] = useState<ProjectSupplyChainResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Stores, stock, requisitions, orders and deliveries for THIS project,
+  // live: refreshes when any of them changes (another site's issue, a PO
+  // approved at HQ, a delivery received).
+  const projectUuid = (project as { id?: string } | null)?.id ?? projectId;
+  const supplyQuery = useLiveQuery<ProjectSupplyChainResponse>(
+    projectId ? `project-supply-chain:${projectId}` : null,
+    async () => {
+      const res = await getProjectSupplyChain(projectId);
+      if (!res.success || !res.data) throw new Error(res.message || "Failed to load project supply chain.");
+      return res.data;
+    },
+    { tables: PROJECT_MATERIALS_TABLES, match: (change) => isProjectChange(change, projectUuid) },
+  );
+  const supplyChain = supplyQuery.data ?? null;
+  const loading = supplyQuery.isLoading && supplyQuery.data === undefined;
+  const error = supplyQuery.error && supplyQuery.data === undefined
+    ? (supplyQuery.error instanceof Error ? supplyQuery.error.message : "Error connecting to supply chain service.")
+    : null;
+  const { mutate: refreshSupplyChain } = supplyQuery;
   const [activeTab, setActiveTab] = useState<TabKey>("inventory");
 
   // Site Requisition Modal State
@@ -61,27 +79,10 @@ export default function ProjectMaterialsPage() {
   const [reqNotice, setReqNotice] = useState<string | null>(null);
   const [reqError, setReqError] = useState<string | null>(null);
 
+  // Kept for the existing call sites after this user's own edits.
   const loadSupplyChain = async () => {
-    if (!projectId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await getProjectSupplyChain(projectId);
-      if (res.success && res.data) {
-        setSupplyChain(res.data);
-      } else {
-        setError(res.message || "Failed to load project supply chain.");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error connecting to supply chain service.");
-    } finally {
-      setLoading(false);
-    }
+    await refreshSupplyChain();
   };
-
-  useEffect(() => {
-    void loadSupplyChain();
-  }, [projectId]);
 
   // Fallback material consumption from daily reports if present in detail
   const fallbackMaterials = useMemo(() => detail?.material_records ?? [], [detail]);

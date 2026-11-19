@@ -30,6 +30,9 @@ import {
   type ProjectMilestoneItem,
 } from "@/lib/api/projects";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { PROJECT_RISK_TABLES, isProjectChange } from "@/lib/live/liveTables";
+import { useProjectUuid } from "@/context/ProjectWorkspaceContext";
 
 interface ContractualDelaysWorkspaceProps {
   projectId: string;
@@ -95,6 +98,15 @@ export function ContractualDelaysWorkspace({ projectId }: ContractualDelaysWorks
       setLoading(false);
     }
   };
+
+  // Live: delay events, EOT claims and milestones on THIS project.
+  const liveProjectId = useProjectUuid(projectId);
+  useLiveRefresh(
+    [...PROJECT_RISK_TABLES, "projects.project_milestones"],
+    (change) => isProjectChange(change, liveProjectId),
+    () => void loadAll(),
+    !!projectId,
+  );
 
   useEffect(() => {
     if (projectId) {

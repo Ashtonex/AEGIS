@@ -71,6 +71,49 @@ DOCUMENT_LINK_SIGNAL_TYPES = {"tender", "opportunity"}
 DOCUMENT_LINK_SIGNAL_KEYS: tuple[str, ...] = ("documents.read",)
 
 
+# Tables whose plain change signals go only to users who may see the row's
+# project (core/project_scope), the same rule the project endpoints apply.
+# A row without a project_id goes only to users who see every project.
+PROJECT_SCOPED_SIGNAL_TABLES: frozenset[str] = frozenset({
+    "projects.project_milestones",
+    "projects.milestone_dependencies",
+    "projects.site_daily_targets",
+    "projects.project_profiles",
+    "projects.sites",
+    "projects.project_checks",
+    "projects.project_changes",
+    "projects.project_risks",
+    "projects.contractual_delay_events",
+    "projects.extension_of_time_claims",
+    "projects.controlled_drawings",
+    "projects.concrete_pour_cards",
+    "projects.site_snags",
+    "projects.subcontract_packages",
+    "projects.subcontractor_certificates",
+    "projects.subcontractor_back_charges",
+    "projects.weekly_budgets",
+    "projects.weekly_budget_items",
+    "projects.progress_photo_diary",
+    "projects.site_role_assignments",
+    "finance.progress_claims",
+    "finance.cost_transactions",
+    "finance.project_budgets",
+    "finance.variations",
+    "finance.boq_line_items",
+    "finance.project_money_entries",
+    "finance.retention_ledger",
+    "finance.project_forecasts",
+    "hr.project_allocations",
+    "fleet.fleet_assignments",
+})
+
+# A BOQ import or cost upload writes hundreds of rows in one go. Scoped
+# signals for the same (org, table, project) within this window go out as
+# one event (op "BULK" when more than one row changed), so each socket gets
+# one refresh instead of hundreds of messages.
+SCOPED_SIGNAL_WINDOW_SECONDS = 0.15
+
+
 def _parent_keys(data: dict[str, Any]) -> dict[str, Any]:
     return {k: str(data[k]) for k in PARENT_KEYS if data.get(k)}
 
@@ -90,6 +133,40 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "crm.tender_candidates": ("tender_discovery.read",),
     "crm.tender_discovery_runs": ("tender_discovery.read",),
     "crm.tasks": ("crm_tasks.read", "crm_tasks.read_all"),
+    # Project workspace (migration 303). Project-scoped: see
+    # PROJECT_SCOPED_SIGNAL_TABLES below.
+    **{table: ("projects.read",) for table in (
+        "projects.project_milestones",
+        "projects.milestone_dependencies",
+        "projects.site_daily_targets",
+        "projects.project_profiles",
+        "projects.sites",
+        "projects.project_checks",
+        "projects.project_changes",
+        "projects.project_risks",
+        "projects.contractual_delay_events",
+        "projects.extension_of_time_claims",
+        "projects.controlled_drawings",
+        "projects.concrete_pour_cards",
+        "projects.site_snags",
+        "projects.subcontract_packages",
+        "projects.subcontractor_certificates",
+        "projects.subcontractor_back_charges",
+        "projects.progress_photo_diary",
+        "projects.site_role_assignments",
+        "finance.boq_line_items",
+        "finance.retention_ledger",
+        "hr.project_allocations",
+    )},
+    "projects.weekly_budgets": ("site_operations.read", "projects.read"),
+    "projects.weekly_budget_items": ("site_operations.read", "projects.read"),
+    "finance.progress_claims": ("finance.claim.read",),
+    "finance.cost_transactions": ("finance.cost.read", "projects.read"),
+    "finance.project_budgets": ("finance.budget.read", "projects.read"),
+    "finance.variations": ("finance.variation.read", "projects.read"),
+    "finance.project_money_entries": ("finance.petty_cash.read", "finance.cash.read"),
+    "finance.project_forecasts": ("executive.view_dashboard",),
+    "fleet.fleet_assignments": ("fleet.read",),
     "core.internal_messages": ("internal_messages.read",),
     "core.documents": ("documents.read",),
     # Messages page and daily-report evidence (migration 301). Both push the
@@ -228,6 +305,10 @@ class ConnectionManager:
         self._scope_cache[user_id] = (now, scope)
         return scope
 
+    def has_fresh_scope(self, meta: dict[str, Any]) -> bool:
+        cached = self._scope_cache.get(meta["user_id"])
+        return bool(cached) and time.monotonic() - cached[0] < SCOPE_TTL_SECONDS
+
     def connection_count(self) -> int:
         return len(self._meta)
 
@@ -275,6 +356,73 @@ def _semaphore() -> asyncio.Semaphore:
 # Tables whose rows belong to a project. Without the row there is no way to
 # check scope, so a failed load sends nothing rather than a bare signal.
 _PROJECT_SCOPED_TABLES = {"core.document_links"}
+
+
+async def _scope_filter(
+    targets: list[tuple[WebSocket, dict[str, Any]]], project_id: Optional[str]
+) -> list[tuple[WebSocket, dict[str, Any]]]:
+    """Keeps the sockets whose user may see `project_id` (None: only users
+    who see every project). Opens a DB session only when some user's scope
+    isn't cached yet."""
+    if not targets:
+        return []
+
+    async def check(db) -> list[tuple[WebSocket, dict[str, Any]]]:
+        allowed = []
+        for ws, meta in targets:
+            if db is None and not manager.has_fresh_scope(meta):
+                continue  # expired between the check and now: deny, don't guess
+            scope = await manager.visible_projects(db, meta)
+            if scope is None or (project_id is not None and project_id in scope):
+                allowed.append((ws, meta))
+        return allowed
+
+    if all(manager.has_fresh_scope(meta) for _, meta in targets):
+        return await check(None)
+    from core.database import AsyncSessionLocal
+
+    async with _semaphore():
+        async with AsyncSessionLocal() as db:
+            return await check(db)
+
+
+# (org, table, project) -> pending coalesced event, see SCOPED_SIGNAL_WINDOW_SECONDS.
+_pending_scoped: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def queue_scoped_signal(table: str, org_id: str, permission_keys: tuple[str, ...], data: dict[str, Any]) -> None:
+    """Batches a project-scoped change signal; the first one in a window
+    schedules the send, later ones only update the pending event."""
+    project_id = str(data["project_id"]) if data.get("project_id") else ""
+    key = (org_id, table, project_id)
+    pending = _pending_scoped.get(key)
+    if pending is not None:
+        pending["count"] += 1
+        pending["event"]["id"] = data.get("id")
+        return
+    _pending_scoped[key] = {
+        "count": 1,
+        "event": {"type": "table_change", "table": table, "op": data.get("op"), "id": data.get("id"), **_parent_keys(data)},
+    }
+    _spawn(_flush_scoped_signal(key, permission_keys))
+
+
+async def _flush_scoped_signal(key: tuple[str, str, str], permission_keys: tuple[str, ...]) -> None:
+    await asyncio.sleep(SCOPED_SIGNAL_WINDOW_SECONDS)
+    pending = _pending_scoped.pop(key, None)
+    if pending is None:
+        return
+    event = pending["event"]
+    if pending["count"] > 1:
+        event["op"] = "BULK"
+        event["count"] = pending["count"]
+    org_id, _table, project_id = key
+    try:
+        targets = await _scope_filter(await manager.eligible(org_id, permission_keys), project_id or None)
+    except Exception:
+        logger.exception("Live scoped signal failed", table=key[1])
+        return
+    await _send_all([ws for ws, _ in targets], event)
 
 
 async def relay_live_record(
@@ -413,6 +561,15 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
         from core.live_records import LOADERS
 
         parents = _parent_keys(data)
+        if table in PROJECT_SCOPED_SIGNAL_TABLES:
+            queue_scoped_signal(table, str(org_id), permission_keys, data)
+            return
+        if table == "core.document_links" and data.get("entity_type") == "project":
+            # A project's own files: refresh signal, scoped to that project
+            # (a project link may leave project_id empty; entity_id is it).
+            scoped = {**data, "project_id": data.get("project_id") or data.get("entity_id")}
+            queue_scoped_signal(table, str(org_id), DOCUMENT_LINK_SIGNAL_KEYS, scoped)
+            return
         if table == "core.document_links" and data.get("entity_type") in DOCUMENT_LINK_SIGNAL_TYPES:
             _spawn(
                 manager.broadcast_table_change(

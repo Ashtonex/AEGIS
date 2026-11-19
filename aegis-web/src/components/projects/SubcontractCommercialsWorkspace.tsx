@@ -31,6 +31,9 @@ import {
 } from "@/lib/api/projects";
 import { getSubcontractors } from "@/lib/api/crm";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { PROJECT_FINANCIAL_TABLES, isProjectChange } from "@/lib/live/liveTables";
+import { useProjectUuid } from "@/context/ProjectWorkspaceContext";
 
 interface Props {
   projectId: string;
@@ -101,6 +104,15 @@ export function SubcontractCommercialsWorkspace({ projectId }: Props) {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // Live: packages, certificates and back charges on THIS project.
+  const liveProjectId = useProjectUuid(projectId);
+  useLiveRefresh(
+    PROJECT_FINANCIAL_TABLES,
+    (change) => isProjectChange(change, liveProjectId),
+    () => void loadData(),
+    !!projectId,
+  );
 
   const loadCertificates = useCallback(async (pkgId: string) => {
     setLoadingCerts(true);

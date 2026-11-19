@@ -21,6 +21,14 @@ export function ProjectWorkspaceProvider({
   );
 }
 
+/** The project's UUID when rendered inside a project workspace (routes can
+ * use the project code), else the id given. Live events carry the UUID. */
+export function useProjectUuid(projectId: string): string {
+  const context = useContext(ProjectWorkspaceContext);
+  const id = (context?.project as { id?: string } | null | undefined)?.id;
+  return id ? String(id) : projectId;
+}
+
 export function useProject(): ProjectWorkspaceData {
   const context = useContext(ProjectWorkspaceContext);
   if (!context) {

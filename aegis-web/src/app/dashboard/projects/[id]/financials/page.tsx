@@ -37,6 +37,11 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import { ProjectMoneyModal } from "@/app/dashboard/finance/ProjectMoneyModal";
 import { SubcontractCommercialsWorkspace } from "@/components/projects/SubcontractCommercialsWorkspace";
 import { ProjectEvmStudio } from "@/components/projects/ProjectEvmStudio";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PROJECT_FINANCIAL_TABLES, isProjectChange } from "@/lib/live/liveTables";
+
+// Stable empty list while live data loads.
+const NO_ROWS: Record<string, unknown>[] = [];
 
 export default function ProjectFinancialsPage() {
   const params = useParams();
@@ -44,11 +49,39 @@ export default function ProjectFinancialsPage() {
   const { project, detail } = useProject();
 
   const [commercialTab, setCommercialTab] = useState<"client" | "subcontracts" | "evm">("client");
-  const [loading, setLoading] = useState(true);
-  const [variations, setVariations] = useState<Record<string, unknown>[]>([]);
-  const [claims, setClaims] = useState<Record<string, unknown>[]>([]);
-  const [financeDetail, setFinanceDetail] = useState<Record<string, unknown> | null>(null);
-  const [pettyCash, setPettyCash] = useState<Record<string, unknown> | null>(null);
+  // Money for THIS project, live: refreshes when a cost, commitment,
+  // variation, claim, retention, petty-cash entry, BOQ line or subcontract
+  // certificate on it changes. A bulk BOQ or cost import is one refresh.
+  const projectUuid = (project as { id?: string } | null)?.id ?? projectId;
+  const financeQuery = useLiveQuery<{
+    financeDetail: Record<string, unknown> | null;
+    variations: Record<string, unknown>[];
+    claims: Record<string, unknown>[];
+    pettyCash: Record<string, unknown> | null;
+  }>(
+    projectId ? `project-financials:${projectId}` : null,
+    async () => {
+      const [fd, v, c, pc] = await Promise.allSettled([
+        getFinanceProjectDetail(projectId),
+        getFinanceVariations({ project_id: projectId }),
+        getFinanceProgressClaims({ project_id: projectId }),
+        getProjectPettyCash(projectId),
+      ]);
+      return {
+        financeDetail: fd.status === "fulfilled" && fd.value.data ? fd.value.data : null,
+        variations: v.status === "fulfilled" && v.value.data ? v.value.data || [] : [],
+        claims: c.status === "fulfilled" && c.value.data ? c.value.data || [] : [],
+        pettyCash: pc.status === "fulfilled" && pc.value.data ? pc.value.data : null,
+      };
+    },
+    { tables: PROJECT_FINANCIAL_TABLES, match: (change) => isProjectChange(change, projectUuid) },
+  );
+  const loading = financeQuery.isLoading && financeQuery.data === undefined;
+  const variations = financeQuery.data?.variations ?? NO_ROWS;
+  const claims = financeQuery.data?.claims ?? NO_ROWS;
+  const financeDetail = financeQuery.data?.financeDetail ?? null;
+  const pettyCash = financeQuery.data?.pettyCash ?? null;
+  const { mutate: refreshFinance } = financeQuery;
   const [isMoneyModalOpen, setIsMoneyModalOpen] = useState(false);
 
   // Quick modals
@@ -72,29 +105,10 @@ export default function ProjectFinancialsPage() {
   const [depositNotes, setDepositNotes] = useState("");
   const [savingDeposit, setSavingDeposit] = useState(false);
 
+  // Kept for the existing call sites after this user's own edits.
   const reloadData = async () => {
-    const [fd, v, c, pc] = await Promise.allSettled([
-      getFinanceProjectDetail(projectId),
-      getFinanceVariations({ project_id: projectId }),
-      getFinanceProgressClaims({ project_id: projectId }),
-      getProjectPettyCash(projectId),
-    ]);
-    if (fd.status === "fulfilled" && fd.value.data) setFinanceDetail(fd.value.data);
-    if (v.status === "fulfilled" && v.value.data) setVariations(v.value.data || []);
-    if (c.status === "fulfilled" && c.value.data) setClaims(c.value.data || []);
-    if (pc.status === "fulfilled" && pc.value.data) setPettyCash(pc.value.data);
+    await refreshFinance();
   };
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    reloadData().finally(() => {
-      if (active) setLoading(false);
-    });
-    return () => {
-      active = false;
-    };
-  }, [projectId]);
 
   const source = detail?.project ?? project;
   const contractVal = Number(source?.contract_value ?? source?.budget ?? source?.budget_value) || 0;

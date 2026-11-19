@@ -282,6 +282,98 @@ class LiveRecordRelayTest(unittest.TestCase):
         self.assertEqual(site.sent, [])
 
 
+class ProjectScopedSignalTest(unittest.TestCase):
+    """Wave 2: plain change signals on project tables go only to users who
+    may see the project, and a burst for one project becomes one event."""
+
+    def setUp(self):
+        self.manager = realtime.ConnectionManager()
+        self.patches = [
+            mock.patch.object(realtime, "manager", self.manager),
+            mock.patch("core.database.AsyncSessionLocal", FakeSession),
+            mock.patch.object(realtime, "_relay_semaphore", None),
+            mock.patch.object(realtime, "SCOPED_SIGNAL_WINDOW_SECONDS", 0.01),
+            mock.patch.dict(realtime._pending_scoped, {}, clear=True),
+        ]
+        for p in self.patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self.patches])
+        self.scopes = {"u-office": None, "u-a": [PROJECT_A], "u-b": [PROJECT_B]}
+
+        async def fake_visible(db, user):
+            return self.scopes[user["user_id"]]
+
+        p = mock.patch("core.project_scope.visible_project_ids", fake_visible)
+        p.start()
+        self.addCleanup(p.stop)
+
+    async def _register(self, user_id, perms=("projects.read",)):
+        ws = FakeSocket(user_id)
+        await self.manager.register(ws, user_id, ORG, set(perms), user={"user_id": user_id, "org_id": ORG})
+        return ws
+
+    def _notify(self, **data):
+        realtime._on_notification(None, 0, realtime.LIVE_CHANGES_CHANNEL, json.dumps({"organization_id": ORG, **data}))
+
+    def test_signal_goes_only_to_users_who_see_the_project(self):
+        async def scenario():
+            office = await self._register("u-office")
+            on_a = await self._register("u-a")
+            on_b = await self._register("u-b")
+            self._notify(table="projects.project_milestones", op="UPDATE", id="m1", project_id=PROJECT_A)
+            await asyncio.sleep(0.1)
+            return office, on_a, on_b
+
+        office, on_a, on_b = run(scenario())
+        self.assertEqual([e["project_id"] for e in office.sent], [PROJECT_A])
+        self.assertEqual([e["id"] for e in on_a.sent], ["m1"])
+        self.assertEqual(on_b.sent, [])
+
+    def test_burst_for_one_project_becomes_one_bulk_event(self):
+        async def scenario():
+            on_a = await self._register("u-a")
+            for i in range(50):
+                self._notify(table="finance.boq_line_items", op="INSERT", id=f"l{i}", project_id=PROJECT_A)
+            await asyncio.sleep(0.1)
+            return on_a
+
+        events = run(scenario()).sent
+        self.assertEqual(len(events), 1)
+        self.assertEqual((events[0]["op"], events[0]["count"], events[0]["project_id"]), ("BULK", 50, PROJECT_A))
+
+    def test_row_without_project_goes_only_to_unrestricted_users(self):
+        async def scenario():
+            office, on_a = await self._register("u-office"), await self._register("u-a")
+            self._notify(table="projects.sites", op="INSERT", id="s1")
+            await asyncio.sleep(0.1)
+            return office, on_a
+
+        office, on_a = run(scenario())
+        self.assertEqual(len(office.sent), 1)
+        self.assertEqual(on_a.sent, [])
+
+    def test_project_document_links_are_scoped_by_entity_project(self):
+        async def scenario():
+            on_a = await self._register("u-a", perms=("documents.read",))
+            on_b = await self._register("u-b", perms=("documents.read",))
+            self._notify(table="core.document_links", op="INSERT", id="dl1", entity_type="project", entity_id=PROJECT_A)
+            await asyncio.sleep(0.1)
+            return on_a, on_b
+
+        on_a, on_b = run(scenario())
+        self.assertEqual([(e["entity_type"], e["entity_id"]) for e in on_a.sent], [("project", PROJECT_A)])
+        self.assertEqual(on_b.sent, [])
+
+    def test_permission_still_required(self):
+        async def scenario():
+            no_finance = await self._register("u-office", perms=("projects.read",))
+            self._notify(table="finance.progress_claims", op="INSERT", id="c1", project_id=PROJECT_A)
+            await asyncio.sleep(0.1)
+            return no_finance
+
+        self.assertEqual(run(scenario()).sent, [])
+
+
 class LiveRecordContractTest(unittest.TestCase):
     def test_every_loader_table_is_relayed(self):
         for table in live_records.LOADERS:

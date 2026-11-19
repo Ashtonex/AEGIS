@@ -31,6 +31,9 @@ import {
 } from "@/lib/api/projects";
 import { formatDate } from "@/lib/utils";
 import { ProgressPackModal } from "@/components/projects/ProgressPackModal";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { isProjectChange } from "@/lib/live/liveTables";
+import { useProjectUuid } from "@/context/ProjectWorkspaceContext";
 
 interface ControlledDrawingsWorkspaceProps {
   projectId: string;
@@ -86,6 +89,15 @@ export function ControlledDrawingsWorkspace({ projectId }: ControlledDrawingsWor
       setLoading(false);
     }
   };
+
+  // Live: drawings issued/superseded and site photos on THIS project.
+  const liveProjectId = useProjectUuid(projectId);
+  useLiveRefresh(
+    ["projects.controlled_drawings", "projects.progress_photo_diary"],
+    (change) => isProjectChange(change, liveProjectId),
+    () => void loadData(),
+    !!projectId,
+  );
 
   useEffect(() => {
     if (projectId) {

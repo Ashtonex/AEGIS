@@ -28,6 +28,10 @@ import {
   getCrmOrganizations, getCrmContacts,
 } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+
+// Stable empty list while live data loads.
+const NO_PROJECTS: never[] = [];
 
 // Only rendered once a project is selected, instead of shipping with the portfolio view.
 function PanelLoading() {
@@ -214,8 +218,6 @@ function ProjectsWorkspace({ initialTab }: { initialTab: ProjectTab }) {
   const activeTab = initialTab;
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
@@ -247,22 +249,32 @@ function ProjectsWorkspace({ initialTab }: { initialTab: ProjectTab }) {
     return fallback;
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true); 
-    setError(null);
-    try { 
-      const response = await getInternalProjects(); 
-      setProjects(response.data || []); 
-    } catch (err) { 
-      setError(normalizeError(err, "The project register could not be loaded.")); 
-    } finally { 
-      setLoading(false); 
-    }
-  }, [normalizeError]);
-
+  // Live: the register refreshes when a project is created, re-staged or
+  // its plan changes - only for projects this user may see (the server
+  // scopes project events).
+  const projectsQuery = useLiveQuery<Project[]>(
+    "projects:register",
+    async () => (await getInternalProjects()).data || [],
+    { tables: ["projects.projects", "projects.project_milestones"] },
+  );
+  const projects = projectsQuery.data ?? NO_PROJECTS;
+  const loading = projectsQuery.isLoading && projectsQuery.data === undefined;
+  const { mutate: mutateProjects } = projectsQuery;
   useEffect(() => {
-    void load();
-  }, [load]);
+    setError(projectsQuery.error ? normalizeError(projectsQuery.error, "The project register could not be loaded.") : null);
+  }, [projectsQuery.error, normalizeError]);
+  // Optimistic local edits write into the cache; the live refresh confirms.
+  const setProjects = useCallback(
+    (next: Project[] | ((prev: Project[]) => Project[])) =>
+      void mutateProjects(
+        (prev) => (typeof next === "function" ? next(prev ?? []) : next),
+        { revalidate: false },
+      ),
+    [mutateProjects],
+  );
+  const load = useCallback(async () => {
+    await mutateProjects();
+  }, [mutateProjects]);
 
   const openProject = useCallback((project: Project) => {
     const refs = projectDetailRefs(project);
