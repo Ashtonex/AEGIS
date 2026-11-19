@@ -408,6 +408,19 @@ class BulkOrgSignalTest(_SignalHarness):
 
         self.assertEqual(sorted(e["batch_id"] for e in run(scenario()).sent), ["b1", "b2"])
 
+    def test_morning_check_ins_coalesce_for_attendance_readers(self):
+        async def scenario():
+            hr = await self._register("u-a", perms=("hr.attendance.read",))
+            people_only = await self._register("u-b", perms=("workforce.people.read",))
+            for i in range(30):
+                self._notify(table="hr.attendance_events", op="INSERT", id=f"ev{i}", employee_id=f"e{i}")
+            await asyncio.sleep(0.1)
+            return hr, people_only
+
+        hr, people_only = run(scenario())
+        self.assertEqual([(e["op"], e["count"]) for e in hr.sent], [("BULK", 30)])
+        self.assertEqual(people_only.sent, [])
+
     def test_approval_step_carries_its_instance(self):
         async def scenario():
             exec_user = await self._register("u-office", perms=("executive.view_dashboard",))

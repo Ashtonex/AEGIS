@@ -131,6 +131,11 @@ COALESCED_SIGNAL_GROUP_KEY: dict[str, str] = {
     "finance.payroll_items": "payroll_run_id",
     "finance.supplier_payment_items": "batch_id",
     "finance.payable_events": "batch_id",
+    # Morning check-ins and the weekly hours roll-up arrive in bursts; one
+    # refresh per burst for the whole org.
+    "hr.attendance_events": "",
+    "hr.attendance_records": "",
+    "hr.weekly_hours": "",
 }
 
 
@@ -206,7 +211,15 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "crm.subcontractors": ("executive.view_dashboard",),
     "finance.company_budgets": ("executive.view_dashboard",),
     "finance.management_accounts_packs": ("executive.view_dashboard",),
-    "hr.leave_requests": ("executive.view_dashboard",),
+    # HR, non-confidential (migration 305). Same keys as hr_people /
+    # hr_time / hr_records. Leave requests also feed the approvals queue.
+    "hr.leave_requests": ("hr.leave.read", "executive.view_dashboard"),
+    "hr.employees": ("workforce.people.read", "hr.attendance.read", "hr.leave.read"),
+    "hr.positions": ("workforce.people.read",),
+    "hr.reporting_lines": ("workforce.people.read",),
+    "hr.attendance_events": ("hr.attendance.read",),
+    "hr.attendance_records": ("hr.attendance.read",),
+    "hr.weekly_hours": ("hr.attendance.read",),
     "core.internal_messages": ("internal_messages.read",),
     "core.documents": ("documents.read",),
     # Messages page and daily-report evidence (migration 301). Both push the

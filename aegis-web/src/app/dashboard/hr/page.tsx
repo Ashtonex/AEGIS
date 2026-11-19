@@ -7,6 +7,8 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { getHROperationsSummary } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { ATTENDANCE_TABLES, PEOPLE_TABLES } from "@/lib/live/liveTables";
 
 // Only the active tab's panel ships to the browser instead of all at once.
 function PanelLoading() {
@@ -146,8 +148,8 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
 
   const needsOperations = activeTab !== "vendor-verification";
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const [opsRes] = await Promise.allSettled([
@@ -167,6 +169,9 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // Live: the operating summary follows people, attendance and leave changes.
+  useLiveRefresh([...PEOPLE_TABLES, ...ATTENDANCE_TABLES], undefined, () => void loadData(true), needsOperations);
 
   if (loading) {
     return (

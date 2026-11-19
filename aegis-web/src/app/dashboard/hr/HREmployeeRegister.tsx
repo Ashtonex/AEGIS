@@ -7,6 +7,11 @@ import { getPeopleCatalogue, getPeopleRegister, type PeopleCatalogue, type Regis
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { PersonCardModal } from "@/components/people/PersonCardModal";
 import { StatusPill, formatDate, humanise, inputClass, secondaryButton } from "@/components/people/ui";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PEOPLE_TABLES } from "@/lib/live/liveTables";
+
+// Stable empty list while live data loads.
+const NO_ROWS: never[] = [];
 
 function Tick({ on, label }: { on: boolean; label: string }) {
   return on
@@ -23,26 +28,26 @@ function toCsv(rows: RegisterRow[]) {
 
 /** HR's employee register: the people list with HR completeness, leavers included on demand. */
 export function HREmployeeRegister() {
-  const [rows, setRows] = useState<RegisterRow[]>([]);
   const [catalogue, setCatalogue] = useState<PeopleCatalogue | null>(null);
   const [status, setStatus] = useState("current");
   const [categoryId, setCategoryId] = useState("");
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
 
   useEffect(() => { void getPeopleCatalogue().then((r) => setCatalogue(r.data)).catch(() => undefined); }, []);
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    getPeopleRegister({ status, category_id: categoryId })
-      .then((r) => { if (active) { setRows(r.data); setError(""); } })
-      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Register could not be loaded."); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [status, categoryId, revision]);
+  // Live: joiners, leavers, role and manager changes by anyone in HR show
+  // here at once; the list stays on screen while it refreshes.
+  const registerQuery = useLiveQuery<RegisterRow[]>(
+    `hr-register:${status}:${categoryId}:${revision}`,
+    async () => (await getPeopleRegister({ status, category_id: categoryId })).data,
+    { tables: PEOPLE_TABLES },
+  );
+  const rows = registerQuery.data ?? NO_ROWS;
+  const loading = registerQuery.isLoading && registerQuery.data === undefined;
+  const error = registerQuery.error
+    ? (registerQuery.error instanceof Error ? registerQuery.error.message : "Register could not be loaded.")
+    : "";
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();

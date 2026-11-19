@@ -7,11 +7,12 @@
 // newly assigned work shows up without reloading. The full Tasks page
 // (/dashboard/crm/tasks) stays the place for managing everyone's work.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CalendarClock, CheckCircle2, ClipboardCheck, ExternalLink, Loader2, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { getCrmTasks, updateCrmTask } from "@/lib/api";
+import { useLiveConnected, useLiveRefresh } from "@/lib/live/LiveDataProvider";
 
 type Priority = "low" | "normal" | "high" | "urgent";
 
@@ -238,6 +239,7 @@ export default function TeamsMyTasksPage() {
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
 
   const userId = user?.id;
+  const liveConnectedRef = useRef(false);
   const load = useCallback(async (quiet = false) => {
     if (!userId) return;
     if (!quiet) setLoading(true);
@@ -255,10 +257,17 @@ export default function TeamsMyTasksPage() {
     }
   }, [userId]);
 
+  // Live: a task assigned, reassigned or closed by anyone refreshes the list
+  // quietly. The timer below only runs while the live connection is down.
+  const liveConnected = useLiveConnected();
+  useLiveRefresh(["crm.tasks"], undefined, () => void load(true), !!session);
+
   useEffect(() => {
     if (!session) return;
     void load();
-    const interval = window.setInterval(() => void load(true), REFRESH_MS);
+    const interval = window.setInterval(() => {
+      if (!liveConnectedRef.current) void load(true);
+    }, REFRESH_MS);
     const onVisible = () => { if (document.visibilityState === "visible") void load(true); };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -266,6 +275,8 @@ export default function TeamsMyTasksPage() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [session, load]);
+
+  liveConnectedRef.current = liveConnected;
 
   const grouped = useMemo(() => {
     const sorted = [...tasks].sort((a, b) => (a.due_date ?? "9999").localeCompare(b.due_date ?? "9999"));

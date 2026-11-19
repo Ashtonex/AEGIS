@@ -9,6 +9,8 @@ import { getPeopleRegister, getPeopleSummary, type PeopleSummary, type RegisterR
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { PersonCardModal } from "@/components/people/PersonCardModal";
 import { formatDate } from "@/components/people/ui";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { PEOPLE_TABLES } from "@/lib/live/liveTables";
 
 function Kpi({ label, value, tone = "text-paper", hint }: { label: string; value: ReactNode; tone?: string; hint?: string }) {
   return (
@@ -66,6 +68,8 @@ export function HRHome() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  // Live: headcount and the "needs attention" list follow HR changes quietly.
+  useLiveRefresh([...PEOPLE_TABLES, "hr.leave_requests"], undefined, () => void load());
 
   const disabledLogins = attention.filter((r) => r.login_active === false);
   const incomplete = attention
