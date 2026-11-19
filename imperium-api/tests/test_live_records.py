@@ -180,6 +180,53 @@ class LiveRecordRelayTest(unittest.TestCase):
 
         self.assertEqual(run(scenario()).sent, [])
 
+    def test_removed_evidence_tombstone_is_project_scoped(self):
+        # Shape the evidence loader returns for a removed link: id, report and
+        # deleted flag, with the link's project for the scope check.
+        async def loader(db, org_id, row_id):
+            return LiveRecord({"id": "doc-9", "report_id": "r1", "deleted": True}, project_id=PROJECT_A)
+
+        perms = ("site_operations.daily_report.read",)
+        scopes = {"u-a": [PROJECT_A], "u-b": [PROJECT_B]}
+
+        async def fake_visible(db, user):
+            return scopes[user["user_id"]]
+
+        async def scenario():
+            on_a = await self._register("on_a", perms=perms, user_id="u-a")
+            on_b = await self._register("on_b", perms=perms, user_id="u-b")
+            with mock.patch.dict(live_records.LOADERS, {"core.document_links": loader}), \
+                 mock.patch("core.project_scope.visible_project_ids", fake_visible):
+                await realtime.relay_live_record("core.document_links", "UPDATE", ORG, "link-9", perms)
+            return on_a, on_b
+
+        on_a, on_b = run(scenario())
+        self.assertEqual([e["data"] for e in on_a.sent], [{"id": "doc-9", "report_id": "r1", "deleted": True}])
+        self.assertEqual(on_b.sent, [])
+
+    def test_evidence_loader_returns_tombstone_for_removed_link(self):
+        class Result:
+            def __init__(self, row):
+                self.row = row
+
+            def mappings(self):
+                return self
+
+            def first(self):
+                return self.row
+
+        class Db:
+            async def execute(self, *_a, **_k):
+                return Result({"document_id": "doc-9", "report_id": "r1", "project_id": PROJECT_A})
+
+        async def no_items(db, org_id, **kw):
+            return []
+
+        with mock.patch("routers.site_reports.load_report_evidence", no_items):
+            record = run(live_records._load_report_evidence(Db(), ORG, "link-9"))
+        self.assertEqual(record.data, {"id": "doc-9", "report_id": "r1", "deleted": True})
+        self.assertEqual(record.project_id, PROJECT_A)
+
     def test_listener_routes_loader_tables_to_the_relay(self):
         calls = []
 

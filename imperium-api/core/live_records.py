@@ -83,10 +83,30 @@ async def _load_report_evidence(db: AsyncSession, org_id: str, row_id: str) -> O
     from routers.site_reports import load_report_evidence
 
     items = await load_report_evidence(db, org_id, link_id=row_id)
-    if not items:
+    if items:
+        item = items[0]
+        return LiveRecord(item, project_id=item.get("project_id"))
+
+    # Not loadable because the link or its document was removed: send a
+    # tombstone so open reports drop the tile. It carries the link's own
+    # project_id, so it gets the same project-scope check as a live item.
+    link = (
+        await db.execute(
+            text("""
+            SELECT dl.document_id, dl.entity_id AS report_id, dl.project_id
+            FROM core.document_links dl
+            WHERE dl.id = CAST(:row_id AS uuid) AND dl.organization_id = CAST(:org_id AS uuid)
+              AND dl.entity_type = 'daily_site_report'
+        """),
+            {"row_id": row_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    if not link or link["project_id"] is None:
         return None
-    item = items[0]
-    return LiveRecord(item, project_id=item.get("project_id"))
+    return LiveRecord(
+        {"id": str(link["document_id"]), "report_id": str(link["report_id"]), "deleted": True},
+        project_id=str(link["project_id"]),
+    )
 
 
 LOADERS: dict[str, Loader] = {

@@ -283,8 +283,13 @@ export function SiteEvidenceCapture({ reportId, onDocumentAdded }: SiteEvidenceC
   // A photo or docket added by anyone else (or by this user on another
   // device) arrives as the finished item, signed links included, already
   // filtered by report access and project scope on the server.
-  useLiveRecord<ServerEvidence>("core.document_links", (_op, _id, item) => {
+  useLiveRecord<ServerEvidence & { deleted?: boolean }>("core.document_links", (_op, _id, item) => {
     if (!item || item.report_id !== reportId) return;
+    if (item.deleted) {
+      // Tombstone: the file was removed from the report (or deleted).
+      setServerItems((current) => current.filter((doc) => doc.id !== item.id));
+      return;
+    }
     setServerItems((current) => upsertEvidence(current, item));
   });
   // Catch up on anything added while this device's connection was down.

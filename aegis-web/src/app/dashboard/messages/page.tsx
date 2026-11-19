@@ -44,10 +44,19 @@ function messageTime(message: PortalCommunicationMessage): number {
   return value ? new Date(value).getTime() : 0;
 }
 
-/** Puts a row into the ledger, replacing any copy with the same id, and
- * keeps unconfirmed sends first, then newest first. */
+/** The local id this tab gave a send, echoed back in the stored row's
+ * metadata, so a pushed or refetched row can be matched to its optimistic copy. */
+function clientRefOf(message: PortalCommunicationMessage): string | undefined {
+  const ref = (message as { metadata?: { client_ref?: unknown } }).metadata?.client_ref;
+  return typeof ref === "string" ? ref : undefined;
+}
+
+/** Puts a row into the ledger, replacing any copy with the same id (or the
+ * optimistic copy it confirms), and keeps unconfirmed sends first, then
+ * newest first. */
 function upsertMessage(current: LedgerMessage[], incoming: LedgerMessage): LedgerMessage[] {
-  const next = [incoming, ...current.filter((item) => item.id !== incoming.id)];
+  const ref = incoming.localStatus ? undefined : clientRefOf(incoming);
+  const next = [incoming, ...current.filter((item) => item.id !== incoming.id && (!ref || item.id !== ref))];
   next.sort((a, b) => {
     if (a.localStatus && !b.localStatus) return -1;
     if (b.localStatus && !a.localStatus) return 1;
@@ -114,8 +123,13 @@ export default function DashboardMessagesPage() {
 
       if (communicationResult.status === "fulfilled" && Array.isArray(communicationResult.value.data)) {
         const fetched = communicationResult.value.data as LedgerMessage[];
-        // Keep this tab's unconfirmed sends; the server doesn't know them yet.
-        setMessages((current) => [...current.filter((item) => item.localStatus), ...fetched].slice(0, MESSAGE_LIMIT));
+        // Keep this tab's unconfirmed sends, except any the fetch shows were
+        // stored after all (matched by the client_ref sent with them).
+        const storedRefs = new Set(fetched.map(clientRefOf).filter((ref): ref is string => !!ref));
+        storedRefs.forEach((ref) => confirmedRefsRef.current.add(ref));
+        setMessages((current) =>
+          [...current.filter((item) => item.localStatus && !storedRefs.has(item.id)), ...fetched].slice(0, MESSAGE_LIMIT),
+        );
       } else {
         setMessages([]);
         setError("Communications could not be loaded.");
@@ -164,6 +178,8 @@ export default function DashboardMessagesPage() {
       void load(true);
       return;
     }
+    const ref = clientRefOf(row);
+    if (ref) confirmedRefsRef.current.add(ref);
     setMessages((current) => upsertMessage(current, row));
     if (row.channel === "portal_message") {
       // The portal inbox is a separate read model; refresh it once a burst settles.
@@ -208,6 +224,10 @@ export default function DashboardMessagesPage() {
     });
   }, [portalFilter, portalItems]);
 
+  // client_refs whose stored row has been seen (pushed or fetched): a send
+  // that errors afterwards was in fact stored, so it must not show "Not sent".
+  const confirmedRefsRef = useRef(new Set<string>());
+
   const sendDraft = useCallback(async (tempId: string, draft: CommunicationDraft) => {
     try {
       const res = await createCrmCommunication(draft);
@@ -220,6 +240,9 @@ export default function DashboardMessagesPage() {
         return upsertMessage(withoutTemp, { ...temp, id: realId, localStatus: undefined, localDraft: undefined });
       });
     } catch (saveError) {
+      // The server may have stored it and only the response was lost: if the
+      // stored row has already arrived (live push or refetch), it was sent.
+      if (confirmedRefsRef.current.has(tempId)) return;
       const message = saveError instanceof ApiError ? saveError.message : "The message could not be sent.";
       setMessages((current) =>
         current.map((item) => (item.id === tempId ? { ...item, localStatus: "failed" } : item)),
@@ -238,6 +261,7 @@ export default function DashboardMessagesPage() {
 
     const recipient = users.find((item) => item.id === form.recipient_user_id);
     const subject = form.subject.trim() || "Internal message";
+    const tempId = `local-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
     const draft = {
       channel: "manual_note",
       direction: "internal",
@@ -245,9 +269,10 @@ export default function DashboardMessagesPage() {
       subject,
       body,
       status: "sent",
-      metadata: { source: "dashboard_messages", priority: form.priority },
+      // client_ref comes back on the stored row, which is how a pushed or
+      // refetched row replaces this optimistic copy.
+      metadata: { source: "dashboard_messages", priority: form.priority, client_ref: tempId },
     } as CommunicationDraft;
-    const tempId = `local-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
     const now = new Date().toISOString();
     // Shown before the server answers, so sending feels instant even
     // through the ~0.7 s API proxy.
