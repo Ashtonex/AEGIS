@@ -1,12 +1,40 @@
 "use client";
 
-import React, { use, useEffect, useState, useCallback } from "react";
+import React, { use } from "react";
 import Link from "next/link";
 import { ArrowLeft, Loader2, AlertCircle } from "lucide-react";
 import { getCrmTenderById } from "@/lib/api/crm";
+import { ApiError } from "@/lib/api/core";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { CommercialWorkspaceModal, type CommercialEntityData } from "@/components/crm/CommercialWorkspaceModal";
 import { EgpSourceChip } from "@/components/crm/tender-discovery/EgpSourceChip";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+
+async function fetchTenderEntity(id: string): Promise<CommercialEntityData> {
+  const res = await getCrmTenderById(id);
+  if (!res.success || !res.data) throw new Error(res.message || "Tender not found.");
+  const d = res.data;
+  return {
+    id: d.id,
+    kind: "tender",
+    name: d.tender_name,
+    stage: d.stage,
+    budget: Number(d.bid_amount || 0),
+    deal_value: Number(d.bid_amount || 0),
+    probability: 50,
+    expected_margin: 18.5,
+    risk_level: "Medium",
+    client_name: d.tender_name,
+    organization_name: d.tender_name,
+    expected_close_date: d.submission_deadline,
+    project_id: d.project_id || undefined,
+    region: d.region || undefined,
+    bid_number: d.bid_number,
+    submission_deadline: d.submission_deadline,
+    bid_bond_required: Boolean(d.bid_bond_secured),
+    bid_bond_amount: Number(d.bond_amount || 0),
+  };
+}
 
 export default function TenderCanonicalPage({
   params,
@@ -14,51 +42,22 @@ export default function TenderCanonicalPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [tender, setTender] = useState<CommercialEntityData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Only the first load shows the full-page loader; refreshes after an edit
-  // (e.g. from the Review tab) update in place so the workspace stays open.
-  const fetchTender = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await getCrmTenderById(id);
-      if (res.success && res.data) {
-        const d = res.data;
-        setTender({
-          id: d.id,
-          kind: "tender",
-          name: d.tender_name,
-          stage: d.stage,
-          budget: Number(d.bid_amount || 0),
-          deal_value: Number(d.bid_amount || 0),
-          probability: 50,
-          expected_margin: 18.5,
-          risk_level: "Medium",
-          client_name: d.tender_name,
-          organization_name: d.tender_name,
-          expected_close_date: d.submission_deadline,
-          project_id: d.project_id || undefined,
-          region: d.region || undefined,
-          bid_number: d.bid_number,
-          submission_deadline: d.submission_deadline,
-          bid_bond_required: Boolean(d.bid_bond_secured),
-          bid_bond_amount: Number(d.bond_amount || 0),
-        });
-      } else {
-        setError(res.message || "Tender not found.");
-      }
-    } catch (err: any) {
-      setError(err?.message || "Failed to load tender.");
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
-
-  useEffect(() => {
-    void fetchTender();
-  }, [fetchTender]);
+  // Live: refreshes in place when anyone changes this tender (stage,
+  // deadline, award); the workspace below listens to the tender's own
+  // requirements, documents and activity separately.
+  const { data: tender, error: loadError, isLoading, mutate } = useLiveQuery(
+    `crm-tender:${id}`,
+    () => fetchTenderEntity(id),
+    { tables: ["crm.tenders"], match: (change) => change.id === id },
+  );
+  const loading = isLoading && !tender;
+  // A failed background refresh keeps the last good copy on screen; only a
+  // first load that fails, or the tender being gone (404), shows the error.
+  const gone = loadError instanceof ApiError && loadError.status === 404;
+  const error = loadError && (gone || !tender)
+    ? (loadError instanceof Error ? loadError.message : "Failed to load tender.")
+    : null;
+  const fetchTender = () => void mutate();
 
   return (
     <div className="min-h-screen bg-[#050505] text-paper">

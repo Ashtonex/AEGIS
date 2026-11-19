@@ -242,7 +242,44 @@ class LiveRecordRelayTest(unittest.TestCase):
                 await asyncio.sleep(0)
 
         run(scenario())
-        self.assertEqual(calls, [("crm.communication_events", "INSERT", ORG, "m9", ("crm_communications.read",))])
+        self.assertEqual(calls, [("crm.communication_events", "INSERT", ORG, "m9", ("crm_communications.read",), {})])
+
+    def test_parent_ids_travel_with_plain_signals(self):
+        async def scenario():
+            reader = await self._register("reader", perms=("tender_bids.read",))
+            realtime._on_notification(
+                None, 0, realtime.LIVE_CHANGES_CHANNEL,
+                json.dumps({"table": "crm.tender_requirements", "op": "UPDATE", "organization_id": ORG,
+                            "id": "req-1", "tender_id": "t-1"}),
+            )
+            for _ in range(5):
+                await asyncio.sleep(0)
+            return reader
+
+        reader = run(scenario())
+        self.assertEqual(reader.sent, [{"type": "table_change", "table": "crm.tender_requirements", "op": "UPDATE",
+                                        "id": "req-1", "tender_id": "t-1"}])
+
+    def test_tender_document_links_go_to_document_readers_as_a_signal(self):
+        async def loader(db, org_id, row_id):
+            raise AssertionError("tender links must not go through the report-evidence loader")
+
+        async def scenario():
+            docs = await self._register("docs", perms=("documents.read",))
+            site = await self._register("site", perms=("site_operations.daily_report.read",))
+            with mock.patch.dict(live_records.LOADERS, {"core.document_links": loader}):
+                realtime._on_notification(
+                    None, 0, realtime.LIVE_CHANGES_CHANNEL,
+                    json.dumps({"table": "core.document_links", "op": "INSERT", "organization_id": ORG, "id": "l-1",
+                                "entity_type": "tender", "entity_id": "t-1"}),
+                )
+                for _ in range(5):
+                    await asyncio.sleep(0)
+            return docs, site
+
+        docs, site = run(scenario())
+        self.assertEqual([(e["entity_type"], e["entity_id"]) for e in docs.sent], [("tender", "t-1")])
+        self.assertEqual(site.sent, [])
 
 
 class LiveRecordContractTest(unittest.TestCase):

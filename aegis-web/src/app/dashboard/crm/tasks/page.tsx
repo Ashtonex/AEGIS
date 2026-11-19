@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
 import Link from "next/link";
 import { AlertTriangle, Calendar, CheckCircle2, ChevronDown, Circle, ClipboardCheck, FileSpreadsheet, FileText, Layers, Link2, Loader2, Lock, Mail, MessageSquare, Phone, Plus, Settings2, ShieldCheck, Shuffle, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -24,6 +25,10 @@ import {
 import { BulkAssignBar, DistributeModal, RoutingSettingsModal } from "@/components/crm/TaskDistribution";
 import { initials, avatarTone } from "@/lib/avatar";
 import { EntityDocumentsPanel, type DocumentEntityType } from "@/components/documents/EntityDocumentsPanel";
+
+// Stable empty list while live data loads, so memos and effects keyed on
+// it don't rerun every render.
+const NO_ROWS: any[] = [];
 
 type TaskStatus = "planned" | "not_started" | "ready" | "in_progress" | "waiting_on_third_party" | "blocked" | "under_review" | "completed" | "rejected" | "not_applicable" | "cancelled" | "superseded";
 
@@ -177,10 +182,11 @@ const ENTITY_STAGE_GUIDANCE: Record<string, string> = {
 };
 
 export default function CrmTasksPage() {
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Covers the people/teams lookups in load(); the task list itself is the
+  // live query below.
+  const [peopleLoading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [department, setDepartment] = useState<string>(DEPARTMENT_TABS[0].value);
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -190,11 +196,6 @@ export default function CrmTasksPage() {
   const [stackTeamPick, setStackTeamPick] = useState<Record<string, string>>({});
   const [assigningStack, setAssigningStack] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
-  const [progress, setProgress] = useState<{
-    users: TaskProgressRow[];
-    teams: TaskProgressRow[];
-    overall: { open: number; completed: number; overdue: number; total: number; pct_complete: number };
-  } | null>(null);
   const [progressOpen, setProgressOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
@@ -204,6 +205,66 @@ export default function CrmTasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
   const [canUseAssignmentTools, setCanUseAssignmentTools] = useState(true);
+
+  // Live: the board refreshes when anyone creates, assigns, moves or
+  // completes a task (including tasks created from tender requirements).
+  // Filters are part of the key, so each view keeps its own cache.
+  const assigneeParam = canUseAssignmentTools && assigneeFilter !== "all" ? assigneeFilter : undefined;
+  const tasksQuery = useLiveQuery<{ tasks: Task[]; cap: number | null }>(
+    `crm-tasks:${department}:${statusFilter}:${assigneeParam ?? "any"}`,
+    async () => {
+      const res = await getCrmTasks({
+        department,
+        status: statusFilter !== "all" ? statusFilter : undefined,
+        assigned_to_user_id: assigneeParam,
+      });
+      return {
+        tasks: res.success && Array.isArray(res.data) ? (res.data as Task[]) : [],
+        cap: res.meta?.truncated ? Number(res.meta.cap) : null,
+      };
+    },
+    { tables: ["crm.tasks"] },
+  );
+  // A 403 here (no crm_tasks.read_all) is the permission gate doing its
+  // job, not an error: the summary is simply hidden.
+  const progressQuery = useLiveQuery<{
+    users: TaskProgressRow[];
+    teams: TaskProgressRow[];
+    overall: { open: number; completed: number; overdue: number; total: number; pct_complete: number };
+  } | null>(
+    "crm-tasks:progress",
+    async () => {
+      const res = await getCrmTaskProgressSummary().catch(() => null);
+      return res?.success && res.data ? res.data : null;
+    },
+    { tables: ["crm.tasks"] },
+  );
+  const tasks = tasksQuery.data?.tasks ?? NO_ROWS;
+  const progress = progressQuery.data ?? null;
+  const loading = peopleLoading || (tasksQuery.isLoading && tasksQuery.data === undefined);
+  const { mutate: mutateTasks } = tasksQuery;
+  const { mutate: mutateProgress } = progressQuery;
+  // Optimistic local edits write into the cache; the live refresh confirms.
+  const setTasks = useCallback(
+    (next: Task[] | ((prev: Task[]) => Task[])) =>
+      void mutateTasks(
+        (prev) => {
+          const current = prev?.tasks ?? [];
+          return { tasks: typeof next === "function" ? next(current) : next, cap: prev?.cap ?? null };
+        },
+        { revalidate: false },
+      ),
+    [mutateTasks],
+  );
+  const truncatedCap = tasksQuery.data?.cap ?? null;
+  useEffect(() => {
+    if (tasksQuery.error) setError(normalizeError(tasksQuery.error, "Tasks did not load."));
+  }, [tasksQuery.error]);
+  useEffect(() => {
+    if (truncatedCap) {
+      setError(`Only the first ${truncatedCap.toLocaleString()} tasks are shown - narrow the filters to see the rest. Column counts cover the tasks shown.`);
+    }
+  }, [truncatedCap]);
   // Bulk distribution needs crm_tasks.distribute - probed once, since the
   // assignment tools above are a wider permission than this.
   const [canDistribute, setCanDistribute] = useState(false);
@@ -232,28 +293,12 @@ export default function CrmTasksPage() {
     setLoading(true);
     setError(null);
     try {
-      const [tasksResult, usersResult, teamsResult, progressResult] = await Promise.allSettled([
-        getCrmTasks({
-          department,
-          status: statusFilter !== "all" ? statusFilter : undefined,
-          assigned_to_user_id: canUseAssignmentTools && assigneeFilter !== "all" ? assigneeFilter : undefined,
-        }),
+      const [usersResult, teamsResult] = await Promise.allSettled([
         getAssignableUsers(),
         getTeams(),
-        // Caught independently: a 403 here (no crm_tasks.read_all) is the
-        // permission gate doing its job, not an error - it must not fail
-        // the Promise.all and blank out tasks/users/teams for everyone else.
-        getCrmTaskProgressSummary().catch(() => null),
+        mutateTasks(),
+        mutateProgress(),
       ]);
-
-      if (tasksResult.status === "rejected") {
-        throw tasksResult.reason;
-      }
-      const tasksRes = tasksResult.value;
-      if (tasksRes.success && Array.isArray(tasksRes.data)) setTasks(tasksRes.data);
-      if (tasksRes.meta?.truncated) {
-        setError(`Only the first ${Number(tasksRes.meta.cap).toLocaleString()} tasks are shown - narrow the filters to see the rest. Column counts cover the tasks shown.`);
-      }
 
       if (usersResult.status === "fulfilled" && usersResult.value.success && Array.isArray(usersResult.value.data)) {
         setUsers(usersResult.value.data);
@@ -280,16 +325,16 @@ export default function CrmTasksPage() {
         setTeamMembers({});
       }
 
-      const progressRes = progressResult.status === "fulfilled" ? progressResult.value : null;
-      if (progressRes?.success && progressRes.data) setProgress(progressRes.data);
     } catch (e) {
       setError(normalizeError(e, "Tasks did not load."));
     } finally {
       setLoading(false);
     }
-  }, [assigneeFilter, canUseAssignmentTools, department, statusFilter]);
+  }, [assigneeFilter, mutateTasks, mutateProgress]);
 
-  useEffect(() => { void load(); }, [load]);
+  // People and teams load once; filter changes re-key the live task query.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, []);
 
   const handleBackfill = async () => {
     setBackfilling(true);
