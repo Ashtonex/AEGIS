@@ -45,7 +45,9 @@ type WorkspaceBundle = {
 const NO_MILESTONES: Record<string, unknown>[] = [];
 const NO_TEAM: ProjectTeamMember[] = [];
 
-async function fetchWorkspace(projectId: string): Promise<WorkspaceBundle> {
+/** `prev` is the bundle on screen: a section whose request fails keeps its
+ * previous value instead of going blank on a background refresh. */
+async function fetchWorkspace(projectId: string, prev?: WorkspaceBundle): Promise<WorkspaceBundle> {
   // 1. Primary project record first via the canonical internal route.
   let primaryProject: Project | null = null;
   try {
@@ -69,10 +71,10 @@ async function fetchWorkspace(projectId: string): Promise<WorkspaceBundle> {
     : [];
 
   let mergedDetail: Detail | null = null;
-  let lifecycle: Record<string, unknown> | null = null;
-  let milestones: Record<string, unknown>[] = [];
-  let team: ProjectTeamMember[] = [];
-  let financeSummary: Record<string, unknown> | null = null;
+  let lifecycle: Record<string, unknown> | null = prev?.lifecycle ?? null;
+  let milestones: Record<string, unknown>[] = prev?.milestones ?? [];
+  let team: ProjectTeamMember[] = prev?.team ?? [];
+  let financeSummary: Record<string, unknown> | null = prev?.financeSummary ?? null;
 
   if (execResult.status === "fulfilled" && execResult.value.data) {
     mergedDetail = execResult.value.data as Detail;
@@ -112,6 +114,10 @@ async function fetchWorkspace(projectId: string): Promise<WorkspaceBundle> {
     financeSummary = financeResult.value.data as Record<string, unknown>;
   }
 
+  // Executive detail and lifecycle both failed this time: keep what we had.
+  if (!mergedDetail && prev?.detail) mergedDetail = prev.detail;
+  if (!primaryProject && prev?.project && (mergedDetail || lifecycle)) primaryProject = prev.project;
+
   if (!primaryProject && mergedDetail?.project) {
     primaryProject = mergedDetail.project;
   } else if (primaryProject && mergedDetail && !mergedDetail.project) {
@@ -135,8 +141,8 @@ export function useProjectWorkspace(projectId: string): ProjectWorkspaceData {
   const [resolvedId, setResolvedId] = useState<string>(projectId);
   const query = useLiveQuery<WorkspaceBundle>(
     projectId ? `project-workspace:${projectId}` : null,
-    async () => {
-      const result = await fetchWorkspace(projectId);
+    async (previous) => {
+      const result = await fetchWorkspace(projectId, previous);
       const id = (result.project as { id?: string } | null)?.id;
       if (id) setResolvedId(String(id));
       return result;

@@ -367,17 +367,20 @@ export function CommercialWorkspaceModal({
     summary: TenderComplianceSummary | null;
   }>(
     recordId && isTender ? `crm-workspace-requirements:${recordId}` : null,
-    async () => {
+    async (prev) => {
       const [reqRes, sumRes] = await Promise.allSettled([
         getTenderRequirements(recordId as string),
         getTenderComplianceSummary(recordId as string),
       ]);
+      // A request that fails keeps its section's last value (no blanking).
       return {
         requirements:
           reqRes.status === "fulfilled" && reqRes.value.success && Array.isArray(reqRes.value.data)
             ? (reqRes.value.data as TenderRequirementItem[])
-            : null,
-        summary: sumRes.status === "fulfilled" && sumRes.value.success ? (sumRes.value.data as TenderComplianceSummary) : null,
+            : prev?.requirements ?? null,
+        summary: sumRes.status === "fulfilled" && sumRes.value.success
+          ? (sumRes.value.data as TenderComplianceSummary)
+          : prev?.summary ?? null,
       };
     },
     {

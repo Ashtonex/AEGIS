@@ -16,6 +16,11 @@ import {
   releaseHeldPayablePayment,
   requestFinancePayableInvoice,
 } from "@/lib/api";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { SUPPLIER_PAYMENT_TABLES } from "@/lib/live/liveTables";
+
+// Stable empty list while live data loads.
+const NO_ROWS: any[] = [];
 
 type RecordData = Record<string, any>;
 type Bucket = "current" | "1_30" | "31_60" | "61_90" | "90_plus";
@@ -81,10 +86,6 @@ const labelClass = "block text-[10px] font-mono uppercase tracking-wider text-sl
  * history; tick several to pay them in one batch.
  */
 export function SupplierPaymentsPanel() {
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<RecordData | null>(null);
-  const [accounts, setAccounts] = useState<RecordData[]>([]);
-  const [batches, setBatches] = useState<RecordData[]>([]);
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -103,16 +104,38 @@ export function SupplierPaymentsPanel() {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
 
+  // Live: payables, batches and held payments refresh when anyone records an
+  // invoice, approves or releases a batch, or confirms bank details - so the
+  // second person sees a held payment the moment it is waiting for them.
+  const paymentsQuery = useLiveQuery<{ payables: any; accounts: any[]; batches: any[]; payablesError: string | null }>(
+    "finance-supplier-payments",
+    async (prev) => {
+      const [payablesRes, accountsRes, batchesRes] = await Promise.allSettled([getFinancePayables(), getFinanceCashAccounts(), getFinanceSupplierPayments()]);
+      // A request that fails keeps its section's last value (no blanking).
+      return {
+        payables: payablesRes.status === "fulfilled" ? payablesRes.value.data || null : prev?.payables ?? null,
+        payablesError: payablesRes.status === "rejected"
+          ? (payablesRes.reason instanceof Error ? payablesRes.reason.message : "Could not load payables.")
+          : null,
+        accounts: accountsRes.status === "fulfilled" ? accountsRes.value.data || [] : prev?.accounts ?? [],
+        batches: batchesRes.status === "fulfilled" ? batchesRes.value.data || [] : prev?.batches ?? [],
+      };
+    },
+    { tables: SUPPLIER_PAYMENT_TABLES },
+  );
+  const { mutate: refreshPayments } = paymentsQuery;
+  const data = paymentsQuery.data?.payables ?? null;
+  const accounts = paymentsQuery.data?.accounts ?? NO_ROWS;
+  const batches = paymentsQuery.data?.batches ?? NO_ROWS;
+  const loading = paymentsQuery.isLoading && paymentsQuery.data === undefined;
+  const payablesError = paymentsQuery.data?.payablesError ?? null;
+  useEffect(() => {
+    if (payablesError) setNotice({ text: payablesError, tone: "error" });
+  }, [payablesError]);
+  // Kept for the existing call sites after this user's own actions.
   const load = useCallback(async () => {
-    setLoading(true);
-    const [payablesRes, accountsRes, batchesRes] = await Promise.allSettled([getFinancePayables(), getFinanceCashAccounts(), getFinanceSupplierPayments()]);
-    if (payablesRes.status === "fulfilled") setData(payablesRes.value.data || null);
-    else setNotice({ text: payablesRes.reason instanceof Error ? payablesRes.reason.message : "Could not load payables.", tone: "error" });
-    if (accountsRes.status === "fulfilled") setAccounts(accountsRes.value.data || []);
-    if (batchesRes.status === "fulfilled") setBatches(batchesRes.value.data || []);
-    setLoading(false);
-  }, []);
-  useEffect(() => { void load(); }, [load]);
+    await refreshPayments();
+  }, [refreshPayments]);
 
   const invoices: RecordData[] = useMemo(() => data?.invoices || [], [data]);
   const filtered = useMemo(() => {

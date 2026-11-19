@@ -91,3 +91,47 @@ export function isProjectChange(change: LiveChange, projectId: string): boolean 
   if (change.table === "projects.projects") return change.id === projectId;
   return change.project_id === projectId;
 }
+
+/** Everything that puts an item into (or takes one out of) someone's
+ * pending-approvals queue: the approval engine plus the records that are
+ * approved directly on their own row. */
+export const APPROVAL_TABLES = [
+  "core.approval_instances",
+  "core.approval_steps",
+  "core.approval_decisions",
+  "procurement.purchase_requisitions",
+  "procurement.purchase_orders",
+  "finance.supplier_payment_batches",
+  "finance.payroll_runs",
+  "finance.vendor_payment_requests",
+  "finance.variations",
+  "finance.progress_claims",
+  "fleet.plant_requests",
+] as const;
+
+/** Supplier payments: payables, batches (held payments needing a second
+ * person), their items and the payable events behind them. */
+export const SUPPLIER_PAYMENT_TABLES = [
+  "finance.payable_events",
+  "finance.supplier_payment_batches",
+  "finance.supplier_payment_items",
+  "procurement.supplier_invoices",
+  "finance.payments",
+] as const;
+
+export const PAYROLL_TABLES = ["finance.payroll_runs", "finance.payroll_items"] as const;
+
+/** What the finance overview and its action inbox summarise. */
+export const FINANCE_OVERVIEW_TABLES = [
+  ...SUPPLIER_PAYMENT_TABLES,
+  "finance.progress_claims",
+  "finance.variations",
+  "finance.budgets",
+  "finance.project_budgets",
+  "finance.cost_transactions",
+  "finance.commitments",
+  "finance.journal_entries",
+  "finance.payroll_runs",
+  "finance.vendor_payment_requests",
+  "finance.client_payment_requests",
+] as const;

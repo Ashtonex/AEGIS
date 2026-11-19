@@ -60,18 +60,19 @@ export default function ProjectFinancialsPage() {
     pettyCash: Record<string, unknown> | null;
   }>(
     projectId ? `project-financials:${projectId}` : null,
-    async () => {
+    async (prev) => {
       const [fd, v, c, pc] = await Promise.allSettled([
         getFinanceProjectDetail(projectId),
         getFinanceVariations({ project_id: projectId }),
         getFinanceProgressClaims({ project_id: projectId }),
         getProjectPettyCash(projectId),
       ]);
+      // A request that fails keeps its section's last value (no blanking).
       return {
-        financeDetail: fd.status === "fulfilled" && fd.value.data ? fd.value.data : null,
-        variations: v.status === "fulfilled" && v.value.data ? v.value.data || [] : [],
-        claims: c.status === "fulfilled" && c.value.data ? c.value.data || [] : [],
-        pettyCash: pc.status === "fulfilled" && pc.value.data ? pc.value.data : null,
+        financeDetail: fd.status === "fulfilled" && fd.value.data ? fd.value.data : prev?.financeDetail ?? null,
+        variations: v.status === "fulfilled" && v.value.data ? v.value.data || [] : prev?.variations ?? [],
+        claims: c.status === "fulfilled" && c.value.data ? c.value.data || [] : prev?.claims ?? [],
+        pettyCash: pc.status === "fulfilled" && pc.value.data ? pc.value.data : prev?.pettyCash ?? null,
       };
     },
     { tables: PROJECT_FINANCIAL_TABLES, match: (change) => isProjectChange(change, projectUuid) },

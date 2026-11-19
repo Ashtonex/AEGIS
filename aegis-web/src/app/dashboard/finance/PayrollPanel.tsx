@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck, CheckCircle2, Clock, ChevronDown, ChevronRight, FolderKanban, Landmark,
   Loader2, Pencil, Plus, RefreshCw, Search, Send, Settings2, UserPlus, UserX, Users, Wallet, X, XCircle, HardHat,
@@ -23,6 +23,11 @@ import { SitePayrollPanel } from "./SitePayrollPanel";
 import { PayrollSetupPanel } from "./PayrollSetupPanel";
 import { PayrollReturnsPanel } from "./PayrollReturnsPanel";
 import { EmptyState, Panel, buttonClass, ghostButtonClass, inputClass, labelClass, money } from "./payrollUi";
+import { useLiveQuery, useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { PAYROLL_TABLES } from "@/lib/live/liveTables";
+
+// Stable empty list while live data loads.
+const NO_ROWS: any[] = [];
 
 type RecordData = Record<string, any>;
 
@@ -161,7 +166,16 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
   const [accounts, setAccounts] = useState<RecordData[]>([]);
   const [employees, setEmployees] = useState<RecordData[]>([]);
   const [payProfiles, setPayProfiles] = useState<RecordData[]>([]);
-  const [payrollRuns, setPayrollRuns] = useState<RecordData[]>([]);
+  // Live: the run list (status, approvals, totals) refreshes when anyone
+  // prepares, approves, posts or cancels a run - the maker-checker step
+  // shows up for the checker without a reload.
+  const runsQuery = useLiveQuery<any[]>(
+    `finance-payroll-runs:${departmentId || "all"}`,
+    async () => (await getPayrollRuns({ department_id: departmentId || undefined })).data || [],
+    { tables: ["finance.payroll_runs"] },
+  );
+  const payrollRuns = runsQuery.data ?? NO_ROWS;
+  const { mutate: mutateRuns } = runsQuery;
 
   const [profileForm, setProfileForm] = useState(emptyProfileForm());
   const [showProfileForm, setShowProfileForm] = useState(false);
@@ -176,6 +190,8 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
   const [profileHours, setProfileHours] = useState<Record<string, RunInputs>>({});
 
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const expandedRunIdRef = useRef<string | null>(null);
+  expandedRunIdRef.current = expandedRunId;
   const [expandedRunItems, setExpandedRunItems] = useState<RecordData[]>([]);
   const [expandedRunLoading, setExpandedRunLoading] = useState(false);
 
@@ -183,20 +199,36 @@ function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordDa
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [accountRes, employeeRes, profileRes, runRes] = await Promise.allSettled([
+    const [accountRes, employeeRes, profileRes] = await Promise.allSettled([
       getFinanceCashAccounts(),
       getHREmployees({ status: "active" }),
       getFinancePayrollProfiles(),
-      getPayrollRuns({ department_id: departmentId || undefined }),
+      mutateRuns(),
     ]);
     if (accountRes.status === "fulfilled") setAccounts(accountRes.value.data || []);
     if (employeeRes.status === "fulfilled") setEmployees(employeeRes.value.data || []);
     if (profileRes.status === "fulfilled") setPayProfiles(profileRes.value.data || []);
-    if (runRes.status === "fulfilled") setPayrollRuns(runRes.value.data || []);
     setLoading(false);
-  }, [departmentId]);
+  }, [mutateRuns]);
 
   useEffect(() => { void loadData(); }, [loadData]);
+
+  // The run expanded below refreshes its lines quietly when they change
+  // (another approver, a recalculation) - no spinner, no collapse.
+  useLiveRefresh(
+    PAYROLL_TABLES,
+    (change) => !!expandedRunId && (change.payroll_run_id === expandedRunId || change.id === expandedRunId),
+    () => {
+      if (!expandedRunId) return;
+      const runId = expandedRunId;
+      void getPayrollRun(runId)
+        .then((res) => {
+          if (runId === expandedRunIdRef.current) setExpandedRunItems(res.data?.items || []);
+        })
+        .catch(() => undefined);
+    },
+    !!expandedRunId,
+  );
 
   const employeeNameById = useMemo(() => {
     const map = new Map<string, string>();
