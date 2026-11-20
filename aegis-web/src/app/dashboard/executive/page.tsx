@@ -340,6 +340,9 @@ function ExecutiveCommandCentreWorkspace() {
   useLiveTable("projects.site_day_attendance", () => { if (session) void loadSites(); });
   useLiveTable("projects.site_daily_targets", () => { if (session) void loadSites(); });
   useLiveTable("projects.site_day_briefings", () => { if (session) void loadSites(); });
+  useLiveTable("projects.site_role_assignments", () => { if (session) void loadSites(); });
+  // A project opening or closing changes both the bundle and the site list.
+  useLiveTable("projects.projects", () => { if (session) { void loadDashboard(); void loadSites(); } });
 
   // loadDashboard() only shows the full-page spinner on the very first
   // mount (loading starts true and is never set back to true afterward) -
@@ -347,7 +350,6 @@ function ExecutiveCommandCentreWorkspace() {
   // icon via `refreshing` while the existing numbers stay on screen.
   useLiveTable("finance.quotations", () => { if (session) void loadDashboard(); });
   useLiveTable("crm.opportunities", () => { if (session) void loadDashboard(); });
-  useLiveTable("projects.projects", () => { if (session) void loadDashboard(); });
   useLiveTable("projects.hse_incidents", () => { if (session) void loadDashboard(); });
 
   const metricCards = useMemo(() => [
@@ -390,7 +392,7 @@ function ExecutiveCommandCentreWorkspace() {
       documentTitle="Executive Command Centre"
       actions={<div className="flex items-center gap-3">
         {lastUpdated && <span className="font-mono text-[10px] uppercase text-slate" title={lastUpdated.toLocaleString()}>As of {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
-        <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
+        <button onClick={() => { void loadDashboard(); void loadSites(); }} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
       </div>}
     />
 

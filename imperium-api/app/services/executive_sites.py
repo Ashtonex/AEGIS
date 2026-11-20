@@ -69,6 +69,8 @@ SITES_PROJECTS_SQL = f"""
                LEFT JOIN core.users u ON u.id = sra.user_id
                WHERE sra.project_id = a.id AND sra.organization_id = :org_id
                  AND sra.is_active = true AND sra.is_deleted = false
+                 -- Same "in charge now" window as core/project_scope.py.
+                 AND (sra.starts_on IS NULL OR sra.starts_on <= CAST(:today AS date))
                  AND (sra.ends_on IS NULL OR sra.ends_on >= CAST(:today AS date))
            ), '[]'::jsonb) AS team
     FROM active a
