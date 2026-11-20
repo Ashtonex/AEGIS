@@ -142,3 +142,26 @@ export const FINANCE_OVERVIEW_TABLES = [
   "finance.vendor_payment_requests",
   "finance.client_payment_requests",
 ] as const;
+
+/** The people register: who works here, in which role, reporting to whom,
+ * on which project. Non-confidential fields only reach the screen; events
+ * are ids. */
+export const PEOPLE_TABLES = [
+  "hr.employees",
+  "hr.positions",
+  "hr.reporting_lines",
+  "hr.project_allocations",
+  "projects.site_role_assignments",
+] as const;
+
+/** Attendance: check-ins, the daily register, weekly hours, and leave that
+ * explains an absence. */
+export const ATTENDANCE_TABLES = [
+  "hr.attendance_events",
+  "hr.attendance_records",
+  "hr.weekly_hours",
+  "hr.leave_requests",
+  "hr.employees",
+] as const;
+
+export const LEAVE_TABLES = ["hr.leave_requests", "hr.employees"] as const;

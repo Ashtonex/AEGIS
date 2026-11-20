@@ -127,10 +127,23 @@ SCOPED_SIGNAL_WINDOW_SECONDS = 0.15
 # per employee, a payment batch adding its items). Their signals are
 # coalesced the same way, grouped by the parent the screen shows (the run or
 # batch), but go to every permitted user rather than per project.
+# Project-scoped tables that an org-wide screen also depends on. Besides the
+# per-project signal, these readers get an org-wide id-only signal (batched
+# like the bulk tables): the HR people summary counts project allocations for
+# everyone, so HR readers without that project still need to refresh.
+EXTRA_ORG_WIDE_AUDIENCE: dict[str, tuple[str, ...]] = {
+    "hr.project_allocations": ("workforce.people.read",),
+}
+
 COALESCED_SIGNAL_GROUP_KEY: dict[str, str] = {
     "finance.payroll_items": "payroll_run_id",
     "finance.supplier_payment_items": "batch_id",
     "finance.payable_events": "batch_id",
+    # Morning check-ins and the weekly hours roll-up arrive in bursts; one
+    # refresh per burst for the whole org.
+    "hr.attendance_events": "",
+    "hr.attendance_records": "",
+    "hr.weekly_hours": "",
 }
 
 
@@ -206,7 +219,16 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "crm.subcontractors": ("executive.view_dashboard",),
     "finance.company_budgets": ("executive.view_dashboard",),
     "finance.management_accounts_packs": ("executive.view_dashboard",),
-    "hr.leave_requests": ("executive.view_dashboard",),
+    # HR, non-confidential (migration 305). Same keys as hr_people /
+    # hr_time / hr_records. Leave requests also feed the approvals queue.
+    "hr.leave_requests": ("hr.leave.read", "executive.view_dashboard"),
+    "hr.employees": ("workforce.people.read", "hr.attendance.read", "hr.leave.read"),
+    "hr.positions": ("workforce.people.read",),
+    "hr.reporting_lines": ("workforce.people.read",),
+    "hr.attendance_events": ("hr.attendance.read",),
+    # Leave readers too: the absence view in Leave Management counts these.
+    "hr.attendance_records": ("hr.attendance.read", "hr.leave.read"),
+    "hr.weekly_hours": ("hr.attendance.read",),
     "core.internal_messages": ("internal_messages.read",),
     "core.documents": ("documents.read",),
     # Messages page and daily-report evidence (migration 301). Both push the
@@ -643,6 +665,9 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
         parents = _parent_keys(data)
         if table in PROJECT_SCOPED_SIGNAL_TABLES:
             queue_scoped_signal(table, str(org_id), permission_keys, data)
+            extra = EXTRA_ORG_WIDE_AUDIENCE.get(table)
+            if extra:
+                queue_scoped_signal(table, str(org_id), extra, data, scoped=False)
             return
         if table in COALESCED_SIGNAL_GROUP_KEY:
             queue_scoped_signal(table, str(org_id), permission_keys, data, scoped=False)

@@ -11,6 +11,8 @@ import { PersonCardModal } from "@/components/people/PersonCardModal";
 import {
   EMPLOYMENT_TYPES, Field, StatusPill, inputClass, primaryButton, secondaryButton, today,
 } from "@/components/people/ui";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { PEOPLE_TABLES } from "@/lib/live/liveTables";
 
 const errorText = (reason: unknown) => (reason instanceof Error ? reason.message : "The request could not be completed.");
 
@@ -51,15 +53,28 @@ export default function WorkforcePeople() {
     void getMyPermissions().then((r) => setPermissions(Array.isArray(r.data) ? r.data : [])).catch(() => setPermissions([]));
   }, []);
 
+  // Live: the register refreshes quietly when anyone changes a person,
+  // role, reporting line or project allocation.
+  const peopleQuery = useLiveQuery(
+    `workforce-people:${search}:${status}:${categoryId}:${departmentId}:${revision}`,
+    async () => (await getPeopleRegister({ q: search, status, category_id: categoryId, department_id: departmentId })).data,
+    { tables: PEOPLE_TABLES },
+  );
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    getPeopleRegister({ q: search, status, category_id: categoryId, department_id: departmentId })
-      .then((r) => { if (active) { setRows(r.data); setError(""); } })
-      .catch((reason) => { if (active) { setRows([]); setError(errorText(reason)); } })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [search, status, categoryId, departmentId, revision]);
+    if (peopleQuery.data) {
+      setRows(peopleQuery.data);
+      setError("");
+    }
+  }, [peopleQuery.data]);
+  useEffect(() => {
+    if (peopleQuery.error && peopleQuery.data === undefined) {
+      setRows([]);
+      setError(errorText(peopleQuery.error));
+    }
+  }, [peopleQuery.error, peopleQuery.data]);
+  useEffect(() => {
+    setLoading(peopleQuery.isLoading && peopleQuery.data === undefined);
+  }, [peopleQuery.isLoading, peopleQuery.data]);
 
   useEffect(() => {
     let active = true;

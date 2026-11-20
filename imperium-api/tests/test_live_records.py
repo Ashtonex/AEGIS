@@ -408,6 +408,42 @@ class BulkOrgSignalTest(_SignalHarness):
 
         self.assertEqual(sorted(e["batch_id"] for e in run(scenario()).sent), ["b1", "b2"])
 
+    def test_morning_check_ins_coalesce_for_attendance_readers(self):
+        async def scenario():
+            hr = await self._register("u-a", perms=("hr.attendance.read",))
+            people_only = await self._register("u-b", perms=("workforce.people.read",))
+            for i in range(30):
+                self._notify(table="hr.attendance_events", op="INSERT", id=f"ev{i}", employee_id=f"e{i}")
+            await asyncio.sleep(0.1)
+            return hr, people_only
+
+        hr, people_only = run(scenario())
+        self.assertEqual([(e["op"], e["count"]) for e in hr.sent], [("BULK", 30)])
+        self.assertEqual(people_only.sent, [])
+
+    def test_project_allocations_also_reach_hr_readers_org_wide(self):
+        async def scenario():
+            hr = await self._register("u-b", perms=("workforce.people.read",))  # u-b sees only PROJECT_B
+            on_a = await self._register("u-a", perms=("projects.read",))
+            other = await self._register("u-office", perms=("finance.cash.read",))
+            self._notify(table="hr.project_allocations", op="INSERT", id="al1", project_id=PROJECT_A)
+            await asyncio.sleep(0.1)
+            return hr, on_a, other
+
+        hr, on_a, other = run(scenario())
+        self.assertEqual(len(hr.sent), 1)  # org-wide HR signal despite not seeing PROJECT_A
+        self.assertEqual(len(on_a.sent), 1)  # per-project signal
+        self.assertEqual(other.sent, [])
+
+    def test_attendance_records_reach_leave_readers(self):
+        async def scenario():
+            leave = await self._register("u-a", perms=("hr.leave.read",))
+            self._notify(table="hr.attendance_records", op="UPDATE", id="ar1")
+            await asyncio.sleep(0.1)
+            return leave
+
+        self.assertEqual(len(run(scenario()).sent), 1)
+
     def test_approval_step_carries_its_instance(self):
         async def scenario():
             exec_user = await self._register("u-office", perms=("executive.view_dashboard",))

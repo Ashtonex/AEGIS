@@ -9,6 +9,8 @@ import {
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { PersonCardModal } from "@/components/people/PersonCardModal";
 import { formatDate, humanise, inputClass, secondaryButton } from "@/components/people/ui";
+import { useLiveQuery } from "@/lib/live/LiveDataProvider";
+import { ATTENDANCE_TABLES } from "@/lib/live/liveTables";
 
 const harareToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Harare" }).format(new Date());
 const shift = (iso: string, days: number) => new Date(new Date(`${iso}T12:00:00`).getTime() + days * 86400000).toISOString().slice(0, 10);
@@ -28,17 +30,17 @@ const STATE: Record<string, { label: string; tone: string }> = {
 
 function TodayBoard({ onOpen }: { onOpen: (id: string) => void }) {
   const [day, setDay] = useState(harareToday());
-  const [rows, setRows] = useState<BoardRow[] | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let active = true;
-    setRows(null);
-    setError("");
-    getAttendanceBoard(day)
-      .then((r) => { if (active) setRows(r.data.people); })
-      .catch((reason) => { if (active) { setRows([]); setError(`Attendance register could not be loaded. ${reason instanceof Error ? reason.message : ""}`.trim()); } });
-    return () => { active = false; };
-  }, [day]);
+  // Live: check-ins, the register and leave for this day refresh as they
+  // happen - the board fills in through the morning without a reload.
+  const boardQuery = useLiveQuery<BoardRow[]>(
+    `hr-attendance-board:${day}`,
+    async () => (await getAttendanceBoard(day)).data.people,
+    { tables: ATTENDANCE_TABLES, config: { keepPreviousData: false } },
+  );
+  const rows: BoardRow[] | null = boardQuery.data ?? (boardQuery.error ? [] : null);
+  const error = boardQuery.error && boardQuery.data === undefined
+    ? `Attendance register could not be loaded. ${boardQuery.error instanceof Error ? boardQuery.error.message : ""}`.trim()
+    : "";
   const count = (s: string[]) => rows?.filter((r) => s.includes(r.state)).length ?? 0;
   return (
     <div className="space-y-4">
@@ -75,15 +77,24 @@ function TodayBoard({ onOpen }: { onOpen: (id: string) => void }) {
 
 function WeeklyConfirmations({ onOpen }: { onOpen: (id: string) => void }) {
   const [weekEnd, setWeekEnd] = useState(lastFriday(harareToday()));
-  const [data, setData] = useState<{ people: WeeksRow[]; totals: Record<string, number>; week_start: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  // Live: a confirmation, query or approval by anyone shows up here at once.
+  const weeksQuery = useLiveQuery<{ people: WeeksRow[]; totals: Record<string, number>; week_start: string }>(
+    `hr-weekly-hours:${weekEnd}`,
+    async () => (await getWeeklyHours(weekEnd)).data,
+    { tables: ATTENDANCE_TABLES, config: { keepPreviousData: false } },
+  );
+  const data = weeksQuery.data ?? null;
+  const { mutate: refreshWeeks } = weeksQuery;
+  useEffect(() => {
+    if (weeksQuery.error) setMessage(weeksQuery.error instanceof Error ? weeksQuery.error.message : "Could not load.");
+  }, [weeksQuery.error]);
+  // Kept for the existing call sites after this user's own decisions.
   const load = useCallback(async () => {
-    setData(null);
-    try { setData((await getWeeklyHours(weekEnd)).data); } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Could not load."); }
-  }, [weekEnd]);
-  useEffect(() => { void load(); }, [load]);
+    await refreshWeeks();
+  }, [refreshWeeks]);
 
   async function decide(row: WeeksRow, decision: "approved" | "queried") {
     if (!row.id) return;
@@ -150,15 +161,16 @@ export function AbsenceReport({ onOpen }: { onOpen: (id: string) => void }) {
   const today = harareToday();
   const [from, setFrom] = useState(`${today.slice(0, 8)}01`);
   const [to, setTo] = useState(today);
-  const [rows, setRows] = useState<AbsenceRow[] | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let active = true;
-    setRows(null);
-    getAbsenceReport(from, to).then((r) => { if (active) { setRows(r.data.people); setError(""); } })
-      .catch((reason) => { if (active) { setRows([]); setError(reason instanceof Error ? reason.message : "Could not load."); } });
-    return () => { active = false; };
-  }, [from, to]);
+  // Live: absences and approved leave in the range refresh as recorded.
+  const absenceQuery = useLiveQuery<AbsenceRow[]>(
+    `hr-absence:${from}:${to}`,
+    async () => (await getAbsenceReport(from, to)).data.people,
+    { tables: ATTENDANCE_TABLES, config: { keepPreviousData: false } },
+  );
+  const rows: AbsenceRow[] | null = absenceQuery.data ?? (absenceQuery.error ? [] : null);
+  const error = absenceQuery.error && absenceQuery.data === undefined
+    ? (absenceQuery.error instanceof Error ? absenceQuery.error.message : "Could not load.")
+    : "";
   const sorted = [...(rows ?? [])].sort((a, b) => b.absent - a.absent || b.leave - a.leave);
   return (
     <div className="space-y-4">

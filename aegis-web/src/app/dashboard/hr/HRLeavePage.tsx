@@ -11,6 +11,8 @@ import {
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { Field, formatDate, inputClass, primaryButton, secondaryButton } from "@/components/people/ui";
 import { AbsencePanel } from "./HRAttendancePage";
+import { useLiveRefresh } from "@/lib/live/LiveDataProvider";
+import { LEAVE_TABLES } from "@/lib/live/liveTables";
 
 type LeaveRequest = {
   id: string;
@@ -132,6 +134,9 @@ export function HRLeavePage() {
   const refresh = useCallback(async () => {
     await Promise.all([loadRequests(), loadBalances(balanceYear)]);
   }, [loadRequests, loadBalances, balanceYear]);
+  // Live: a request submitted, approved or rejected by anyone appears here,
+  // with balances, without a reload.
+  useLiveRefresh(LEAVE_TABLES, undefined, () => void refresh());
 
   const decide = useCallback(async (id: string, decision: "approved" | "rejected", reason?: string) => {
     try {
