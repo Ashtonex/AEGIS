@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.services.finance.bank_books import EFFECTIVE_BALANCE_SQL
 from datetime import date, datetime, timedelta
 from typing import Dict, Any, List
+from uuid import UUID
 
 from app.shared.events import emit_role_notification
 from core.database import gather_reads, get_db
@@ -17,6 +18,7 @@ from core.logging import logger
 from core.security import SUPERADMIN_ROLE, require_permission
 from core.analytics_ml import ml_engine
 from app.services.finance import company_budget as budgets
+from app.services import executive_sites as sites_service
 router = APIRouter()
 
 PROJECT_TERMINAL_STATUSES = (
@@ -792,6 +794,106 @@ async def get_active_projects(
         "data": [item["project"] for item in items],
         "message": "Active projects fetched.",
         "meta": {"total": len(items), "source_errors": source_errors},
+    }
+
+
+async def _site_reads(db: AsyncSession, org_id: str, project_id: str | None, since: date, today: date,
+                      source_errors: List[Dict[str, Any]]):
+    params = {"org_id": org_id, "project_id": project_id, "since": since, "today": today}
+
+    def read(sql: str, source: str, extra: Dict[str, Any] | None = None):
+        return lambda session: _rows(session, sql, extra or params, source=source, source_errors=source_errors)
+
+    projects, day_rows, budget_rows = await gather_reads(
+        db,
+        read(sites_service.SITES_PROJECTS_SQL, "executive_sites.projects",
+             {"org_id": org_id, "project_id": project_id, "today": today}),
+        read(sites_service.SITES_DAYS_SQL, "executive_sites.days"),
+        read(_EXECUTIVE_PROJECT_BUDGET_SQL, "finance.project_budgets", {"org_id": org_id}),
+    )
+    budgets_by_project = {line["project_id"]: line for line in (_project_budget_line(row) for row in budget_rows)}
+    return projects, day_rows, budgets_by_project
+
+
+@router.get("/sites")
+async def get_executive_sites(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every open project as a site: who is assigned, who worked this week,
+    hours, labour cost, daily targets met, budget position and plain-language
+    flags. Sites working today come first, then the worst-off."""
+    org_id = user["org_id"]
+    source_errors: List[Dict[str, Any]] = []
+    today = sites_service.site_today()
+    since = sites_service.window_start(today, sites_service.LIST_WINDOW_DAYS)
+    projects, day_rows, budgets_by_project = await _site_reads(db, org_id, None, since, today, source_errors)
+    return {
+        "success": True,
+        "data": sites_service.build_sites(projects, day_rows, today, budgets_by_project),
+        "message": "Active sites fetched.",
+        "meta": {"source_errors": source_errors},
+    }
+
+
+@router.get("/sites/{project_id}")
+async def get_executive_site_detail(
+    project_id: UUID,
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """One site: the 7-day summary and flags from /sites, a zero-filled
+    14-day daily series, the latest day's targets, the latest site report and
+    the last Saturday reconciliation."""
+    org_id = user["org_id"]
+    pid = str(project_id)
+    source_errors: List[Dict[str, Any]] = []
+    today = sites_service.site_today()
+    since = sites_service.window_start(today, sites_service.DETAIL_WINDOW_DAYS)
+    week_start = sites_service.window_start(today, sites_service.LIST_WINDOW_DAYS)
+    projects, day_rows, budgets_by_project = await _site_reads(db, org_id, pid, since, today, source_errors)
+    if not projects:
+        raise HTTPException(status_code=404, detail="Active site not found.")
+
+    params = {"org_id": org_id, "project_id": pid, "today": today}
+    targets, report, recon = await gather_reads(
+        db,
+        lambda session: _rows(session, sites_service.SITE_TARGETS_SQL, params,
+                              source="executive_sites.targets", source_errors=source_errors),
+        lambda session: _rows(session, sites_service.SITE_LATEST_REPORT_SQL, params,
+                              source="executive_sites.latest_report", source_errors=source_errors),
+        lambda session: _rows(session, sites_service.SITE_LAST_RECON_SQL,
+                              {"org_id": org_id, "project_id": pid},
+                              source="executive_sites.reconciliation", source_errors=source_errors),
+    )
+    week_rows = [row for row in day_rows if row["day"] >= week_start]
+    site = sites_service.build_site(projects[0], week_rows, today, budgets_by_project.get(pid))
+    site["daily"] = sites_service.daily_series(day_rows, since, today)
+    site["targets"] = [
+        {
+            **row,
+            "id": str(row["id"]),
+            "target_date": row["target_date"].isoformat() if row.get("target_date") else None,
+            "target_qty": float(row["target_qty"]) if row.get("target_qty") is not None else None,
+            "achieved_qty": float(row["achieved_qty"]) if row.get("achieved_qty") is not None else None,
+            "planned_amount": float(row["planned_amount"]) if row.get("planned_amount") is not None else None,
+        }
+        for row in targets
+    ]
+    site["latest_report"] = (
+        {
+            **report[0],
+            "id": str(report[0]["id"]),
+            "cost_exposure": float(report[0]["cost_exposure"]) if report[0].get("cost_exposure") is not None else None,
+        }
+        if report else None
+    )
+    site["last_reconciliation"] = recon[0] if recon else None
+    return {
+        "success": True,
+        "data": site,
+        "message": "Site detail fetched.",
+        "meta": {"source_errors": source_errors},
     }
 
 
