@@ -22,7 +22,7 @@ from app.shared.pagination import limited, ok
 from app.services.finance.payroll_exports import mask_account
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
-from app.services.finance import gl_bridge
+from app.services.finance import company_budget, gl_bridge
 from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.finance.cash_position import compute_cash_runway
 from app.services.inventory_service import post_cost_transaction
@@ -695,6 +695,11 @@ async def get_project_financial_detail(
     return ok(detail, "Project financial detail retrieved.")
 
 
+# Open-ended P&L (no dates given): bounds for the shared head-office cost query.
+_PNL_EARLIEST_DATE = date(1900, 1, 1)
+_PNL_LATEST_DATE = date(2999, 12, 31)
+
+
 async def _compute_department_pnl(db: AsyncSession, org_id: str, date_from: Optional[date], date_to: Optional[date]) -> dict:
     """
     Revenue and cost per department, plus an "Unassigned" row for anything
@@ -705,34 +710,25 @@ async def _compute_department_pnl(db: AsyncSession, org_id: str, date_from: Opti
     department), internal transfer revenue/cost (department_transfer_legs,
     directly tagged), project-committed cost (cost_transactions, via the
     project's department, excluding rows superseded by a posted transfer),
-    and non-project direct cost (cashbook/payroll/supplier-payment rows
-    that already carry their own department_id from Phase 1 but were never
-    rolled up anywhere until now). All five legs are date-bound identically
+    and non-project direct cost (company_budget.non_project_cost_sql - the
+    same definition the company budget variance and the executive dashboard
+    use, so this consolidated figure matches them). All legs are date-bound identically
     when date_from/date_to are supplied - shared by both /departments/pnl
     and /statements so a fix here benefits both.
     """
     date_filters = ""
     revenue_date_filter = ""
     cost_date_filter = ""
-    cashbook_date_filter = ""
-    payroll_date_filter = ""
-    supplier_payment_date_filter = ""
     params: dict = {"org_id": org_id}
     if date_from:
         date_filters += " AND t.transfer_date >= :date_from"
         revenue_date_filter += " AND pc.certified_at >= :date_from"
         cost_date_filter += " AND ct.transaction_date >= :date_from"
-        cashbook_date_filter += " AND cb.transaction_date >= :date_from"
-        payroll_date_filter += " AND pr.payment_date >= :date_from"
-        supplier_payment_date_filter += " AND spb.payment_date >= :date_from"
         params["date_from"] = date_from
     if date_to:
         date_filters += " AND t.transfer_date <= :date_to"
         revenue_date_filter += " AND pc.certified_at <= :date_to"
         cost_date_filter += " AND ct.transaction_date <= :date_to"
-        cashbook_date_filter += " AND cb.transaction_date <= :date_to"
-        payroll_date_filter += " AND pr.payment_date <= :date_to"
-        supplier_payment_date_filter += " AND spb.payment_date <= :date_to"
         params["date_to"] = date_to
 
     query = text(f"""
@@ -783,24 +779,10 @@ async def _compute_department_pnl(db: AsyncSession, org_id: str, date_from: Opti
                 {date_filters}
             ), 0) AS internal_cost,
 
-            COALESCE((
-                SELECT SUM(cb.amount) FROM finance.cashbook_transactions cb
-                WHERE cb.organization_id = :org_id AND cb.department_id IS NOT DISTINCT FROM d.id
-                  AND cb.project_id IS NULL AND cb.direction = 'outflow' AND cb.is_deleted = false
-                  {cashbook_date_filter}
-            ), 0)
-            + COALESCE((
-                SELECT SUM(pi.net_pay) FROM finance.payroll_items pi
-                JOIN finance.payroll_runs pr ON pr.id = pi.payroll_run_id AND pr.status = 'posted'
-                WHERE pi.organization_id = :org_id AND pi.department_id IS NOT DISTINCT FROM d.id AND pi.project_id IS NULL
-                {payroll_date_filter}
-            ), 0)
-            + COALESCE((
-                SELECT SUM(spi.amount) FROM finance.supplier_payment_items spi
-                JOIN finance.supplier_payment_batches spb ON spb.id = spi.batch_id
-                WHERE spi.organization_id = :org_id AND spi.department_id IS NOT DISTINCT FROM d.id AND spi.project_id IS NULL
-                {supplier_payment_date_filter}
-            ), 0) AS direct_cost_non_project
+            -- Filled in below from company_budget.non_project_cost_sql, the
+            -- one definition of head-office cost (also behind the company
+            -- budget variance and the executive dashboard).
+            0::numeric AS direct_cost_non_project
 
         FROM depts d
         ORDER BY d.name
@@ -808,6 +790,19 @@ async def _compute_department_pnl(db: AsyncSession, org_id: str, date_from: Opti
 
     result = await db.execute(query, params)
     rows = [dict(r._mapping) for r in result]
+    direct = await db.execute(
+        text(company_budget.non_project_cost_sql("department", department_filter=False)),
+        company_budget.non_project_cost_params(
+            org_id, date_from or _PNL_EARLIEST_DATE, date_to or _PNL_LATEST_DATE,
+        ),
+    )
+    direct_by_department = {
+        (str(row["bucket"]) if row["bucket"] is not None else None): float(row["amount"] or 0)
+        for row in direct.mappings().all()
+    }
+    for row in rows:
+        key = str(row["department_id"]) if row["department_id"] is not None else None
+        row["direct_cost_non_project"] = direct_by_department.get(key, 0.0)
 
     org_totals = {"external_revenue": 0, "internal_revenue": 0, "project_cost": 0, "internal_cost": 0, "direct_cost_non_project": 0}
     for row in rows:

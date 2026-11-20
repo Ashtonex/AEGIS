@@ -113,10 +113,15 @@ class Phase5AServiceContractTests(unittest.TestCase):
             self.assertNotIn(f"{verb} finance.journal_lines", SERVICE_CODE_ONLY)
 
     def test_actuals_keep_every_leg_and_add_gl_only_overheads(self):
-        fn_body = SERVICE.split("async def _get_department_actuals_by_month")[1].split("\nasync def ")[0]
-        # modules that only reach the GL after an approved proposal stay as their own legs
-        for leg in ("FROM finance.progress_claims", "FROM finance.cost_transactions", "FROM finance.cashbook_transactions",
-                    "FROM finance.payroll_items", "FROM finance.supplier_payment_items"):
+        actuals_body = SERVICE.split("async def _get_department_actuals_by_month")[1].split("\nasync def ")[0]
+        for leg in ("FROM finance.progress_claims", "FROM finance.cost_transactions", "non_project_cost_sql("):
+            self.assertIn(leg, actuals_body)
+        # Non-project cost lives in one shared definition (also used by the
+        # department P&L); modules that only reach the GL after an approved
+        # proposal stay as their own legs there.
+        fn_body = SERVICE.split("def non_project_cost_sql")[1].split("\ndef ")[0]
+        for leg in ("FROM finance.cashbook_transactions", "FROM finance.payroll_items",
+                    "FROM finance.supplier_payment_items"):
             self.assertIn(leg, fn_body)
         # ledger-only overheads: posted, non-project, from bank lines / vouchers
         self.assertIn("je.status = 'posted'", fn_body)
@@ -126,8 +131,10 @@ class Phase5AServiceContractTests(unittest.TestCase):
         self.assertIn("a.account_code <> '6000' OR NOT EXISTS (", fn_body)
         self.assertIn("hq_pi.project_id IS NULL", fn_body)
         self.assertIn("date_trunc('month', hq_pr.payment_date) = date_trunc('month', je.entry_date)", fn_body)
-        # voucher cashbook rows and transfers are not counted a second time
-        self.assertIn("COALESCE(cb.source_type, '') <> 'project_money_entry'", fn_body)
+        # voucher, bank-line and supplier-payment cashbook rows and transfers
+        # are not counted a second time
+        self.assertIn("COALESCE(cb.source_type, '') <> ALL(:cashbook_elsewhere)", fn_body)
+        self.assertIn('"project_money_entry"', SERVICE.split("CASHBOOK_COUNTED_ELSEWHERE = (")[1].split(")")[0])
         self.assertIn("cb.transaction_type NOT IN ('transfer_in', 'transfer_out')", fn_body)
 
 

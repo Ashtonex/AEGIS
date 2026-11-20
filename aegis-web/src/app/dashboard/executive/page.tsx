@@ -150,18 +150,24 @@ function metricDetailRows(metricKey: string, kpis: ApiData, stats: ApiData, acti
       { label: "Data Health", value: statusLabel(healthBySource("Finance")?.status), source: displayValue(healthBySource("Finance")?.source || "Finance source health") },
     ],
     revenue: [
-      { label: "Revenue YTD", value: currencyValue(kpis.revenue_ytd), source: "finance.progress_claims" },
-      { label: "Recognised Revenue", value: displayValue(kpis.revenue), source: "finance.progress_claims" },
-      { label: "Cost YTD", value: currencyValue(kpis.cost_ytd), source: "finance.cost_transactions" },
-      { label: "Gross Profit YTD", value: currencyValue(kpis.gross_profit_ytd), source: "finance.progress_claims + finance.cost_transactions" },
+      { label: "Revenue YTD", value: currencyValue(kpis.revenue_ytd), source: "certified/paid progress claims" },
+      { label: "Project Cost YTD", value: currencyValue(kpis.project_cost_ytd), source: "finance.cost_transactions" },
+      { label: "Head-Office Cost YTD", value: currencyValue(kpis.head_office_cost_ytd), source: "non-project cost, counted once (cashbook, payroll, supplier payments, ledger)" },
+      { label: "Total Cost YTD", value: currencyValue(kpis.cost_ytd), source: "project + head-office cost" },
+      { label: "Gross Profit YTD", value: currencyValue(kpis.gross_profit_ytd), source: "revenue less project cost" },
+      { label: "Net Profit YTD", value: currencyValue(kpis.net_profit_ytd), source: "revenue less total cost" },
       { label: "Finance Data Health", value: statusLabel(healthBySource("Finance")?.status), source: displayValue(healthBySource("Finance")?.source || "Finance source health") },
     ],
     margin: [
-      { label: "Gross Profit Margin", value: metricWithUnit(kpis.margin_percent, "%"), source: "calculated from YTD revenue and cost" },
-      { label: "Revenue YTD", value: currencyValue(kpis.revenue_ytd), source: "finance.progress_claims" },
-      { label: "Cost YTD", value: currencyValue(kpis.cost_ytd), source: "finance.cost_transactions" },
-      { label: "Gross Profit YTD", value: currencyValue(kpis.gross_profit_ytd), source: "derived" },
-      { label: "Margin Basis", value: "Revenue less recorded cost transactions", source: "executive KPI service" },
+      { label: "Net Margin", value: metricWithUnit(kpis.margin_percent, "%"), source: "net profit / revenue" },
+      { label: "Gross Margin", value: metricWithUnit(kpis.gross_margin_percent, "%"), source: "gross profit / revenue" },
+      { label: "Revenue YTD", value: currencyValue(kpis.revenue_ytd), source: "certified/paid progress claims" },
+      { label: "Project Cost YTD", value: currencyValue(kpis.project_cost_ytd), source: "finance.cost_transactions" },
+      { label: "Head-Office Cost YTD", value: currencyValue(kpis.head_office_cost_ytd), source: "non-project cost, counted once (cashbook, payroll, supplier payments, ledger)" },
+      { label: "Total Cost YTD", value: currencyValue(kpis.cost_ytd), source: "project + head-office cost" },
+      { label: "Gross Profit YTD", value: currencyValue(kpis.gross_profit_ytd), source: "revenue less project cost" },
+      { label: "Net Profit YTD", value: currencyValue(kpis.net_profit_ytd), source: "revenue less total cost" },
+      { label: "Basis", value: "Same company actuals as Budget vs Actual and Department P&L", source: "company_budget actuals" },
     ],
     pipeline: [
       { label: "Opportunity Pipeline", value: currencyValue(kpis.pipeline_opportunity_value), source: "crm.opportunities" },
@@ -192,6 +198,7 @@ function metricDetailRows(metricKey: string, kpis: ApiData, stats: ApiData, acti
       { label: "Documented Process Notice", value: displayValue(kpis._notices), source: "executive KPI service" },
     ],
   };
+  rowsByMetric.net_profit = rowsByMetric.margin;
 
   return rowsByMetric[metricKey] || [];
 }
@@ -345,13 +352,13 @@ function ExecutiveCommandCentreWorkspace() {
 
   const metricCards = useMemo(() => [
     { key: "cash_runway", label: "Cash Runway", value: metricWithUnit(kpis.cash_survival_days, " days"), source: "Executive KPI snapshot or treasury snapshot when available" },
-    { key: "revenue", label: "Revenue (YTD)", value: displayValue(kpis.revenue), source: "Live finance progress claims and cost records" },
-    { key: "margin", label: "Gross Profit Margin", value: displayValue(kpis.margin), source: "Live finance progress claims and cost records" },
+    { key: "revenue", label: "Revenue (YTD)", value: displayValue(kpis.revenue), source: "Certified and paid progress claims, this calendar year" },
+    { key: "margin", label: "Net Margin (YTD)", value: displayValue(kpis.margin), sub: kpis.gross_margin_percent !== undefined && kpis.gross_margin_percent !== null ? `Gross ${metricWithUnit(kpis.gross_margin_percent, "%")} before head office` : "", source: "Company actuals: certified claims less project and head-office cost" },
     { key: "active_projects", label: "Active Sites", value: sitesLoading ? "…" : activeSitesHeadline(sitesSummary).value, sub: activeSitesHeadline(sitesSummary).sub, source: "Site attendance, daily targets and team assignments, last 7 days" },
     { key: "pipeline", label: "Pipeline Value", value: displayValue(kpis.pipeline), source: "Live CRM opportunities and tenders" },
     { key: "concentration", label: "Top Client Concentration", value: metricWithUnit(kpis.revenue_concentration_percent, "%"), source: "Live project contract values or executive KPI snapshot" },
     { key: "safety", label: "Safety Incidents (YTD)", value: displayValue(stats.safety_incidents), source: "Live HSE incident records" },
-    { key: "documented", label: "Documented Processes", value: metricWithUnit(kpis.documented_workflow_percent ?? kpis.documented_percent, "%"), source: "Executive KPI snapshot or process register when available" },
+    { key: "net_profit", label: "Net Profit (YTD)", value: currencyValue(kpis.net_profit_ytd), source: "Company actuals: certified claims less project and head-office cost" },
   ], [kpis, stats, sitesLoading, sitesSummary]);
 
   const openProject = async (project: ApiData) => {
@@ -404,7 +411,7 @@ function ExecutiveCommandCentreWorkspace() {
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {loading ? <BundlePlaceholder label="Revenue, cost and margin" /> : <RevenueCostMarginPanel kpis={kpis} />}
-      {loading ? <BundlePlaceholder label="Pipeline composition" /> : <PipelineCompositionPanel kpis={kpis} />}
+      <DepartmentPnLPanel />
     </section>
 
     <BudgetVsActualPanel />
@@ -416,7 +423,7 @@ function ExecutiveCommandCentreWorkspace() {
     </section>
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <DepartmentPnLPanel />
+      {loading ? <BundlePlaceholder label="Pipeline composition" /> : <PipelineCompositionPanel kpis={kpis} />}
       <SafetyIndexPanel />
     </section>
 
@@ -1024,25 +1031,30 @@ function CCBAutomatedFindingsPanel() {
 function RevenueCostMarginPanel({ kpis }: { kpis: ApiData }) {
   const revenue = Number(kpis.revenue_ytd) || 0;
   const cost = Number(kpis.cost_ytd) || 0;
+  const projectCost = Number(kpis.project_cost_ytd) || 0;
+  const headOfficeCost = Number(kpis.head_office_cost_ytd) || 0;
   const hasData = revenue > 0 || cost > 0;
-  const chartData = [{ name: "YTD", Revenue: revenue, Cost: cost }];
+  const chartData = [{ name: "YTD", Revenue: revenue, "Project cost": projectCost, "Head-office cost": headOfficeCost }];
 
   return (
     <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
       <div className="flex justify-between items-start border-b border-ink-mid pb-3">
         <div>
           <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Revenue vs Cost (YTD)</h2>
-          <p className="text-xs text-slate-light mt-1">Live progress-claim revenue against recorded cost transactions.</p>
+          <p className="text-xs text-slate-light mt-1">Certified claims against project cost and head-office cost - the same company actuals as Budget vs Actual and the Department P&amp;L.</p>
         </div>
       </div>
       {!hasData ? (
         <p className="text-xs text-slate-light py-6">No revenue or cost recorded year-to-date.</p>
       ) : (
         <div className="py-2">
-          <div className="grid grid-cols-3 gap-2 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-2 gap-y-3 text-xs">
             <div><p className="text-slate">Revenue</p><p className="font-mono text-lg text-paper mt-0.5">{currencyValue(revenue)}</p></div>
-            <div><p className="text-slate">Cost</p><p className="font-mono text-lg text-paper mt-0.5">{currencyValue(cost)}</p></div>
-            <div><p className="text-slate">Margin</p><p className="font-mono text-lg text-paper mt-0.5">{metricWithUnit(kpis.margin_percent, "%")}</p></div>
+            <div><p className="text-slate">Project cost</p><p className="font-mono text-lg text-paper mt-0.5">{currencyValue(projectCost)}</p></div>
+            <div><p className="text-slate">Gross margin</p><p className="font-mono text-lg text-paper mt-0.5">{metricWithUnit(kpis.gross_margin_percent, "%")}</p></div>
+            <div><p className="text-slate">Head-office cost</p><p className="font-mono text-lg text-paper mt-0.5">{currencyValue(headOfficeCost)}</p></div>
+            <div><p className="text-slate">Net profit</p><p className="font-mono text-lg text-paper mt-0.5">{currencyValue(kpis.net_profit_ytd)}</p></div>
+            <div><p className="text-slate">Net margin</p><p className="font-mono text-lg text-paper mt-0.5">{metricWithUnit(kpis.margin_percent, "%")}</p></div>
           </div>
           <div className="mt-4 h-28">
             <ResponsiveContainer width="100%" height="100%">
@@ -1053,7 +1065,8 @@ function RevenueCostMarginPanel({ kpis }: { kpis: ApiData }) {
                 <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--dxl-ink-light)" }} />
                 <Legend wrapperStyle={{ fontSize: 10, color: "var(--dxl-slate-light)" }} />
                 <Bar dataKey="Revenue" fill="var(--dxl-signal)" radius={[0, 2, 2, 0]} barSize={26} />
-                <Bar dataKey="Cost" fill="var(--dxl-info)" radius={[0, 2, 2, 0]} barSize={26} />
+                <Bar dataKey="Project cost" stackId="cost" fill="var(--dxl-info)" barSize={26} />
+                <Bar dataKey="Head-office cost" stackId="cost" fill="var(--dxl-slate)" radius={[0, 2, 2, 0]} barSize={26} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -1663,7 +1676,8 @@ function DepartmentPnLPanel() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await getFinanceDepartmentPnl();
+        // Year to date, like every other figure on this page.
+        const res = await getFinanceDepartmentPnl({ date_from: `${new Date().getFullYear()}-01-01` });
         const data = (res.data as ApiData) || {};
         if (!cancelled) {
           setDepartments(Array.isArray(data.departments) ? (data.departments as ApiData[]) : []);
@@ -1692,7 +1706,7 @@ function DepartmentPnLPanel() {
         <div className="flex justify-between items-start border-b border-ink-mid pb-3">
           <div>
             <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Department P&amp;L</h2>
-            <p className="text-xs text-slate-light mt-1">External + internal revenue against project and direct cost, per department.</p>
+            <p className="text-xs text-slate-light mt-1">This year to date: revenue against project and head-office cost, per department.</p>
           </div>
           {!loading && !failed && departments.length > 0 && (
             <button onClick={() => setShowDetail(true)} className="font-mono text-[10px] text-signal hover:underline shrink-0">View detail →</button>
