@@ -702,6 +702,69 @@ export async function getExecutiveSiteDetail(projectId: string): Promise<ApiResp
   return fetchApi(`/api/v1/executive/sites/${encodeURIComponent(projectId)}`, { cache: 'no-store', allowFallback: false });
 }
 
+export type NeedsYouKind = "site" | "decision" | "exception";
+export type NeedsYouSeverity = "critical" | "warning" | "info";
+export type NeedsYouPerson = { user_id: string; name: string | null; role?: string | null };
+
+export type NeedsYouItem = {
+  key: string;
+  kind: NeedsYouKind;
+  severity: NeedsYouSeverity;
+  title: string;
+  detail: string | null;
+  points: string[];
+  category: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  amount: number | null;
+  since: string | null;
+  due: string | null;
+  age_days: number | null;
+  signature: string[];
+  suggested_owner: NeedsYouPerson | null;
+  action_url: string | null;
+  action_label: string;
+  decide: { type: "leave_request" | "plant_request"; id: string } | null;
+  hidden: boolean;
+  state: {
+    status: "open" | "snoozed" | "dismissed";
+    snoozed_until: string | null;
+    assigned_to: NeedsYouPerson | null;
+    assigned_at: string | null;
+    note: string | null;
+    returned: string | null;
+  };
+};
+
+export type NeedsYouData = {
+  items: NeedsYouItem[];
+  summary: {
+    open: number;
+    critical: number;
+    unassigned: number;
+    mine: number;
+    snoozed: number;
+    dismissed: number;
+    by_kind: Partial<Record<NeedsYouKind, number>>;
+  };
+  assignees: { user_id: string; name: string | null; email: string | null }[];
+  today: string;
+};
+
+export type NeedsYouAction =
+  | { item_key: string; action: "assign"; assignee_user_id: string; note?: string }
+  | { item_key: string; action: "unassign" | "reopen" }
+  | { item_key: string; action: "snooze"; until?: string; note?: string }
+  | { item_key: string; action: "dismiss"; note: string };
+
+export async function getExecutiveNeedsYou(): Promise<ApiResponse<NeedsYouData>> {
+  return fetchApi('/api/v1/executive/needs-you', { cache: 'no-store', allowFallback: false });
+}
+
+export async function actOnExecutiveNeedsYou(body: NeedsYouAction): Promise<ApiResponse<NeedsYouData>> {
+  return fetchApi('/api/v1/executive/needs-you/actions', { method: 'POST', body: JSON.stringify(body), allowFallback: false });
+}
+
 export async function getSafetyIndex(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/hse/ltifr', {
     cache: 'no-store',

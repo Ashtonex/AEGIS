@@ -199,6 +199,8 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "finance.variations": ("finance.variation.read", "projects.read"),
     "finance.project_money_entries": ("finance.petty_cash.read", "finance.cash.read"),
     "finance.project_forecasts": ("executive.view_dashboard",),
+    # Executive "Needs you" assign/snooze/dismiss (migration 306).
+    "core.executive_action_states": ("executive.view_dashboard",),
     "fleet.fleet_assignments": ("fleet.read",),
     # Approvals and payment controls (migration 304; payable_events' trigger
     # dates from 247 but was never relayed). Same keys as the endpoints:

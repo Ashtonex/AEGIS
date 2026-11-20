@@ -116,6 +116,20 @@ export const APPROVAL_TABLES = [
   "procurement.supplier_invoices",
 ] as const;
 
+/** Executive "Needs you": the approval queue, site-day activity behind the
+ * site problems, the exception sources most likely to change, and the
+ * assign/snooze/dismiss records themselves. */
+export const NEEDS_YOU_TABLES = [
+  ...APPROVAL_TABLES,
+  "core.executive_action_states",
+  "projects.projects",
+  "projects.daily_site_reports",
+  "projects.site_day_attendance",
+  "projects.site_daily_targets",
+  "projects.site_day_briefings",
+  "projects.site_role_assignments",
+] as const;
+
 /** Supplier payments: payables, batches (held payments needing a second
  * person), their items and the payable events behind them. */
 export const SUPPLIER_PAYMENT_TABLES = [
