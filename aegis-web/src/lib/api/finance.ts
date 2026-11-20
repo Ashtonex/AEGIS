@@ -198,8 +198,9 @@ export async function getProjectGlReconciliation(projectId: string): Promise<Api
 }
 
 /** Revenue and cost per department, plus a consolidated whole-business total. */
-export async function getFinanceDepartmentPnl(): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/departments/pnl', { cache: 'no-store', allowFallback: false });
+export async function getFinanceDepartmentPnl(range: { date_from?: string; date_to?: string } = {}): Promise<ApiResponse<any>> {
+  const query = new URLSearchParams(Object.entries(range).filter(([, value]) => Boolean(value)) as [string, string][]).toString();
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/departments/pnl${query ? `?${query}` : ''}`, { cache: 'no-store', allowFallback: false });
 }
 
 // --- STATUTORY (ZIMRA/VAT/PAYE/NSSA) ---

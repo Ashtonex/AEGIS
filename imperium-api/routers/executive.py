@@ -113,24 +113,6 @@ _KPI_PIPELINE_SQL = """
         ) pipeline_parts
         """
 
-_KPI_REVENUE_YTD_SQL = """
-        SELECT
-            NULLIF(COALESCE(SUM(COALESCE(certified_amount, net_claim_amount, this_claim_amount)), 0), 0) AS revenue_ytd
-        FROM finance.progress_claims
-        WHERE organization_id = :org_id
-          AND is_deleted = false
-          AND COALESCE(claim_period_end, claim_period_start, created_at::date) >= date_trunc('year', CURRENT_DATE)::date
-          AND lower(COALESCE(status, '')) IN ('certified', 'invoiced', 'paid')
-        """
-
-_KPI_COST_YTD_SQL = """
-        SELECT NULLIF(COALESCE(SUM(amount), 0), 0) AS cost_ytd
-        FROM finance.cost_transactions
-        WHERE organization_id = :org_id
-          AND transaction_date >= date_trunc('year', CURRENT_DATE)::date
-          AND lower(COALESCE(status, '')) NOT IN ('void', 'cancelled', 'canceled', 'rejected')
-        """
-
 _KPI_CLIENT_CONCENTRATION_SQL = f"""
         WITH client_totals AS (
             SELECT COALESCE(NULLIF(client_name, ''), client_org_id::text, 'Unassigned') AS client_key,
@@ -379,6 +361,15 @@ async def _compute_cash_runway(
     }
 
 
+async def _company_actuals(db: AsyncSession, org_id: str, source_errors: List[Dict[str, Any]]):
+    try:
+        return await budgets.get_company_actuals_to_date(db, org_id=org_id, as_of=datetime.now().date())
+    except Exception as exc:
+        logger.warning("executive_source_query_failed", source="finance.company_actuals", error=str(exc))
+        source_errors.append({"source": "finance.company_actuals", "status": "degraded", "reason": exc.__class__.__name__})
+        return None
+
+
 @router.get("/kpis")
 async def get_executive_kpis(
     user: dict = Depends(require_permission("executive.view_dashboard")),
@@ -408,8 +399,6 @@ async def get_executive_kpis(
         """,
             "kpis.projects": _KPI_LIVE_PROJECTS_SQL,
             "kpis.pipeline": _KPI_PIPELINE_SQL,
-            "kpis.progress_claims": _KPI_REVENUE_YTD_SQL,
-            "kpis.cost_transactions": _KPI_COST_YTD_SQL,
             "kpis.client_concentration": _KPI_CLIENT_CONCENTRATION_SQL,
             "kpis.sop_instances": _KPI_SOP_COMPLETION_SQL,
         },
@@ -419,8 +408,6 @@ async def get_executive_kpis(
     snapshot = reads["executive.kpi_snapshots"][0] if reads["executive.kpi_snapshots"] else None
     live_rows = reads["kpis.projects"]
     pipeline_rows = reads["kpis.pipeline"]
-    finance_rows = reads["kpis.progress_claims"]
-    cost_rows = reads["kpis.cost_transactions"]
     concentration_rows = reads["kpis.client_concentration"]
 
     # A missing snapshot is not a zero-performance result. Keep it explicit so
@@ -473,16 +460,27 @@ async def get_executive_kpis(
         data["pipeline_tender_count"] = int(pipeline_rows[0].get("tender_count") or 0)
         data["pipeline"] = f"${opportunity_value + tender_value:,.2f}"
 
-    revenue_ytd = float(finance_rows[0].get("revenue_ytd") or 0) if finance_rows else 0
-    cost_ytd = float(cost_rows[0].get("cost_ytd") or 0) if cost_rows else 0
-    data["revenue_ytd"] = revenue_ytd
-    data["cost_ytd"] = cost_ytd
-    data["gross_profit_ytd"] = revenue_ytd - cost_ytd
-    if revenue_ytd > 0:
-        data["revenue"] = f"${revenue_ytd:,.2f}"
-        margin_percent = ((revenue_ytd - cost_ytd) / revenue_ytd) * 100
-        data["margin_percent"] = round(margin_percent, 2)
-        data["margin"] = f"{margin_percent:.2f}%"
+    # Revenue and cost come from the company actuals (company_budget), the
+    # same numbers as Budget vs Actual, the Department P&L and the Finance
+    # budgets page - never a second, drifting definition. Gross is before
+    # head-office cost, net after it; the headline margin is net.
+    actuals = await _company_actuals(db, org_id, source_errors)
+    if actuals is not None:
+        revenue_ytd = actuals["revenue"]
+        project_cost = actuals["project_cost"]
+        cost_ytd = actuals["cost"]
+        data["revenue_ytd"] = revenue_ytd
+        data["project_cost_ytd"] = project_cost
+        data["head_office_cost_ytd"] = actuals["non_project_cost"]
+        data["cost_ytd"] = cost_ytd
+        data["gross_profit_ytd"] = revenue_ytd - project_cost
+        data["net_profit_ytd"] = revenue_ytd - cost_ytd
+        if revenue_ytd > 0:
+            data["revenue"] = f"${revenue_ytd:,.2f}"
+            data["gross_margin_percent"] = round((revenue_ytd - project_cost) / revenue_ytd * 100, 2)
+            margin_percent = (revenue_ytd - cost_ytd) / revenue_ytd * 100
+            data["margin_percent"] = round(margin_percent, 2)
+            data["margin"] = f"{margin_percent:.2f}%"
 
     if (
         data.get("revenue_concentration_percent") is None
