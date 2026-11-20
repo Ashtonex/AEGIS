@@ -54,14 +54,16 @@ type Props = {
   summary: ExecutiveSitesSummary | null;
   loading: boolean;
   error: string | null;
+  /** Open straight on this site's detail (e.g. from the "Needs you" list). */
+  initialSiteId?: string | null;
 };
 
-export function ActiveSitesDialog({ open, onOpenChange, sites, summary, loading, error }: Props) {
+export function ActiveSitesDialog({ open, onOpenChange, sites, summary, loading, error, initialSiteId = null }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showIdle, setShowIdle] = useState(false);
 
-  // Reopening the dialog starts from the site list.
-  useEffect(() => { if (!open) setSelectedId(null); }, [open]);
+  // Reopening the dialog starts from the site list, unless a site was asked for.
+  useEffect(() => { setSelectedId(open ? initialSiteId : null); }, [open, initialSiteId]);
 
   const working = sites.filter((site) => site.activity !== "idle");
   const idle = sites.filter((site) => site.activity === "idle");

@@ -116,6 +116,32 @@ export const APPROVAL_TABLES = [
   "procurement.supplier_invoices",
 ] as const;
 
+/** Executive "Needs you": everything GET /executive/needs-you reads - the
+ * approval queue, the exception sources, the site-day activity behind the
+ * site problems and the assign/snooze/dismiss records. imperium-api
+ * core/realtime.py (NEEDS_YOU_SOURCE_TABLES) relays all of them to executive
+ * readers. */
+export const NEEDS_YOU_TABLES = [
+  ...APPROVAL_TABLES,
+  "core.executive_action_states",
+  "core.compliance_items",
+  "finance.project_budgets",
+  "finance.project_forecasts",
+  "fleet.fleet",
+  "fleet.plant_incidents",
+  "fleet.utilization_logs",
+  "procurement.material_requests",
+  "procurement.suppliers",
+  "projects.projects",
+  "projects.daily_site_reports",
+  "projects.hse_incidents",
+  "projects.project_profiles",
+  "projects.site_day_attendance",
+  "projects.site_daily_targets",
+  "projects.site_day_briefings",
+  "projects.site_role_assignments",
+] as const;
+
 /** Supplier payments: payables, batches (held payments needing a second
  * person), their items and the payable events behind them. */
 export const SUPPLIER_PAYMENT_TABLES = [

@@ -8,17 +8,16 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { TodayPanel } from "./TodayPanel";
 import { ActiveSitesDialog, activeSitesHeadline } from "./ActiveSitesDialog";
+import { NeedsYouPanel } from "./NeedsYouPanel";
 import { LeadershipAccountabilityModal } from "@/components/projects/LeadershipAccountabilityModal";
 import { ManpowerScenarioCalculator } from "@/components/projects/ManpowerScenarioCalculator";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveRefresh, useLiveTable } from "@/lib/live/LiveDataProvider";
-import { APPROVAL_TABLES } from "@/lib/live/liveTables";
 import {
   getExecutiveOverviewBundle,
   getActiveExecutiveProjects,
   getExecutiveKPIs,
   getExecutiveDataHealth,
-  getExecutiveExceptions,
   getExecutiveProjectDetail,
   getExecutiveRegions,
   getExecutiveStats,
@@ -28,9 +27,6 @@ import {
   getCommercialBaselineHistory,
   getFinancialRunway,
   getSafetyIndex,
-  getPendingApprovals,
-  approveHRLeaveRequest,
-  updatePlantRequestStatus,
   getProjectScheduleRisk,
   getMaterialsForecastAlerts,
   getArAging,
@@ -243,7 +239,6 @@ function ExecutiveCommandCentreWorkspace() {
   const [regions, setRegions] = useState<ApiData[]>([]);
   const [activeProjects, setActiveProjects] = useState<ApiData[]>([]);
   const [dataHealth, setDataHealth] = useState<ApiData[]>([]);
-  const [exceptions, setExceptions] = useState<ApiData[]>([]);
   const [selectedMetric, setSelectedMetric] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<ApiData | null>(null);
   const [projectDetail, setProjectDetail] = useState<ApiData | null>(null);
@@ -254,6 +249,8 @@ function ExecutiveCommandCentreWorkspace() {
   const [sitesLoading, setSitesLoading] = useState(true);
   const [sitesError, setSitesError] = useState<string | null>(null);
   const [sitesOpen, setSitesOpen] = useState(false);
+  // A site picked from "Needs you" opens the sites dialog on that site.
+  const [focusSiteId, setFocusSiteId] = useState<string | null>(null);
 
   const userEmail = session?.user?.email || "System User";
   const displayName = userEmail.split("@")[0].replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -272,7 +269,6 @@ function ExecutiveCommandCentreWorkspace() {
         if (Array.isArray(bundle.regions)) setRegions(bundle.regions as ApiData[]);
         if (Array.isArray(bundle.active_projects)) setActiveProjects(bundle.active_projects as ApiData[]);
         if (Array.isArray(bundle.data_health)) setDataHealth(bundle.data_health as ApiData[]);
-        if (Array.isArray(bundle.exceptions)) setExceptions(bundle.exceptions as ApiData[]);
 
         const errors = sourceErrorsFromMeta(bundleResult.meta);
         const warnings = errors
@@ -304,17 +300,12 @@ function ExecutiveCommandCentreWorkspace() {
     if (projectResult.status === "fulfilled") setActiveProjects(projectResult.value.data || []);
     if (healthResult.status === "fulfilled") setDataHealth(healthResult.value.data || []);
 
-    const exceptionResult = await getExecutiveExceptions(accessToken)
-      .then((value) => ({ status: "fulfilled" as const, value }))
-      .catch((reason) => ({ status: "rejected" as const, reason }));
-    if (exceptionResult.status === "fulfilled") setExceptions(exceptionResult.value.data || []);
     setLoadWarnings([
       ...sourceWarningsFrom(kpiResult, "Executive KPIs"),
       ...sourceWarningsFrom(statsResult, "Operational control ledger"),
       ...sourceWarningsFrom(regionResult, "Regional footprint"),
       ...sourceWarningsFrom(projectResult, "Active projects"),
       ...sourceWarningsFrom(healthResult, "Data confidence"),
-      ...sourceWarningsFrom(exceptionResult, "Executive exceptions"),
     ]);
     setLastUpdated(new Date());
     setLoading(false);
@@ -400,14 +391,16 @@ function ExecutiveCommandCentreWorkspace() {
     <SourceWarnings warnings={loadWarnings} />
 
     <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
-      {metricCards.map((card) => <button key={card.key} onClick={() => card.key === "active_projects" ? setSitesOpen(true) : setSelectedMetric(card.key)} disabled={loading && card.key !== "active_projects"} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_10px_20px_-14px_rgba(0,0,0,0.55)] p-3 transition-shadow hover:border-signal hover:shadow-[0_0_40px_var(--dxl-signal-ghost)] focus-visible:outline focus-visible:outline-signal">
+      {metricCards.map((card) => <button key={card.key} onClick={() => card.key === "active_projects" ? (setFocusSiteId(null), setSitesOpen(true)) : setSelectedMetric(card.key)} disabled={loading && card.key !== "active_projects"} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_10px_20px_-14px_rgba(0,0,0,0.55)] p-3 transition-shadow hover:border-signal hover:shadow-[0_0_40px_var(--dxl-signal-ghost)] focus-visible:outline focus-visible:outline-signal">
         <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl leading-tight text-paper mt-3 break-words">{loading && card.key !== "active_projects" ? <Loader2 className="w-4 h-4 text-slate animate-spin" aria-label="Loading" /> : card.value}</p>
         {"sub" in card && card.sub ? <p className="mt-1 font-mono text-[10px] text-slate-light">{card.sub}</p> : null}
       </button>)}
     </section>
 
-    <PendingApprovalsPanel />
-    {loading ? <BundlePlaceholder label="Executive exceptions" /> : <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />}
+    <NeedsYouPanel
+      currentUserId={session?.user?.id ?? null}
+      onOpenSite={(projectId) => { setFocusSiteId(projectId); setSitesOpen(true); }}
+    />
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {loading ? <BundlePlaceholder label="Revenue, cost and margin" /> : <RevenueCostMarginPanel kpis={kpis} />}
@@ -438,7 +431,7 @@ function ExecutiveCommandCentreWorkspace() {
     <CCBCommercialGovernanceWidget />
     <CCBAutomatedFindingsPanel />
 
-    <ActiveSitesDialog open={sitesOpen} onOpenChange={setSitesOpen} sites={sites} summary={sitesSummary} loading={sitesLoading} error={sitesError} />
+    <ActiveSitesDialog open={sitesOpen} onOpenChange={(value) => { setSitesOpen(value); if (!value) setFocusSiteId(null); }} sites={sites} summary={sitesSummary} loading={sitesLoading} error={sitesError} initialSiteId={focusSiteId} />
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricDetailGrid rows={metricDetailRows(selectedCard.key, kpis, stats, activeProjects, dataHealth)} />}</Modal>}
     {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <><SourceWarnings warnings={detailError ? [detailError] : []} /><ProjectDetail detail={projectDetail} accessToken={session?.access_token} /></>}</Modal>}
   </div>;
@@ -528,66 +521,6 @@ function ProjectDetail({ detail, accessToken }: { detail: ApiData | null; access
 }
 function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter(isExecutiveAttentionIssue); const current = sources.filter((source) => String(source.status) === "current").length; const empty = sources.filter((source) => String(source.status) === "no_data").length; const summary = sources.length ? `${sources.length} executive data sources checked. ${current} current, ${empty} empty, ${issues.length} need attention.` : "Data sources are connected. Empty sources are shown as no data, not zero."; const iconClass = issues.length ? "text-amber-400" : "text-green-500"; return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className={`w-4 h-4 ${iconClass}`}/>{summary}</div>; }
 function SourceWarnings({ warnings }: { warnings: string[] }) { if (!warnings.length) return null; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Executive view is degraded</p><div className="mt-1 space-y-1">{warnings.map((warning) => <p key={warning} className="text-xs text-slate-light">{warning}</p>)}</div></div></div>; }
-function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) {
-  const categoryData = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const item of exceptions) {
-      const category = String(item.category || "Other");
-      counts[category] = (counts[category] || 0) + 1;
-    }
-    return Object.entries(counts)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [exceptions]);
-
-  return (
-    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-      <div className="p-4 border-b border-ink-mid flex justify-between gap-4">
-        <div>
-          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Executive Exceptions</h2>
-          <p className="text-xs text-slate-light mt-1">Conditions requiring a decision or intervention, with source evidence and drill-through where a project is linked.</p>
-        </div>
-        <span className="font-mono text-[10px] text-slate">{exceptions.length} OPEN</span>
-      </div>
-      {categoryData.length > 1 && (
-        <div className="px-4 pt-4">
-          <p className="font-mono text-[9px] uppercase text-slate mb-2">By Category</p>
-          <div className="h-32">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={categoryData} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" horizontal={false} />
-                <XAxis type="number" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                <YAxis type="category" dataKey="name" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} width={140} />
-                <Tooltip content={<ChartTooltip formatter={(value) => String(value)} />} cursor={{ fill: "var(--dxl-ink-light)" }} />
-                <Bar dataKey="value" fill="var(--dxl-signal)" radius={[0, 2, 2, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-      {exceptions.length ? (
-        <div className="divide-y divide-ink-mid">
-          {exceptions.map((item, index) => {
-            const drillProjectId = item.project_id ?? (item.category === "Project viability" ? item.id : null);
-            return (
-              <button key={`${String(item.category)}-${String(item.id)}-${index}`} onClick={() => drillProjectId && void onProject({ id: drillProjectId, name: item.title })} className="w-full p-4 flex flex-wrap justify-between gap-3 text-left hover:bg-ink-light disabled:hover:bg-transparent" disabled={!drillProjectId}>
-                <div>
-                  <p className="font-mono text-[10px] text-signal uppercase">{displayValue(item.category)}</p>
-                  <p className="text-sm text-paper mt-1">{displayValue(item.title ?? item.severity ?? item.certificate_name)}</p>
-                  <p className="text-xs text-slate-light mt-1">{displayValue(item.action)}</p>
-                  {item.evidence ? <p className="mt-2 max-w-3xl break-words font-mono text-[10px] text-slate">Evidence: {displayValue(item.evidence)}</p> : null}
-                </div>
-                <span className="font-mono text-xs text-slate-light">{displayValue(item.evidence_date ?? item.expiry_date ?? item.incident_date ?? item.viability_status)}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="p-4 text-sm text-slate-light">No configured executive exceptions are currently recorded.</p>
-      )}
-    </section>
-  );
-}
 function RegionalFootprint({ regions }: { regions: ApiData[] }) {
   const [selectedName, setSelectedName] = useState("");
   const minLat = -23.0;
@@ -1292,201 +1225,6 @@ function SafetyIndexPanel() {
           </div>
         </div>
       )}
-    </section>
-  );
-}
-
-// Decision Queue: read-only aggregation of items genuinely awaiting a
-// decision in their own authoritative module - Procurement, Finance, Fleet,
-// HR and Projects (see GET /executive/approvals/pending). Deliberately has no
-// approve/reject button of its own: each module's approval rule
-// (segregation of duties, self-approval blocked) lives in that module's
-// router, so this panel links out to where the decision is actually made
-// rather than duplicating that logic a second, drifting time.
-const APPROVALS_VISIBLE = 8;
-
-function waitingLabel(days: unknown): string | null {
-  if (days === null || days === undefined) return null;
-  const value = Number(days);
-  if (!Number.isFinite(value)) return null;
-  return value === 0 ? "Today" : `${value}d waiting`;
-}
-
-function PendingApprovalsPanel() {
-  const [items, setItems] = useState<ApiData[]>([]);
-  const [byModule, setByModule] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-  const [message, setMessage] = useState<string>("");
-  const [moduleFilter, setModuleFilter] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
-  const [actingId, setActingId] = useState<string | null>(null);
-  const [actionNotice, setActionNotice] = useState<{ text: string; error?: boolean } | null>(null);
-
-  const fetchApprovals = useCallback(async () => {
-    try {
-      const res = await getPendingApprovals();
-      setItems(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
-      const meta = (res.meta || {}) as ApiData;
-      setByModule((meta.by_module as Record<string, number>) || {});
-      setMessage(String(res.message || ""));
-      setFailed(false);
-    } catch {
-      setFailed(true);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Live: an item lands in (or leaves) the queue the moment anyone submits,
-  // approves or rejects it. fetchApprovals keeps the list on screen while it
-  // refetches, so this is a quiet refresh.
-  useLiveRefresh(APPROVAL_TABLES, undefined, () => void fetchApprovals());
-
-  useEffect(() => {
-    fetchApprovals();
-  }, [fetchApprovals]);
-
-  const handleDecision = async (e: React.MouseEvent, item: ApiData, decision: "approved" | "rejected") => {
-    e.preventDefault();
-    e.stopPropagation();
-    const id = String(item.id || "");
-    const itemType = String(item.type || "");
-    if (!id || actingId) return;
-
-    setActingId(id);
-    setActionNotice(null);
-    try {
-      if (itemType === "leave_request") {
-        await approveHRLeaveRequest(id, decision, "Processed from Executive Dashboard.");
-      } else if (itemType === "plant_request") {
-        await updatePlantRequestStatus(id, { status: decision });
-      } else {
-        setActionNotice({ text: `Direct action not configured for ${itemType}. Please review in the respective module.`, error: true });
-        return;
-      }
-      setActionNotice({ text: `${titleCase(itemType)} "${String(item.reference || id)}" ${decision} successfully.` });
-      await fetchApprovals();
-    } catch (err: any) {
-      setActionNotice({
-        text: err?.response?.data?.detail || err?.message || `Failed to record decision for ${itemType}.`,
-        error: true,
-      });
-    } finally {
-      setActingId(null);
-    }
-  };
-
-  const filtered = moduleFilter ? items.filter((item) => item.module === moduleFilter) : items;
-  const visible = showAll ? filtered : filtered.slice(0, APPROVALS_VISIBLE);
-
-  return (
-    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
-      <div className="flex justify-between items-center border-b border-ink-mid pb-3">
-        <div>
-          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Decisions Awaiting Approval</h2>
-          <p className="text-xs text-slate-light mt-1">Items genuinely pending in Procurement, Finance, Fleet, HR and Projects. Approve or reject eligible items directly or view full details in their module.</p>
-        </div>
-        <span className="font-mono text-[10px] text-slate shrink-0">{items.length} PENDING</span>
-      </div>
-
-      {actionNotice && (
-        <div className={`mt-3 p-2.5 rounded border text-xs font-mono flex items-center justify-between ${actionNotice.error ? "bg-rose-950/30 border-rose-800/40 text-rose-300" : "bg-emerald-950/30 border-emerald-800/40 text-emerald-300"}`}>
-          <span>{actionNotice.text}</span>
-          <button onClick={() => setActionNotice(null)} className="ml-2 hover:opacity-75">
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-
-      {Object.keys(byModule).length > 1 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          <button onClick={() => setModuleFilter(null)} className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${moduleFilter === null ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}>All {items.length}</button>
-          {Object.entries(byModule).map(([module, count]) => (
-            <button key={module} onClick={() => setModuleFilter(module)} className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${moduleFilter === module ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}>{module} {count}</button>
-          ))}
-        </div>
-      )}
-      <div className="mt-3 space-y-2">
-        {loading ? (
-          <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading pending approvals...</div>
-        ) : failed ? (
-          <p className="text-xs text-slate py-4">Pending approvals could not be loaded.</p>
-        ) : items.length === 0 ? (
-          <p className="text-xs text-slate py-4">{message || "No items currently awaiting executive-visible approval."}</p>
-        ) : (
-          <>
-            {visible.map((item) => {
-              const waiting = waitingLabel(item.waiting_days);
-              const stale = Number(item.waiting_days) >= 7;
-              const itemId = String(item.id || "");
-              const itemType = String(item.type || "");
-              const isDirectActionable = itemType === "leave_request" || itemType === "plant_request";
-              const isProcessing = actingId === itemId;
-
-              return (
-                <div
-                  key={`${itemType}-${itemId}`}
-                  className="border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal/70 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                >
-                  <Link
-                    href={String(item.action_url || "/dashboard")}
-                    className="min-w-0 flex-1 block group"
-                  >
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-mono text-[10px] uppercase text-signal group-hover:underline">{displayValue(item.module)} · {titleCase(itemType || "item")}</span>
-                      {waiting && <span className={`font-mono text-[9px] uppercase px-1.5 border rounded ${stale ? "border-amber-500/40 text-amber-300" : "border-ink-mid text-slate-light"}`}>{waiting}</span>}
-                    </div>
-                    <p className="font-semibold text-paper text-sm mt-1.5 truncate group-hover:text-amber-200 transition-colors">{displayValue(item.reference)}</p>
-                    {item.detail !== null && item.detail !== undefined && item.detail !== "" && <p className="text-slate-light text-xs mt-0.5 truncate">{String(item.detail)}</p>}
-                    <p className="text-slate text-xs mt-1">{displayValue(item.reason)}</p>
-                  </Link>
-
-                  <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
-                    {item.amount !== null && item.amount !== undefined && <p className="font-mono text-sm text-paper">{currencyValue(item.amount)}</p>}
-                    {isDirectActionable ? (
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          disabled={Boolean(actingId)}
-                          onClick={(e) => handleDecision(e, item, "approved")}
-                          className="px-2.5 py-1 text-xs font-mono font-medium rounded border border-emerald-600/50 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/60 transition disabled:opacity-50 flex items-center gap-1"
-                          title="Approve immediately"
-                        >
-                          {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          disabled={Boolean(actingId)}
-                          onClick={(e) => handleDecision(e, item, "rejected")}
-                          className="px-2.5 py-1 text-xs font-mono font-medium rounded border border-rose-600/50 bg-rose-950/40 text-rose-300 hover:bg-rose-900/60 transition disabled:opacity-50 flex items-center gap-1"
-                          title="Reject"
-                        >
-                          <X className="h-3 w-3" />
-                          Reject
-                        </button>
-                      </div>
-                    ) : (
-                      <Link
-                        href={String(item.action_url || "/dashboard")}
-                        className="px-2.5 py-1 text-xs font-mono rounded border border-ink-mid bg-ink text-slate-light hover:text-paper hover:border-signal transition"
-                      >
-                        Review →
-                      </Link>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {filtered.length > APPROVALS_VISIBLE && (
-              <button onClick={() => setShowAll((value) => !value)} className="w-full font-mono text-[10px] uppercase text-signal hover:underline py-1">
-                {showAll ? "Show fewer" : `Show all ${filtered.length}`}
-              </button>
-            )}
-          </>
-        )}
-      </div>
     </section>
   );
 }

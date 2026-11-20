@@ -12,13 +12,14 @@ from datetime import date, datetime, timedelta
 from typing import Dict, Any, List
 from uuid import UUID
 
-from app.shared.events import emit_role_notification
+from app.shared.events import emit_notification, emit_role_notification
 from core.database import gather_reads, get_db
 from core.logging import logger
 from core.security import SUPERADMIN_ROLE, require_permission
 from core.analytics_ml import ml_engine
 from app.services.finance import company_budget as budgets
 from app.services import executive_sites as sites_service
+from app.services import executive_needs_you as needs_you_service
 router = APIRouter()
 
 PROJECT_TERMINAL_STATUSES = (
@@ -2986,4 +2987,230 @@ async def get_executive_overview_bundle(
             "source_errors": all_source_errors,
             "bundle": True,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# "Needs you": approvals, exceptions and site problems as one ranked to-do
+# list (app/services/executive_needs_you.py). Items are recomputed on every
+# read; core.executive_action_states (migration 306) only remembers who an
+# item is assigned to and whether it is snoozed or dismissed.
+
+_NEEDS_YOU_STATES_SQL = """
+    SELECT s.item_key, s.status, s.signature, s.snoozed_until, s.assigned_to, s.assigned_at, s.note,
+           COALESCE(NULLIF(u.full_name, ''), split_part(u.email, '@', 1)) AS assigned_name
+    FROM core.executive_action_states s
+    LEFT JOIN core.users u ON u.id = s.assigned_to
+    WHERE s.organization_id = :org_id
+"""
+
+_NEEDS_YOU_ASSIGNEES_SQL = """
+    SELECT u.id AS user_id, COALESCE(NULLIF(u.full_name, ''), split_part(u.email, '@', 1)) AS name, u.email
+    FROM core.users u
+    WHERE u.organization_id = :org_id AND u.is_active = true AND COALESCE(u.is_deleted, false) = false
+    ORDER BY lower(COALESCE(NULLIF(u.full_name, ''), u.email))
+"""
+
+_NEEDS_YOU_ASSIGN_SQL = """
+    INSERT INTO core.executive_action_states
+        (organization_id, item_key, title, assigned_to, assigned_by, assigned_at, note, updated_by)
+    VALUES (:org_id, :item_key, :title, CAST(:assignee AS uuid), CAST(:actor AS uuid), NOW(), :note,
+            CAST(:actor AS uuid))
+    ON CONFLICT (organization_id, item_key) DO UPDATE SET
+        assigned_to = EXCLUDED.assigned_to,
+        assigned_by = EXCLUDED.assigned_by,
+        assigned_at = NOW(),
+        note = COALESCE(EXCLUDED.note, core.executive_action_states.note),
+        title = EXCLUDED.title,
+        updated_by = EXCLUDED.updated_by,
+        updated_at = NOW()
+"""
+
+_NEEDS_YOU_HIDE_SQL = """
+    INSERT INTO core.executive_action_states
+        (organization_id, item_key, title, status, signature, snoozed_until, note, updated_by)
+    VALUES (:org_id, :item_key, :title, :status, CAST(:signature AS text[]), :until, :note, CAST(:actor AS uuid))
+    ON CONFLICT (organization_id, item_key) DO UPDATE SET
+        status = EXCLUDED.status,
+        signature = EXCLUDED.signature,
+        snoozed_until = EXCLUDED.snoozed_until,
+        note = COALESCE(EXCLUDED.note, core.executive_action_states.note),
+        title = EXCLUDED.title,
+        updated_by = EXCLUDED.updated_by,
+        updated_at = NOW()
+"""
+
+_NEEDS_YOU_REOPEN_SQL = """
+    UPDATE core.executive_action_states
+    SET status = 'open', snoozed_until = NULL, signature = '{}', updated_by = CAST(:actor AS uuid), updated_at = NOW()
+    WHERE organization_id = :org_id AND item_key = :item_key
+"""
+
+_NEEDS_YOU_UNASSIGN_SQL = """
+    UPDATE core.executive_action_states
+    SET assigned_to = NULL, assigned_by = NULL, assigned_at = NULL,
+        updated_by = CAST(:actor AS uuid), updated_at = NOW()
+    WHERE organization_id = :org_id AND item_key = :item_key
+"""
+
+_NEEDS_YOU_RESET_SQL = """
+    UPDATE core.executive_action_states
+    SET status = 'open', snoozed_until = NULL, signature = '{}', updated_at = NOW()
+    WHERE organization_id = :org_id AND item_key = ANY(CAST(:keys AS text[])) AND status <> 'open'
+"""
+
+_NEEDS_YOU_SHRINK_SQL = """
+    UPDATE core.executive_action_states
+    SET signature = CAST(:signature AS text[]), updated_at = NOW()
+    WHERE organization_id = :org_id AND item_key = :item_key AND status <> 'open'
+"""
+
+_NEEDS_YOU_ACTIONS = ("assign", "unassign", "snooze", "dismiss", "reopen")
+_NEEDS_YOU_MAX_SNOOZE_DAYS = 90
+_NEEDS_YOU_MESSAGES = {
+    "assign": "Assigned.", "unassign": "Unassigned.", "snooze": "Snoozed.",
+    "dismiss": "Dismissed.", "reopen": "Reopened.",
+}
+
+
+def _actor_id(user: dict) -> str | None:
+    value = user.get("user_id") or user.get("sub")
+    return str(value) if value else None
+
+
+async def _needs_you_payload(user: dict, db: AsyncSession) -> Dict[str, Any]:
+    org_id = user["org_id"]
+    source_errors: List[Dict[str, Any]] = []
+    today = sites_service.site_today()
+    # Sequential on the request's connection, like the overview bundle: each
+    # of these already fans out its own reads.
+    approvals_res = await get_pending_approvals(user, db)
+    exceptions_res = await get_executive_exceptions(user, db)
+    since = sites_service.window_start(today, sites_service.LIST_WINDOW_DAYS)
+    projects, day_rows, budgets_by_project = await _site_reads(db, org_id, None, since, today, source_errors)
+    sites = sites_service.build_sites(projects, day_rows, today, budgets_by_project)["sites"]
+    states, assignees = await gather_reads(
+        db,
+        lambda session: _rows(session, _NEEDS_YOU_STATES_SQL, {"org_id": org_id},
+                              source="core.executive_action_states", source_errors=source_errors),
+        lambda session: _rows(session, _NEEDS_YOU_ASSIGNEES_SQL, {"org_id": org_id},
+                              source="core.users", source_errors=source_errors),
+    )
+    for res in (approvals_res, exceptions_res):
+        source_errors.extend((res.get("meta") or {}).get("source_errors") or [])
+    result = needs_you_service.build(
+        approvals_res.get("data") or [], exceptions_res.get("data") or [], sites, states, today, _actor_id(user),
+    )
+    # A snoozed or dismissed problem that has cleared must come back if it
+    # recurs (see needs_you_service.state_refreshes). Only when every source
+    # read cleanly: a failed read would look like a cleared condition.
+    refreshes = result.pop("state_refreshes")
+    if not source_errors and (refreshes["reset"] or refreshes["shrink"]):
+        if refreshes["reset"]:
+            await db.execute(text(_NEEDS_YOU_RESET_SQL), {"org_id": org_id, "keys": refreshes["reset"]})
+        for item_key, signature in refreshes["shrink"].items():
+            await db.execute(text(_NEEDS_YOU_SHRINK_SQL),
+                             {"org_id": org_id, "item_key": item_key, "signature": signature})
+        await db.commit()
+    result["assignees"] = [
+        {"user_id": str(row["user_id"]), "name": row.get("name"), "email": row.get("email")} for row in assignees
+    ]
+    result["today"] = today.isoformat()
+    return {"data": result, "source_errors": source_errors}
+
+
+@router.get("/needs-you")
+async def get_executive_needs_you(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """One ranked to-do list: decisions waiting in their module, exceptions
+    grouped per project, and red/amber sites. Snoozed and dismissed items are
+    included with hidden=true so the page can show them on request."""
+    payload = await _needs_you_payload(user, db)
+    return {
+        "success": True,
+        "data": payload["data"],
+        "message": "Executive action list fetched.",
+        "meta": {"source_errors": payload["source_errors"]},
+    }
+
+
+def _snooze_until(raw_until: Any, today: date) -> date:
+    try:
+        until = date.fromisoformat(str(raw_until)[:10]) if raw_until else today + timedelta(
+            days=needs_you_service.DEFAULT_SNOOZE_DAYS)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Snooze date must be YYYY-MM-DD.")
+    if until <= today or until > today + timedelta(days=_NEEDS_YOU_MAX_SNOOZE_DAYS):
+        raise HTTPException(status_code=400,
+                            detail=f"Snooze to a date within the next {_NEEDS_YOU_MAX_SNOOZE_DAYS} days.")
+    return until
+
+
+@router.post("/needs-you/actions")
+async def act_on_executive_needs_you(
+    body: Dict[str, Any],
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign, unassign, snooze, dismiss or reopen one item. The item must
+    still be on the list: once its condition is fixed there is nothing to do."""
+    org_id = user["org_id"]
+    actor = _actor_id(user)
+    item_key = str(body.get("item_key") or "").strip()
+    action = str(body.get("action") or "").strip()
+    note = str(body.get("note") or "").strip() or None
+    if not item_key or action not in _NEEDS_YOU_ACTIONS:
+        raise HTTPException(status_code=400,
+                            detail=f"item_key and an action ({', '.join(_NEEDS_YOU_ACTIONS)}) are required.")
+
+    payload = await _needs_you_payload(user, db)
+    item = needs_you_service.find_item(payload["data"]["items"], item_key)
+    if item is None:
+        raise HTTPException(status_code=404, detail="This item is no longer on the list - its condition has cleared.")
+    today = sites_service.site_today()
+    params = {"org_id": org_id, "item_key": item_key, "title": item["title"], "actor": actor, "note": note}
+
+    if action == "assign":
+        assignee = str(body.get("assignee_user_id") or "").strip()
+        if not any(row["user_id"] == assignee for row in payload["data"]["assignees"]):
+            raise HTTPException(status_code=400, detail="Choose an active user in your organisation to assign this to.")
+        await db.execute(text(_NEEDS_YOU_ASSIGN_SQL), {**params, "assignee": assignee})
+        if assignee != actor:
+            await emit_notification(
+                db, org_id=org_id, user_id=assignee,
+                title="Assigned to you from the executive dashboard",
+                message=item["title"] + (f" - {note}" if note else ""),
+                notification_type="task",
+                priority="high" if item["severity"] == "critical" else "normal",
+                action_url=item.get("action_url"),
+                metadata={"source": "executive_needs_you", "item_key": item_key},
+            )
+    elif action == "unassign":
+        await db.execute(text(_NEEDS_YOU_UNASSIGN_SQL), params)
+    elif action == "snooze":
+        await db.execute(text(_NEEDS_YOU_HIDE_SQL), {
+            **params, "status": "snoozed", "signature": item["signature"],
+            "until": _snooze_until(body.get("until"), today),
+        })
+    elif action == "dismiss":
+        if item["kind"] == "decision":
+            raise HTTPException(status_code=400,
+                                detail="A decision closes when it is decided in its module; snooze it instead.")
+        if not note:
+            raise HTTPException(status_code=400, detail="Give a reason for dismissing this item.")
+        await db.execute(text(_NEEDS_YOU_HIDE_SQL), {
+            **params, "status": "dismissed", "signature": item["signature"], "until": None,
+        })
+    else:
+        await db.execute(text(_NEEDS_YOU_REOPEN_SQL), params)
+    await db.commit()
+
+    fresh = await _needs_you_payload(user, db)
+    return {
+        "success": True,
+        "data": fresh["data"],
+        "message": _NEEDS_YOU_MESSAGES[action],
+        "meta": {"source_errors": fresh["source_errors"]},
     }

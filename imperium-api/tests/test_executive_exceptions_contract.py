@@ -7,6 +7,10 @@ EXECUTIVE_ROUTER = (ROOT / "routers" / "executive.py").read_text(encoding="utf-8
 EXECUTIVE_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "executive" / "page.tsx"
 ).read_text(encoding="utf-8")
+NEEDS_YOU_SERVICE = (ROOT / "app" / "services" / "executive_needs_you.py").read_text(encoding="utf-8")
+NEEDS_YOU_PANEL = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "executive" / "NeedsYouPanel.tsx"
+).read_text(encoding="utf-8")
 
 
 class ExecutiveExceptionsContractTests(unittest.TestCase):
@@ -52,15 +56,12 @@ class ExecutiveExceptionsContractTests(unittest.TestCase):
         self.assertIn("project_id", EXECUTIVE_ROUTER)
 
     def test_executive_ui_drills_linked_exceptions_to_project_detail(self):
-        self.assertIn(
-            "with source evidence and drill-through where a project is linked",
-            EXECUTIVE_PAGE,
-        )
-        self.assertIn(
-            'const drillProjectId = item.project_id ?? (item.category === "Project viability" ? item.id : null)',
-            EXECUTIVE_PAGE,
-        )
-        self.assertIn("Evidence:", EXECUTIVE_PAGE)
+        # Exceptions now reach the page through the "Needs you" list, grouped
+        # per project; a project-linked group links to that project's detail.
+        self.assertIn("<NeedsYouPanel", EXECUTIVE_PAGE)
+        self.assertIn('action_url = f"/dashboard/projects/{project_id}"', NEEDS_YOU_SERVICE)
+        self.assertIn("get_executive_exceptions(user, db)", EXECUTIVE_ROUTER)
+        self.assertIn('href={item.action_url || "/dashboard"}', NEEDS_YOU_PANEL)
 
     def test_executive_dashboard_has_explicit_frontend_guard_and_degraded_state(self):
         self.assertIn("RBACGuard", EXECUTIVE_PAGE)
