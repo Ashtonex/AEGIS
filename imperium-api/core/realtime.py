@@ -278,6 +278,8 @@ TABLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "fleet.utilization_logs": ("fleet.read",),
     "fleet.operator_profiles": ("fleet.operator_profiles.read",),
     "fleet.plant_requests": ("fleet.plant_requests.read", "fleet.read"),
+    "fleet.plant_incidents": ("fleet.read",),  # trigger from migration 306
+    "procurement.material_requests": ("procurement.requisition.read",),  # trigger from migration 306
     "procurement.purchase_orders": ("procurement.po.read",),
     "procurement.purchase_requisitions": ("procurement.requisition.read",),
     "procurement.rfqs": ("procurement.rfq.read",),
@@ -310,6 +312,35 @@ APPROVAL_QUEUE_SOURCE_TABLES: tuple[str, ...] = (
     "procurement.supplier_invoices",
 )
 for _table in APPROVAL_QUEUE_SOURCE_TABLES:
+    _keys = TABLE_PERMISSION_MAP[_table]
+    if "executive.view_dashboard" not in _keys:
+        TABLE_PERMISSION_MAP[_table] = (*_keys, "executive.view_dashboard")
+
+# Every source of the executive "Needs you" list (GET /executive/needs-you:
+# the approval queue above, the exceptions, the site-day reads behind the site
+# flags and the list's own state table). Executive readers get their signals
+# even without each module's own read key, so the list never goes stale for a
+# read-only executive. Signals carry ids only.
+NEEDS_YOU_SOURCE_TABLES: tuple[str, ...] = (
+    "core.compliance_items",
+    "core.executive_action_states",
+    "finance.project_budgets",
+    "finance.project_forecasts",
+    "fleet.fleet",
+    "fleet.plant_incidents",
+    "fleet.utilization_logs",
+    "procurement.material_requests",
+    "procurement.suppliers",
+    "projects.daily_site_reports",
+    "projects.hse_incidents",
+    "projects.project_profiles",
+    "projects.projects",
+    "projects.site_daily_targets",
+    "projects.site_day_attendance",
+    "projects.site_day_briefings",
+    "projects.site_role_assignments",
+)
+for _table in NEEDS_YOU_SOURCE_TABLES:
     _keys = TABLE_PERMISSION_MAP[_table]
     if "executive.view_dashboard" not in _keys:
         TABLE_PERMISSION_MAP[_table] = (*_keys, "executive.view_dashboard")

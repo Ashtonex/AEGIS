@@ -55,3 +55,22 @@ BEGIN
         AFTER INSERT OR UPDATE OR DELETE ON core.executive_action_states
         FOR EACH ROW EXECUTE FUNCTION core.notify_table_change();
 END $$;
+
+-- Two exception sources of the list had no live trigger yet. Events carry
+-- ids only (core.notify_table_change), never row content.
+DO $$
+DECLARE
+  target text;
+  targets text[] := ARRAY[
+    'fleet.plant_incidents',
+    'procurement.material_requests'
+  ];
+BEGIN
+  FOREACH target IN ARRAY targets LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS live_change_notify ON %s', target);
+    EXECUTE format(
+      'CREATE TRIGGER live_change_notify AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION core.notify_table_change()',
+      target
+    );
+  END LOOP;
+END $$;

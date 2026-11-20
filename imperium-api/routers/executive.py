@@ -3053,6 +3053,18 @@ _NEEDS_YOU_UNASSIGN_SQL = """
     WHERE organization_id = :org_id AND item_key = :item_key
 """
 
+_NEEDS_YOU_RESET_SQL = """
+    UPDATE core.executive_action_states
+    SET status = 'open', snoozed_until = NULL, signature = '{}', updated_at = NOW()
+    WHERE organization_id = :org_id AND item_key = ANY(CAST(:keys AS text[])) AND status <> 'open'
+"""
+
+_NEEDS_YOU_SHRINK_SQL = """
+    UPDATE core.executive_action_states
+    SET signature = CAST(:signature AS text[]), updated_at = NOW()
+    WHERE organization_id = :org_id AND item_key = :item_key AND status <> 'open'
+"""
+
 _NEEDS_YOU_ACTIONS = ("assign", "unassign", "snooze", "dismiss", "reopen")
 _NEEDS_YOU_MAX_SNOOZE_DAYS = 90
 _NEEDS_YOU_MESSAGES = {
@@ -3089,6 +3101,17 @@ async def _needs_you_payload(user: dict, db: AsyncSession) -> Dict[str, Any]:
     result = needs_you_service.build(
         approvals_res.get("data") or [], exceptions_res.get("data") or [], sites, states, today, _actor_id(user),
     )
+    # A snoozed or dismissed problem that has cleared must come back if it
+    # recurs (see needs_you_service.state_refreshes). Only when every source
+    # read cleanly: a failed read would look like a cleared condition.
+    refreshes = result.pop("state_refreshes")
+    if not source_errors and (refreshes["reset"] or refreshes["shrink"]):
+        if refreshes["reset"]:
+            await db.execute(text(_NEEDS_YOU_RESET_SQL), {"org_id": org_id, "keys": refreshes["reset"]})
+        for item_key, signature in refreshes["shrink"].items():
+            await db.execute(text(_NEEDS_YOU_SHRINK_SQL),
+                             {"org_id": org_id, "item_key": item_key, "signature": signature})
+        await db.commit()
     result["assignees"] = [
         {"user_id": str(row["user_id"]), "name": row.get("name"), "email": row.get("email")} for row in assignees
     ]

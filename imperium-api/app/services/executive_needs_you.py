@@ -311,6 +311,32 @@ def apply_states(items: List[Dict[str, Any]], states: List[Dict[str, Any]], toda
                 item["state"]["returned"] = "Snooze ended"
 
 
+def state_refreshes(items: List[Dict[str, Any]], states: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Keep snoozes and dismissals honest about recurrence. A snoozed or
+    dismissed item whose condition has cleared (it is no longer on the list)
+    is reset, and part of a signature that has cleared is dropped - so when
+    the same problem comes back later it counts as new and reappears.
+
+    Returns {"reset": [item_key, ...], "shrink": {item_key: signature}}."""
+    by_key = {item["key"]: item for item in items}
+    reset: List[str] = []
+    shrink: Dict[str, List[str]] = {}
+    for state in states:
+        if state.get("status") not in ("snoozed", "dismissed"):
+            continue
+        item = by_key.get(state["item_key"])
+        if item is None:
+            reset.append(state["item_key"])
+            continue
+        stored = set(state.get("signature") or [])
+        current = set(item["signature"])
+        if stored - current:
+            # Keep only what is still present; anything that cleared and
+            # returns later is then new.
+            shrink[state["item_key"]] = sorted(stored & current)
+    return {"reset": sorted(reset), "shrink": shrink}
+
+
 def rank(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(items, key=lambda item: (
         item["hidden"],
@@ -344,12 +370,13 @@ def build(approvals: List[Dict[str, Any]], exceptions: List[Dict[str, Any]], sit
     sites_by_project = {str(site["project_id"]): site for site in sites}
     items = decision_items(approvals) + exception_items(exceptions, sites_by_project, today) + site_items(sites)
     apply_states(items, states, today)
+    refreshes = state_refreshes(items, states)
     items = rank(items)
     for item in items:
         for field in ("since", "due"):
             if isinstance(item[field], date):
                 item[field] = item[field].isoformat()
-    return {"items": items, "summary": summarise(items, user_id)}
+    return {"items": items, "summary": summarise(items, user_id), "state_refreshes": refreshes}
 
 
 def find_item(items: List[Dict[str, Any]], key: str) -> Optional[Dict[str, Any]]:

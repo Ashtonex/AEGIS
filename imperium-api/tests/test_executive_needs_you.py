@@ -153,3 +153,23 @@ async def test_assigning_to_someone_outside_the_org_is_refused(monkeypatch):
             {"item_key": "site:p1", "action": "assign", "assignee_user_id": "stranger"},
             user={"org_id": "o", "user_id": "u"}, db=None)
     assert exc.value.status_code == 400
+
+
+def test_cleared_conditions_reset_so_a_recurrence_is_new():
+    sites = [site("p1", flags=[flag("targets_missed")])]
+    states = [
+        # p1 was dismissed while it also had no_targets; that part has cleared.
+        _state("site:p1", status="dismissed", signature=["no_targets", "targets_missed"]),
+        # p2's problems cleared entirely.
+        _state("site:p2", status="snoozed", signature=["targets_missed"], snoozed_until=date(2026, 11, 27)),
+        # Open states and assignments are left alone.
+        _state("site:p3", assigned_to="u1"),
+    ]
+    refreshes = needs.build([], [], sites, states, TODAY, None)["state_refreshes"]
+    assert refreshes == {"reset": ["site:p2"], "shrink": {"site:p1": ["targets_missed"]}}
+
+    # Once shrunk, no_targets coming back is new and the site reappears.
+    shrunk = [_state("site:p1", status="dismissed", signature=["targets_missed"])]
+    sites = [site("p1", flags=[flag("targets_missed"), flag("no_targets")])]
+    item = needs.build([], [], sites, shrunk, TODAY, None)["items"][0]
+    assert not item["hidden"] and item["state"]["returned"]

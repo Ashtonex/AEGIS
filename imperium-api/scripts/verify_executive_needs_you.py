@@ -115,6 +115,28 @@ async def main() -> None:
                 after = executive.needs_you_service.find_item(res["data"]["items"], exception_item["key"])
                 check(not after["hidden"] and after["state"]["status"] == "open", "reopen shows it again")
 
+            # Recurrence: a dismissed condition that has cleared is reset, and a
+            # cleared part of a signature is dropped.
+            gone = "site:00000000-0000-0000-0000-00000000beef"
+            await db.execute(text(
+                "INSERT INTO core.executive_action_states (organization_id, item_key, status, signature, note) "
+                "VALUES (:org, :key, 'dismissed', ARRAY['idle'], 'verification')"), {"org": ORG, "key": gone})
+            if site_item:
+                await db.execute(text(
+                    "UPDATE core.executive_action_states SET status='dismissed', "
+                    "signature = signature || ARRAY['zz_cleared'] WHERE organization_id=:org AND item_key=:key"),
+                    {"org": ORG, "key": site_item["key"]})
+            await executive.get_executive_needs_you(user=user, db=db)
+            status = (await db.execute(text(
+                "SELECT status FROM core.executive_action_states WHERE organization_id=:org AND item_key=:key"),
+                {"org": ORG, "key": gone})).scalar()
+            check(status == "open", "cleared dismissal is reset")
+            if site_item:
+                stored = (await db.execute(text(
+                    "SELECT signature FROM core.executive_action_states WHERE organization_id=:org AND item_key=:key"),
+                    {"org": ORG, "key": site_item["key"]})).scalar()
+                check("zz_cleared" not in stored, "cleared part of a signature is dropped")
+
             try:
                 await executive.act_on_executive_needs_you(
                     {"item_key": "site:00000000-0000-0000-0000-00000000dead", "action": "snooze"}, user=user, db=db)
