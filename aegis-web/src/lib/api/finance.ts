@@ -652,6 +652,56 @@ export async function getExecutiveBudgetVsActual(): Promise<ApiResponse<any>> {
   });
 }
 
+export type SiteFlag = { level: "critical" | "warning" | "info"; code: string; message: string };
+export type SiteTeamMember = { role: string | null; user_id: string | null; name: string | null; email: string | null; account_active: boolean };
+export type SiteDay = {
+  date: string; headcount: number; regular_hours: number; overtime_hours: number; total_hours: number;
+  labour_cost: number; missing_rates: number; not_clocked_out: number; targets_total: number; targets_met: number;
+  targets_progressed: number; planned_value: number; earned_value: number; day_status: string | null; report_status: string | null;
+};
+export type SiteWeek = {
+  worked_days: number; headcount: number; person_days: number; regular_hours: number; overtime_hours: number;
+  total_hours: number; hours_per_person_day: number | null; labour_cost: number; missing_rates: number;
+  not_clocked_out: number; targets_total: number; targets_met: number; planned_value: number; earned_value: number;
+  unreported_days: number; unrecorded_days: number; last_worked_date: string | null; today: SiteDay | null;
+};
+export type SiteBudget = {
+  approved_budget: number; actual_cost: number; committed_cost: number; remaining: number;
+  spent_percent: number | null; exposure_percent: number | null; status: string;
+};
+export type ExecutiveSite = {
+  project_id: string; name: string | null; project_code: string | null; client_name: string | null; status: string | null;
+  start_date: string | null; planned_completion_date: string | null; contract_value: number | null;
+  team: SiteTeamMember[]; people: Record<"engineer" | "clerk" | "foreman" | "other", SiteTeamMember[]>;
+  week: SiteWeek; budget: SiteBudget | null; flags: SiteFlag[];
+  health: "red" | "amber" | "green" | "idle"; activity: "working_today" | "active_week" | "idle";
+};
+export type ExecutiveSitesSummary = {
+  total: number; working_today: number; active_week: number; idle: number; needs_attention: number;
+  week_headcount: number; week_hours: number; week_labour_cost: number; today_headcount: number;
+};
+export type SiteTarget = {
+  id: string; target_date: string | null; work_package: string | null; description: string | null; unit: string | null;
+  target_qty: number | null; achieved_qty: number | null; planned_amount: number | null; status: string | null; notes: string | null;
+};
+export type SiteReport = {
+  id: string; report_date: string; shift: string | null; status: string | null; planned_work: string | null;
+  actual_work: string | null; delays: string | null; safety_notes: string | null; cost_exposure: number | null;
+  submitted_at: string | null; approved_at: string | null; engineer_review_status: string | null;
+};
+export type ExecutiveSiteDetail = ExecutiveSite & {
+  daily: SiteDay[]; targets: SiteTarget[]; latest_report: SiteReport | null;
+  last_reconciliation: { week_ending: string; status: string; completed_at: string | null } | null;
+};
+
+export async function getExecutiveSites(): Promise<ApiResponse<{ sites: ExecutiveSite[]; summary: ExecutiveSitesSummary; as_of: string; window_days: number }>> {
+  return fetchApi('/api/v1/executive/sites', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getExecutiveSiteDetail(projectId: string): Promise<ApiResponse<ExecutiveSiteDetail>> {
+  return fetchApi(`/api/v1/executive/sites/${encodeURIComponent(projectId)}`, { cache: 'no-store', allowFallback: false });
+}
+
 export async function getSafetyIndex(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/hse/ltifr', {
     cache: 'no-store',

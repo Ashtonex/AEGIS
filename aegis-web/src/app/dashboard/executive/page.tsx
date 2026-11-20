@@ -7,6 +7,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveCo
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { TodayPanel } from "./TodayPanel";
+import { ActiveSitesDialog, activeSitesHeadline } from "./ActiveSitesDialog";
 import { LeadershipAccountabilityModal } from "@/components/projects/LeadershipAccountabilityModal";
 import { ManpowerScenarioCalculator } from "@/components/projects/ManpowerScenarioCalculator";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -38,6 +39,9 @@ import {
   getFinanceDepartmentPnl,
   getExecutiveStatutoryLiabilities,
   getExecutiveBudgetVsActual,
+  getExecutiveSites,
+  type ExecutiveSite,
+  type ExecutiveSitesSummary,
   ApiError,
 } from "@/lib/api";
 
@@ -245,6 +249,11 @@ function ExecutiveCommandCentreWorkspace() {
   const [projectDetail, setProjectDetail] = useState<ApiData | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [sites, setSites] = useState<ExecutiveSite[]>([]);
+  const [sitesSummary, setSitesSummary] = useState<ExecutiveSitesSummary | null>(null);
+  const [sitesLoading, setSitesLoading] = useState(true);
+  const [sitesError, setSitesError] = useState<string | null>(null);
+  const [sitesOpen, setSitesOpen] = useState(false);
 
   const userEmail = session?.user?.email || "System User";
   const displayName = userEmail.split("@")[0].replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -314,25 +323,45 @@ function ExecutiveCommandCentreWorkspace() {
 
   useEffect(() => { if (session) void loadDashboard(); }, [session, loadDashboard]);
 
+  // Sites load on their own so the tile never waits on the summary bundle.
+  const loadSites = useCallback(async () => {
+    try {
+      const response = await getExecutiveSites();
+      setSites(response.data?.sites ?? []);
+      setSitesSummary(response.data?.summary ?? null);
+      setSitesError(sourceErrorsFromMeta(response.meta).length ? "Some site records could not be read; figures may be incomplete." : null);
+    } catch {
+      setSitesError("Active sites could not be loaded.");
+    } finally {
+      setSitesLoading(false);
+    }
+  }, []);
+  useEffect(() => { if (session) void loadSites(); }, [session, loadSites]);
+  useLiveTable("projects.site_day_attendance", () => { if (session) void loadSites(); });
+  useLiveTable("projects.site_daily_targets", () => { if (session) void loadSites(); });
+  useLiveTable("projects.site_day_briefings", () => { if (session) void loadSites(); });
+  useLiveTable("projects.site_role_assignments", () => { if (session) void loadSites(); });
+  // A project opening or closing changes both the bundle and the site list.
+  useLiveTable("projects.projects", () => { if (session) { void loadDashboard(); void loadSites(); } });
+
   // loadDashboard() only shows the full-page spinner on the very first
   // mount (loading starts true and is never set back to true afterward) -
   // every subsequent call, including these, just spins the small refresh
   // icon via `refreshing` while the existing numbers stay on screen.
   useLiveTable("finance.quotations", () => { if (session) void loadDashboard(); });
   useLiveTable("crm.opportunities", () => { if (session) void loadDashboard(); });
-  useLiveTable("projects.projects", () => { if (session) void loadDashboard(); });
   useLiveTable("projects.hse_incidents", () => { if (session) void loadDashboard(); });
 
   const metricCards = useMemo(() => [
     { key: "cash_runway", label: "Cash Runway", value: metricWithUnit(kpis.cash_survival_days, " days"), source: "Executive KPI snapshot or treasury snapshot when available" },
     { key: "revenue", label: "Revenue (YTD)", value: displayValue(kpis.revenue), source: "Live finance progress claims and cost records" },
     { key: "margin", label: "Gross Profit Margin", value: displayValue(kpis.margin), source: "Live finance progress claims and cost records" },
-    { key: "active_projects", label: "Active Projects", value: String(activeProjects.length), source: "Live open project records" },
+    { key: "active_projects", label: "Active Sites", value: sitesLoading ? "…" : activeSitesHeadline(sitesSummary).value, sub: activeSitesHeadline(sitesSummary).sub, source: "Site attendance, daily targets and team assignments, last 7 days" },
     { key: "pipeline", label: "Pipeline Value", value: displayValue(kpis.pipeline), source: "Live CRM opportunities and tenders" },
     { key: "concentration", label: "Top Client Concentration", value: metricWithUnit(kpis.revenue_concentration_percent, "%"), source: "Live project contract values or executive KPI snapshot" },
     { key: "safety", label: "Safety Incidents (YTD)", value: displayValue(stats.safety_incidents), source: "Live HSE incident records" },
     { key: "documented", label: "Documented Processes", value: metricWithUnit(kpis.documented_workflow_percent ?? kpis.documented_percent, "%"), source: "Executive KPI snapshot or process register when available" },
-  ], [activeProjects.length, kpis, stats]);
+  ], [kpis, stats, sitesLoading, sitesSummary]);
 
   const openProject = async (project: ApiData) => {
     setSelectedProject(project);
@@ -363,7 +392,7 @@ function ExecutiveCommandCentreWorkspace() {
       documentTitle="Executive Command Centre"
       actions={<div className="flex items-center gap-3">
         {lastUpdated && <span className="font-mono text-[10px] uppercase text-slate" title={lastUpdated.toLocaleString()}>As of {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
-        <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
+        <button onClick={() => { void loadDashboard(); void loadSites(); }} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
       </div>}
     />
 
@@ -371,8 +400,9 @@ function ExecutiveCommandCentreWorkspace() {
     <SourceWarnings warnings={loadWarnings} />
 
     <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
-      {metricCards.map((card) => <button key={card.key} onClick={() => setSelectedMetric(card.key)} disabled={loading} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_10px_20px_-14px_rgba(0,0,0,0.55)] p-3 transition-shadow hover:border-signal hover:shadow-[0_0_40px_var(--dxl-signal-ghost)] focus-visible:outline focus-visible:outline-signal">
-        <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl leading-tight text-paper mt-3 break-words">{loading ? <Loader2 className="w-4 h-4 text-slate animate-spin" aria-label="Loading" /> : card.value}</p>
+      {metricCards.map((card) => <button key={card.key} onClick={() => card.key === "active_projects" ? setSitesOpen(true) : setSelectedMetric(card.key)} disabled={loading && card.key !== "active_projects"} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_10px_20px_-14px_rgba(0,0,0,0.55)] p-3 transition-shadow hover:border-signal hover:shadow-[0_0_40px_var(--dxl-signal-ghost)] focus-visible:outline focus-visible:outline-signal">
+        <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl leading-tight text-paper mt-3 break-words">{loading && card.key !== "active_projects" ? <Loader2 className="w-4 h-4 text-slate animate-spin" aria-label="Loading" /> : card.value}</p>
+        {"sub" in card && card.sub ? <p className="mt-1 font-mono text-[10px] text-slate-light">{card.sub}</p> : null}
       </button>)}
     </section>
 
@@ -408,6 +438,7 @@ function ExecutiveCommandCentreWorkspace() {
     <CCBCommercialGovernanceWidget />
     <CCBAutomatedFindingsPanel />
 
+    <ActiveSitesDialog open={sitesOpen} onOpenChange={setSitesOpen} sites={sites} summary={sitesSummary} loading={sitesLoading} error={sitesError} />
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricDetailGrid rows={metricDetailRows(selectedCard.key, kpis, stats, activeProjects, dataHealth)} />}</Modal>}
     {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <><SourceWarnings warnings={detailError ? [detailError] : []} /><ProjectDetail detail={projectDetail} accessToken={session?.access_token} /></>}</Modal>}
   </div>;
